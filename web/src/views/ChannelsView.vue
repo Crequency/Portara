@@ -1012,11 +1012,17 @@ onMounted(async () => {
 
       <div class="form-row">
         <div class="field">
-          <label>{{ t('channels.priority') }}</label>
+          <label class="row" style="gap: 5px; display: inline-flex">
+            {{ t('channels.priority') }}
+            <PInfo :text="t('channels.priorityHint')" />
+          </label>
           <input v-model.number="form.priority" type="number" min="1" />
         </div>
         <div class="field">
-          <label>{{ t('channels.weight') }}</label>
+          <label class="row" style="gap: 5px; display: inline-flex">
+            {{ t('channels.weight') }}
+            <PInfo :text="t('channels.weightHint')" />
+          </label>
           <input v-model.number="form.weight" type="number" min="1" />
         </div>
       </div>
