@@ -44,6 +44,7 @@ var client = new OpenAIClient(
 | **Anthropic 协议代理**（OpenAI 请求 ↔ Anthropic 上游，含流式逐事件翻译） | ✅ |
 | 渠道协议支持 **混杂模式**（逐模型指定协议与 Base URL） | ✅ |
 | `/v1/models` 支持 `?filter=mirror-only\|origin-only` | ✅ |
+| **厂商会话头注入**（opencode-go 的 `x-opencode-session` 按会话派生，含消毒与稳定兜底） | ✅ |
 | `/v1/models` **透传上下文长度等元信息**（含别名条目） | ✅ |
 | 对话测试**直连模式同样记账**，并在概览中与网关流量区分 | ✅ |
 | API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |

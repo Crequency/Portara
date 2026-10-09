@@ -250,20 +250,29 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     AbortSignal.timeout(channel.timeout_ms)
   ])
 
+  const upstreamHeaders = buildUpstreamHeaders(
+    upstreamKey,
+    c.req.header('content-type') ?? 'application/json',
+    {
+      // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
+      extraHeaders: channel.extra_headers ?? {},
+      vendor: channel.vendor ?? 'generic',
+      protocol: plan.protocol,
+      channelId: channel.id,
+      payload,
+      contentEncoding: c.req.header('content-encoding')
+    }
+  )
+  // 回显实际生效的会话头（如 opencode-go 的 x-opencode-session）
+  const sessionEcho: Record<string, string> = upstreamHeaders.session
+    ? { 'x-portara-session': upstreamHeaders.session.value }
+    : {}
+
   let res: Response
   try {
     res = await fetch(url, {
       method: c.req.method,
-      headers: buildUpstreamHeaders(
-        upstreamKey,
-        c.req.header('content-type') ?? 'application/json',
-        {
-          // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
-          extraHeaders: channel.extra_headers ?? {},
-          vendor: channel.vendor ?? 'generic',
-          protocol: plan.protocol
-        }
-      ),
+      headers: upstreamHeaders.headers,
       body: plan.bodyText,
       signal
     })
@@ -325,7 +334,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           'cache-control': 'no-cache',
           'x-accel-buffering': 'no',
           'x-portara-channel': channel.name,
-          'x-portara-protocol': 'anthropic'
+          'x-portara-protocol': 'anthropic',
+          ...sessionEcho
         }
       })
     }
@@ -348,7 +358,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       })
       return new Response(text, {
         status: res.status,
-        headers: { 'content-type': contentType, 'x-portara-protocol': 'anthropic' }
+        headers: {
+          'content-type': contentType,
+          'x-portara-protocol': 'anthropic',
+          ...sessionEcho
+        }
       })
     }
 
@@ -371,7 +385,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       headers: {
         'content-type': 'application/json',
         'x-portara-channel': channel.name,
-        'x-portara-protocol': 'anthropic'
+        'x-portara-protocol': 'anthropic',
+        ...sessionEcho
       }
     })
   }
@@ -398,7 +413,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       status: res.status,
       headers: {
         'content-type': contentType,
-        'x-portara-channel': channel.name
+        'x-portara-channel': channel.name,
+        ...sessionEcho
       }
     })
   }
@@ -449,7 +465,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       'content-type': contentType,
       'cache-control': 'no-cache',
       'x-accel-buffering': 'no',
-      'x-portara-channel': channel.name
+      'x-portara-channel': channel.name,
+      ...sessionEcho
     }
   })
 }

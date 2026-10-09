@@ -51,6 +51,8 @@ async function fetchModelsFor(opts: {
   vendor: string
   /** 渠道默认协议决定认证头；mixed 按 openai 处理（模型列表接口本身是 OpenAI 风格） */
   protocol?: string
+  /** 用于派生厂商会话头的稳定兜底值 */
+  channelId?: string
 }): Promise<{
   ok: boolean
   status: number
@@ -72,8 +74,9 @@ async function fetchModelsFor(opts: {
         vendor: opts.vendor,
         // 模型列表接口本身是 OpenAI 风格，只有纯 anthropic 渠道才换认证头；
         // mixed 渠道这里按 openai 处理
-        protocol: opts.protocol === 'anthropic' ? 'anthropic' : 'openai'
-      }),
+        protocol: opts.protocol === 'anthropic' ? 'anthropic' : 'openai',
+        channelId: opts.channelId
+      }).headers,
       signal: AbortSignal.timeout(Math.min(opts.timeoutMs, 20_000))
     })
     const latencyMs = Date.now() - started
@@ -192,7 +195,8 @@ channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
     timeoutMs: ch.timeout_ms,
     extraHeaders: ch.extra_headers ?? {},
     vendor: ch.vendor,
-    protocol: ch.protocol
+    protocol: ch.protocol,
+    channelId: ch.id
   })
   return c.json(result)
 })
@@ -504,7 +508,8 @@ channelRoutes.post('/:id/test', async (c) => {
     timeoutMs: ch.timeout_ms,
     extraHeaders: ch.extra_headers ?? {},
     vendor: ch.vendor,
-    protocol: ch.protocol
+    protocol: ch.protocol,
+    channelId: ch.id
   })
 
   await record(result.latencyMs, result.ok)
@@ -588,15 +593,24 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     source: 'playground'
   }
 
+  const upstreamHeaders = buildUpstreamHeaders(upstreamKey, 'application/json', {
+    extraHeaders: ch.extra_headers ?? {},
+    vendor: ch.vendor,
+    protocol: plan.protocol,
+    channelId: ch.id,
+    payload,
+    contentEncoding: c.req.header('content-encoding')
+  })
+  // 回显实际生效的会话头 —— 否则「注入的值对不对」只能靠翻上游日志
+  const sessionEcho: Record<string, string> = upstreamHeaders.session
+    ? { 'x-portara-session': upstreamHeaders.session.value }
+    : {}
+
   let res: Response
   try {
     res = await fetch(plan.url, {
       method: 'POST',
-      headers: buildUpstreamHeaders(upstreamKey, 'application/json', {
-        extraHeaders: ch.extra_headers ?? {},
-        vendor: ch.vendor,
-        protocol: plan.protocol
-      }),
+      headers: upstreamHeaders.headers,
       body: plan.bodyText,
       signal
     })
@@ -651,7 +665,8 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
           'cache-control': 'no-cache',
           'x-accel-buffering': 'no',
           'x-portara-direct': ch.name,
-          'x-portara-protocol': 'anthropic'
+          'x-portara-protocol': 'anthropic',
+          ...sessionEcho
         }
       })
     }
@@ -684,7 +699,8 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
       headers: {
         'content-type': res.ok ? 'application/json' : contentType,
         'x-portara-direct': ch.name,
-        'x-portara-protocol': 'anthropic'
+        'x-portara-protocol': 'anthropic',
+        ...sessionEcho
       }
     })
   }
@@ -730,7 +746,8 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
         'content-type': contentType,
         'cache-control': 'no-cache',
         'x-accel-buffering': 'no',
-        'x-portara-direct': ch.name
+        'x-portara-direct': ch.name,
+        ...sessionEcho
       }
     })
   }
@@ -752,6 +769,6 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
 
   return new Response(text, {
     status: res.status,
-    headers: { 'content-type': contentType, 'x-portara-direct': ch.name }
+    headers: { 'content-type': contentType, 'x-portara-direct': ch.name, ...sessionEcho }
   })
 })

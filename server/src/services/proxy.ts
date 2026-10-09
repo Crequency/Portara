@@ -4,7 +4,8 @@
  * 关键纪律：**转发路径上不反序列化整个流**。扫描器只对疑似含 usage 的
  * data 行做 JSON.parse，原字节由 tee 的另一分支原样下传。
  */
-import { randomBytes } from 'node:crypto'
+
+import { resolveVendorSession, type InjectedSession } from './vendorRules.js'
 
 export interface Usage {
   promptTokens: number
@@ -217,29 +218,24 @@ export function isVendorPreset(v: string): v is VendorPreset {
  * 注意：目前每次请求生成一个随机 session 值 —— 这只是占位实现，
  * 真正的「自动请求头识别」规则待用户给出后再补（见 DECISIONS D-016）。
  */
-export function vendorHeaders(
-  vendor: string,
-  extraHeaders: Record<string, string> = {}
-): Record<string, string> {
-  const out: Record<string, string> = {}
-
-  if (vendor === 'opencode-go') {
-    const provided = Object.keys(extraHeaders).some(
-      (k) => k.toLowerCase() === 'x-opencode-session'
-    )
-    if (!provided) {
-      out['x-opencode-session'] = `portara-${randomBytes(12).toString('hex')}`
-    }
-  }
-
-  return out
-}
 
 export interface UpstreamHeaderOptions {
   extraHeaders?: Record<string, string>
   vendor?: string
   /** 上游协议决定用哪种认证头（见下） */
   protocol?: 'openai' | 'anthropic'
+  /** 渠道 id：厂商会话头的稳定兜底值由它派生 */
+  channelId?: string
+  /** 已解析的请求体：厂商会话头优先从这里取 */
+  payload?: Record<string, unknown> | null
+  /** 请求体的 content-encoding；非 identity 时无法安全解析 payload */
+  contentEncoding?: string
+}
+
+export interface UpstreamHeaders {
+  headers: Record<string, string>
+  /** 本次实际生效的厂商会话头（供回显与验收）；该厂商无规则时为 null */
+  session: InjectedSession | null
 }
 
 /** Anthropic 要求显式声明 API 版本 */
@@ -255,7 +251,7 @@ export function buildUpstreamHeaders(
   upstreamApiKey: string,
   contentType: string,
   options: UpstreamHeaderOptions = {}
-): Record<string, string> {
+): UpstreamHeaders {
   const headers: Record<string, string> = {
     'content-type': contentType || 'application/json',
     accept: 'application/json, text/event-stream',
@@ -263,8 +259,22 @@ export function buildUpstreamHeaders(
   }
 
   const extra = options.extraHeaders ?? {}
-  Object.assign(headers, vendorHeaders(options.vendor ?? 'generic', extra))
+  // 厂商会话头（如 opencode-go 的 x-opencode-session）——
+  // 请求体派生 > 渠道固定头 > 稳定兜底，详见 services/vendorRules.ts
+  const vendor = resolveVendorSession({
+    vendor: options.vendor ?? 'generic',
+    channelId: options.channelId,
+    extraHeaders: extra,
+    payload: options.payload,
+    contentEncoding: options.contentEncoding
+  })
+  Object.assign(headers, vendor.headers)
   Object.assign(headers, extra)
+  // 请求体派生的是「本会话」的 id，必须压过渠道里配的静态值 ——
+  // 否则合并顺序（extra 在后）会把它盖掉，优先级形同虚设
+  if (vendor.session?.source === 'body') {
+    headers[vendor.session.header] = vendor.session.value
+  }
 
   // 上游密钥永远压过一切，包括用户误填的同名头。
   //
@@ -284,5 +294,5 @@ export function buildUpstreamHeaders(
     }
   }
 
-  return headers
+  return { headers, session: vendor.session }
 }

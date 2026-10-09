@@ -4,8 +4,7 @@ import {
   ANTHROPIC_VERSION,
   buildUpstreamHeaders,
   isVendorPreset,
-  sanitizeExtraHeaders,
-  vendorHeaders
+  sanitizeExtraHeaders
 } from '../src/services/proxy.js'
 
 // ------------------------------------------------------------ 固定请求头校验
@@ -60,33 +59,8 @@ test('isVendorPreset 只认已支持的档位', () => {
   assert.equal(isVendorPreset('something-else'), false)
 })
 
-test('vendorHeaders 对 generic 不注入任何头', () => {
-  assert.deepEqual(vendorHeaders('generic'), {})
-})
-
-test('vendorHeaders 为 opencode-go 注入 x-opencode-session', () => {
-  const headers = vendorHeaders('opencode-go')
-  assert.ok(headers['x-opencode-session'])
-  assert.ok(headers['x-opencode-session']!.startsWith('portara-'))
-})
-
-test('vendorHeaders 尊重用户已提供的 session（大小写不敏感）', () => {
-  assert.deepEqual(vendorHeaders('opencode-go', { 'X-OpenCode-Session': 'mine' }), {})
-
-  const injected = vendorHeaders('opencode-go', { 'x-other': '1' })
-  assert.ok(injected['x-opencode-session'])
-})
-
-test('vendorHeaders 每次生成不同的 session（占位实现）', () => {
-  const a = vendorHeaders('opencode-go')['x-opencode-session']
-  const b = vendorHeaders('opencode-go')['x-opencode-session']
-  assert.notEqual(a, b)
-})
-
-// ------------------------------------------------------------ 请求头组装
-
 test('buildUpstreamHeaders 合并：基础 → 厂商预设 → 用户固定头', () => {
-  const headers = buildUpstreamHeaders('sk-upstream', 'application/json', {
+  const { headers } = buildUpstreamHeaders('sk-upstream', 'application/json', {
     vendor: 'opencode-go',
     extraHeaders: { 'X-Tenant': 'acme' }
   })
@@ -98,7 +72,7 @@ test('buildUpstreamHeaders 合并：基础 → 厂商预设 → 用户固定头'
 })
 
 test('buildUpstreamHeaders 中上游密钥压过用户误填的同名头', () => {
-  const headers = buildUpstreamHeaders('sk-real', 'application/json', {
+  const { headers } = buildUpstreamHeaders('sk-real', 'application/json', {
     extraHeaders: { authorization: 'Bearer evil' } // 已被 sanitize 拦下时不会到这；此处直接构造防御
   })
   assert.equal(headers.authorization, 'Bearer sk-real')
@@ -112,13 +86,13 @@ test('buildUpstreamHeaders 在无上游密钥时不带 authorization', () => {
 // ------------------------------------------------------------ 认证头按协议选择
 
 test('OpenAI 协议用 Authorization: Bearer', () => {
-  const h = buildUpstreamHeaders('sk-abc', 'application/json', { protocol: 'openai' })
+  const { headers: h } = buildUpstreamHeaders('sk-abc', 'application/json', { protocol: 'openai' })
   assert.equal(h.authorization, 'Bearer sk-abc')
   assert.equal(h['x-api-key'], undefined)
 })
 
 test('Anthropic 协议用 x-api-key 而非 Bearer，并带 anthropic-version', () => {
-  const h = buildUpstreamHeaders('sk-ant', 'application/json', { protocol: 'anthropic' })
+  const { headers: h } = buildUpstreamHeaders('sk-ant', 'application/json', { protocol: 'anthropic' })
   assert.equal(h['x-api-key'], 'sk-ant')
   assert.equal(h['anthropic-version'], ANTHROPIC_VERSION)
   // 用错头会得到一句「Authentication failed」，而上游不会告诉你头用错了
@@ -126,7 +100,7 @@ test('Anthropic 协议用 x-api-key 而非 Bearer，并带 anthropic-version', (
 })
 
 test('未指定协议时按 OpenAI 处理（保持既有行为）', () => {
-  const h = buildUpstreamHeaders('sk-abc', 'application/json')
+  const { headers: h } = buildUpstreamHeaders('sk-abc', 'application/json')
   assert.equal(h.authorization, 'Bearer sk-abc')
 })
 
@@ -137,7 +111,7 @@ test('x-api-key 属于保留头，不允许用户自定义', () => {
 })
 
 test('用户可通过固定请求头覆盖 anthropic-version（它不是凭据）', () => {
-  const h = buildUpstreamHeaders('sk-ant', 'application/json', {
+  const { headers: h } = buildUpstreamHeaders('sk-ant', 'application/json', {
     protocol: 'anthropic',
     extraHeaders: { 'anthropic-version': '2024-01-01' }
   })
@@ -145,6 +119,6 @@ test('用户可通过固定请求头覆盖 anthropic-version（它不是凭据�
 })
 
 test('无上游密钥时两种协议都不带认证头', () => {
-  assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'openai' }).authorization, undefined)
-  assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'anthropic' })['x-api-key'], undefined)
+  assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'openai' }).headers.authorization, undefined)
+  assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'anthropic' }).headers['x-api-key'], undefined)
 })

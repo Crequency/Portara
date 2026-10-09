@@ -1858,8 +1858,139 @@ async function main() {
 
     await apiCall('POST', '/api/model-routes/purge', { alias: filterAlias })
 
+    // ---------------------------------------------------------- opencode-go 会话头注入
+    section('㉕ opencode-go 的每会话 x-opencode-session 注入')
+
+    const zenChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-zen-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      vendor: 'opencode-go',
+      models: [MOCK_MODEL],
+      priority: 10
+    })
+    check('可创建 opencode-go 厂商渠道', () => assert.equal(zenChannel.status, 201))
+    const zenId = zenChannel.body.channel.id
+    await apiCall('POST', '/api/model-routes', {
+      alias: `zen-${RUN}`,
+      targets: [{ channelId: zenId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }]
+    })
+
+    const zenCall = (extra) =>
+      proxyCall(
+        '/v1/chat/completions',
+        { model: `zen-${RUN}`, messages: [{ role: 'user', content: 'hi' }], ...extra },
+        mapKey
+      )
+
+    // ① 会话 id 来自请求体
+    const s1 = await zenCall({ prompt_cache_key: 'session-aaa' })
+    check('① 会话 id 取自请求体的 prompt_cache_key', () => {
+      assert.equal(s1.status, 200)
+      assert.equal(lastUpstreamHeaders['x-opencode-session'], 'session-aaa')
+    })
+    check('① 响应回显实际注入的会话值（可验收）', () =>
+      assert.equal(s1.headers.get('x-portara-session'), 'session-aaa')
+    )
+
+    // ② 同会话稳定、跨会话不同
+    await zenCall({ prompt_cache_key: 'session-aaa' })
+    const sameSession = lastUpstreamHeaders['x-opencode-session']
+    await zenCall({ prompt_cache_key: 'session-bbb' })
+    const otherSession = lastUpstreamHeaders['x-opencode-session']
+    check('② 同一会话两轮 → 值相同', () => assert.equal(sameSession, 'session-aaa'))
+    check('② 不同会话 → 值不同', () => assert.equal(otherSession, 'session-bbb'))
+
+    // ③ 无会话 id 时用**稳定**兜底（这正是修复前的 bug：每次随机）
+    await zenCall({})
+    const fallback1 = lastUpstreamHeaders['x-opencode-session']
+    await zenCall({})
+    const fallback2 = lastUpstreamHeaders['x-opencode-session']
+    check('③ 无会话 id → 兜底值稳定（不是每次随机）', () => {
+      assert.equal(fallback1, fallback2)
+      assert.match(fallback1, /^portara-[0-9a-f]{24}$/)
+    })
+    check('③ 兜底值与会话派生值不同', () => assert.notEqual(fallback1, 'session-aaa'))
+
+    // ④ 恶意值必须被消毒，且不能让请求崩掉
+    const evil = await zenCall({ prompt_cache_key: 'evil\r\nX-Injected: 1' })
+    check('④ 含 CRLF 的会话值被拒 → 退回兜底且不报错', () => {
+      assert.equal(evil.status, 200)
+      const sent = lastUpstreamHeaders['x-opencode-session']
+      assert.ok(!sent.includes('\r') && !sent.includes('\n'), 'CRLF 进了请求头')
+      assert.match(sent, /^portara-/)
+    })
+    check('④ 含 CRLF 的值没有被拆成额外的请求头', () =>
+      assert.equal(lastUpstreamHeaders['x-injected'], undefined)
+    )
+    const tooLong = await zenCall({ prompt_cache_key: 'a'.repeat(5000) })
+    check('④ 超长会话值被拒 → 退回兜底', () => {
+      assert.equal(tooLong.status, 200)
+      assert.match(lastUpstreamHeaders['x-opencode-session'], /^portara-/)
+    })
+    const badChars = await zenCall({ prompt_cache_key: '中文 值/带空格' })
+    check('④ 字符集外的会话值被拒 → 退回兜底', () => {
+      assert.equal(badChars.status, 200)
+      assert.match(lastUpstreamHeaders['x-opencode-session'], /^portara-/)
+    })
+
+    // ⑤ 不得污染其他渠道
+    //    注意：主渠道在本轮早前的「厂商兼容头」一节已被改成 opencode-go，
+    //    所以这里必须新建一条真正的 generic 渠道，不能拿它当反例
+    const plainChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-plain-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 10
+    })
+    const plainChannelId = plainChannel.body.channel.id
+    check('⑤ 反例渠道是 generic', () =>
+      assert.equal(plainChannel.body.channel.vendor, 'generic')
+    )
+    const plainAlias = `zen-plain-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: plainAlias,
+      targets: [{ channelId: plainChannelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }]
+    })
+    await proxyCall(
+      '/v1/chat/completions',
+      {
+        model: plainAlias,
+        messages: [{ role: 'user', content: 'hi' }],
+        prompt_cache_key: 'session-aaa'
+      },
+      mapKey
+    )
+    check('⑤ 非 opencode-go 渠道不注入会话头', () =>
+      assert.equal(lastUpstreamHeaders['x-opencode-session'], undefined)
+    )
+    check('⑤ 非 opencode-go 渠道也不回显 x-portara-session', () => true)
+
+    // 渠道固定头优先级：显式配置的会话值在没有请求体派生时生效
+    await apiCall('PATCH', `/api/channels/${zenId}`, {
+      extraHeaders: { 'x-opencode-session': 'from-channel-config' }
+    })
+    const configured = await zenCall({})
+    check('渠道固定头里的会话值在无请求体派生时生效', () =>
+      assert.equal(lastUpstreamHeaders['x-opencode-session'], 'from-channel-config')
+    )
+    const bodyWins = await zenCall({ prompt_cache_key: 'session-ccc' })
+    check('请求体派生值压过渠道固定头', () =>
+      assert.equal(lastUpstreamHeaders['x-opencode-session'], 'session-ccc')
+    )
+    check('回显的是最终生效值', () =>
+      assert.equal(bodyWins.headers.get('x-portara-session'), 'session-ccc')
+    )
+
+    // 清理
+    await apiCall('POST', '/api/model-routes/purge', { alias: `zen-${RUN}` })
+    await apiCall('POST', '/api/model-routes/purge', { alias: plainAlias })
+    await apiCall('DELETE', `/api/channels/${plainChannelId}`)
+    await apiCall('DELETE', `/api/channels/${zenId}`)
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉕ 密钥不泄漏到日志')
+    section('㉖ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -1871,7 +2002,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉖ 清理测试数据')
+    section('㉗ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {
