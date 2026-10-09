@@ -2,7 +2,7 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, pool, query } from '../db.js'
-import { badRequest, notFound, parseJson } from '../lib/http.js'
+import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import {
@@ -258,8 +258,53 @@ const importSchema = z.object({
    */
   mode: z.enum(['replace', 'merge']).default('replace'),
   /** alias → 单目标或目标数组 */
-  mapping: z.record(z.string(), z.union([jsonTargetSchema, z.array(jsonTargetSchema)]))
+  mapping: z.record(z.string(), z.union([jsonTargetSchema, z.array(jsonTargetSchema)])),
+  /**
+   * replace 模式下必须回填「当前条数」以示确认。
+   * 防的是「手滑/脚本盲目替换」—— 删除前必须知道会删掉多少。
+   */
+  acknowledgeRemove: z.coerce.number().int().min(0).optional()
 })
+
+/** 快照上限：超过则截断并标记，避免审计记录无限膨胀 */
+const SNAPSHOT_LIMIT = 500
+
+/**
+ * 把当前映射导出为**与导入格式一致**的 JSON。
+ * 这样一旦发生误删，直接从审计日志里把 snapshot 贴回 JSON 编辑器即可恢复。
+ */
+async function snapshotMappings(): Promise<{ data: Record<string, unknown>; truncated: boolean }> {
+  const rows = await query<{
+    alias: string
+    channel_name: string | null
+    upstream_model: string
+    priority: number
+    weight: number
+  }>(
+    `select r.alias, c.name as channel_name, r.upstream_model, r.priority, r.weight
+       from model_routes r left join channels c on c.id = r.channel_id
+      order by r.alias asc, r.priority asc, r.id asc`
+  )
+
+  const truncated = rows.length > SNAPSHOT_LIMIT
+  const data: Record<string, unknown> = {}
+
+  for (const r of rows.slice(0, SNAPSHOT_LIMIT)) {
+    const target: Record<string, unknown> = {
+      channel: r.channel_name ?? '',
+      model: r.upstream_model
+    }
+    if (r.priority !== 100) target.priority = r.priority
+    if (r.weight !== 1) target.weight = r.weight
+
+    const existing = data[r.alias]
+    if (existing === undefined) data[r.alias] = target
+    else if (Array.isArray(existing)) existing.push(target)
+    else data[r.alias] = [existing, target]
+  }
+
+  return { data, truncated }
+}
 
 /**
  * 以 JSON 形式整体编辑映射列表。
@@ -303,6 +348,30 @@ modelRouteRoutes.post('/import', requireAdmin, async (c) => {
   }
 
   let removed = 0
+  let snapshot: Record<string, unknown> = {}
+  let snapshotTruncated = false
+
+  // ① 替换前先取快照 —— 破坏性操作必须留下能回滚的证据
+  if (body.mode === 'replace') {
+    const snap = await snapshotMappings()
+    snapshot = snap.data
+    snapshotTruncated = snap.truncated
+  }
+
+  // ② 删除前必须确认条数（防手滑、防脚本盲目替换）
+  if (body.mode === 'replace') {
+    const cur = await query<{ n: number }>('select count(*)::int as n from model_routes')
+    const existing = cur[0]?.n ?? 0
+    if (existing > 0 && body.acknowledgeRemove !== existing) {
+      throw new ApiError(
+        409,
+        'replace_needs_acknowledge',
+        `替换全部会删除现有 ${existing} 条映射。请在请求中带上 acknowledgeRemove=${existing} 确认。`,
+        { existing }
+      )
+    }
+  }
+
   const client = await pool.connect()
   try {
     await client.query('begin')
@@ -337,7 +406,9 @@ modelRouteRoutes.post('/import', requireAdmin, async (c) => {
   await recordAudit(c, 'model_route.import', { type: 'model_route', id: body.mode }, {
     mode: body.mode,
     applied: resolved.length,
-    removed: body.mode === 'replace' ? removed : 0
+    removed: body.mode === 'replace' ? removed : 0,
+    // 误删时的恢复来源：把 snapshot 原样贴回 JSON 编辑器即可
+    ...(body.mode === 'replace' ? { snapshot, snapshotTruncated } : {})
   })
 
   return c.json({

@@ -62,6 +62,13 @@ export const env = {
     process.env.DATABASE_URL ?? 'postgres://portara:portara@127.0.0.1:52744/portara',
   redisUrl: process.env.REDIS_URL ?? 'redis://127.0.0.1:52745',
 
+  /**
+   * 可选的独立 schema。设置后所有表都建在该 schema 内，
+   * 用于「同一套库跑多套实例」——尤其是**让端到端测试与开发数据彻底隔离**。
+   * 只允许字母数字下划线，避免注入。
+   */
+  dbSchema: (process.env.PORTARA_DB_SCHEMA ?? '').trim(),
+
   masterKey: loadMasterKey(),
   sessionSecret: loadSessionSecret(),
   cookieSecure: process.env.PORTARA_COOKIE_SECURE === 'true',

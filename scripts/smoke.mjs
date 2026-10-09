@@ -25,6 +25,23 @@ const BASE = `http://127.0.0.1:${API_PORT}`
 const MOCK = `http://127.0.0.1:${MOCK_PORT}`
 const RUN = Date.now().toString(36)
 
+/**
+ * 冒烟测试**必须**跑在独立 schema 里。
+ *
+ * 教训（2026-10-09）：此前冒烟直连开发库，其中一个 replace 模式的 JSON 导入
+ * 测试是全局删除操作，把用户真实的 数十条模型映射清空了。
+ * 端到端测试绝不该对开发数据执行破坏性全局操作 —— 现在从连接层面隔离。
+ */
+const SMOKE_SCHEMA = process.env.SMOKE_DB_SCHEMA ?? 'portara_smoke'
+if (!SMOKE_SCHEMA.includes('smoke')) {
+  console.error(
+    `\n[拒绝运行] SMOKE_DB_SCHEMA="${SMOKE_SCHEMA}" 看起来不是测试专用 schema。\n` +
+      '冒烟会执行破坏性操作（如 replace 模式导入会删除全部模型映射），\n' +
+      '因此 schema 名必须包含 "smoke"，防止误伤开发/生产数据。\n'
+  )
+  process.exit(2)
+}
+
 const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
 // 固定管理凭据：配合「按用户名引导」语义，脚本可无限次重复运行
 const ADMIN_USER = 'smoke-admin'
@@ -177,6 +194,8 @@ function startServer() {
       PORTARA_ADMIN_PASSWORD: ADMIN_PASS,
       DATABASE_URL:
         process.env.DATABASE_URL ?? 'postgres://portara:portara@127.0.0.1:52744/portara',
+      // 独立 schema：与开发数据彻底隔离
+      PORTARA_DB_SCHEMA: SMOKE_SCHEMA,
       REDIS_URL: process.env.REDIS_URL ?? 'redis://127.0.0.1:52745',
       PORTARA_COOKIE_SECURE: 'false'
     },
@@ -266,6 +285,7 @@ async function main() {
   console.log('\u001b[1mPortara 端到端冒烟测试\u001b[0m')
   console.log(`  API  : ${BASE}`)
   console.log(`  伪上游: ${MOCK}`)
+  console.log(`  数据库 schema: ${SMOKE_SCHEMA}（与开发数据隔离）`)
 
   const mock = await startMockUpstream()
   const { child, output } = startServer()
@@ -1062,6 +1082,67 @@ async function main() {
     check('替换模式下旧映射被清空', () => {
       const aliases = afterJson.body.routes.map((r) => r.alias)
       assert.deepEqual(aliases, [jsonAlias])
+    })
+
+    // 确认门槛：replace 模式下条数不匹配必须被拒
+    const noAck = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'replace',
+      mapping: { 'guard/x': { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL } }
+    })
+    check('replace 未确认条数被拒（409）', () => {
+      assert.equal(noAck.status, 409)
+      assert.equal(noAck.body?.error?.code, 'replace_needs_acknowledge')
+    })
+
+    const badAck = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'replace',
+      acknowledgeRemove: 999,
+      mapping: { 'guard/x': { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL } }
+    })
+    check('replace 确认条数不符也被拒（409）', () => assert.equal(badAck.status, 409))
+
+    const goodAck = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'replace',
+      acknowledgeRemove: 1,
+      mapping: { [jsonAlias]: { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL } }
+    })
+    check('replace 条数匹配则放行', () => assert.equal(goodAck.status, 200))
+
+    // ---- 误删恢复：审计快照必须能一键回灌 ----
+    const snapAudit = await apiCall('GET', '/api/audit?action=model_route.import&limit=20')
+    const withSnapshot = (snapAudit.body?.events ?? []).find(
+      (e) => e.detail?.mode === 'replace' && e.detail?.snapshot
+    )
+    check('replace 导入在审计里留下了可恢复快照', () => {
+      assert.ok(withSnapshot, '未找到带 snapshot 的审计记录')
+      assert.ok(Object.keys(withSnapshot.detail.snapshot).length > 0, '快照为空')
+    })
+
+    const beforeRestore = await apiCall('GET', '/api/model-routes')
+    const rowsNow = beforeRestore.body.routes.length
+    const restore = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'replace',
+      acknowledgeRemove: rowsNow,
+      mapping: withSnapshot.detail.snapshot
+    })
+    check('快照可直接回灌恢复（误删的救命路径）', () => {
+      assert.equal(restore.status, 200)
+      assert.equal(restore.body.applied, Object.keys(withSnapshot.detail.snapshot).length)
+    })
+
+    const afterRestore = await apiCall('GET', '/api/model-routes')
+    check('恢复后映射内容与快照一致', () => {
+      const aliases = new Set(afterRestore.body.routes.map((r) => r.alias))
+      for (const alias of Object.keys(withSnapshot.detail.snapshot)) {
+        assert.ok(aliases.has(alias), `缺少 ${alias}`)
+      }
+    })
+
+    // 复位到 JSON 测试所需的单条状态
+    await apiCall('POST', '/api/model-routes/import', {
+      mode: 'replace',
+      acknowledgeRemove: afterRestore.body.routes.length,
+      mapping: { [jsonAlias]: { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL } }
     })
 
     const jsonCall = await proxyCall(

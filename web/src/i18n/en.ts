@@ -338,6 +338,7 @@ export const en = {
     regenerate: 'Regenerate from current list',
     applyMode: 'Apply mode',
     modeReplace: 'Replace all (entries missing from JSON are deleted)',
+    modeReplaceCount: 'Replace all ({n} existing will be deleted)',
     modeMerge: 'Merge only (leave other mappings untouched)',
     jsonApply: 'Apply',
     jsonApplied: 'Applied {n}, removed {removed}',

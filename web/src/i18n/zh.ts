@@ -338,6 +338,7 @@ export const zh = {
     regenerate: '从当前列表重新生成',
     applyMode: '应用方式',
     modeReplace: '替换全部（JSON 里没有的会被删除）',
+    modeReplaceCount: '替换全部（将删除现有 {n} 条）',
     modeMerge: '仅合并（不动其他映射）',
     jsonApply: '应用',
     jsonApplied: '已应用 {n} 条，删除 {removed} 条',

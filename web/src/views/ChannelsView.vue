@@ -130,7 +130,11 @@ const jsonMode = ref<'replace' | 'merge'>('replace')
 const jsonError = ref('')
 
 const jsonModeOptions = computed(() => [
-  { value: 'replace', label: t('mapping.modeReplace') },
+  {
+    value: 'replace',
+    // 明确告诉用户会删掉多少条 —— 删除前必须让人看见代价
+    label: t('mapping.modeReplaceCount', { n: routes.value.length })
+  },
   { value: 'merge', label: t('mapping.modeMerge') }
 ])
 
@@ -180,7 +184,14 @@ async function applyJson(): Promise<void> {
   try {
     const res = await api.post<{ applied: number; removed: number }>(
       '/api/model-routes/import',
-      { mode: jsonMode.value, mapping: parsed }
+      {
+        mode: jsonMode.value,
+        mapping: parsed,
+        // replace 模式必须回填当前条数作为确认（服务端会校验，防止误删）
+        ...(jsonMode.value === 'replace'
+          ? { acknowledgeRemove: routes.value.length }
+          : {})
+      }
     )
     toast.success(t('mapping.jsonApplied', { n: res.applied, removed: res.removed }))
     showJsonForm.value = false
