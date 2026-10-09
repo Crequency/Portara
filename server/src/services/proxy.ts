@@ -12,9 +12,20 @@ export interface Usage {
   totalTokens: number
 }
 
+/**
+ * 拼接上游地址。
+ *
+ * 容错：若 baseUrl 已经以该路径结尾，则不再重复拼接。
+ * 起因是真实误配 —— 用户在「逐模型 Base URL」里填了完整端点
+ * （https://api.commandcode.ai/provider/v1/messages），再拼一次 /messages
+ * 就变成 /messages/messages，而上游只会回一句令人困惑的报错。
+ *
+ * 语义上 Base URL 仍是**前缀**（推荐填到 /v1），这里只是不让误配变成天书。
+ */
 export function buildUpstreamUrl(baseUrl: string, restPath: string): string {
   const base = baseUrl.replace(/\/+$/, '')
   const rest = restPath.startsWith('/') ? restPath : `/${restPath}`
+  if (base.endsWith(rest)) return base
   return `${base}${rest}`
 }
 

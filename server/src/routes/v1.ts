@@ -17,10 +17,10 @@ import {
 } from '../services/proxy.js'
 import { checkRateLimit, quotaExceeded } from '../services/ratelimit.js'
 import {
-  AnthropicToOpenAiStream,
-  anthropicToOpenai,
-  openaiToAnthropic
-} from '../services/anthropic.js'
+  planUpstreamRequest,
+  translateAnthropicJson,
+  translateAnthropicStream
+} from '../services/relay.js'
 import {
   getChannelById,
   resolveBoundTarget,
@@ -200,9 +200,6 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
   const channel = pick.target.channel
   const upstreamModel = pick.target.upstreamModel
-  // 协议与地址可能被逐模型覆盖（混杂模式）
-  const protocol = pick.target.protocol
-  const upstreamBaseUrl = pick.target.baseUrl
   const logCtx = {
     ...baseLog,
     channelId: channel.id,
@@ -220,44 +217,33 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     }
   }
 
-  // ⑥ 组装发往上游的请求体
-  //
-  // 两处可能改写 body：
-  //   ① 命中模型映射 → 把网关受理的 model 换成上游真实 model
-  //   ② 流式且客户端未指定 stream_options → 补 include_usage
-  // 只有确实需要改写时才重新序列化，未命中映射的请求仍是原始字节直通。
+  // ⑥ 命中模型映射时，把网关受理的 model 改写成上游真实 model
   let outPayload: Record<string, unknown> | null = payload
-  let needsReserialize = false
-
   if (payload && upstreamModel && upstreamModel !== model) {
     outPayload = { ...payload, model: upstreamModel }
-    needsReserialize = true
   }
 
-  // ③ 上游说 Anthropic 协议 → 把 OpenAI 请求翻成 /messages 格式
-  let upstreamPath = restPath
-  if (protocol === 'anthropic') {
-    const translated = openaiToAnthropic(outPayload ?? {}, upstreamModel)
-    outPayload = translated.body
-    needsReserialize = true
-    upstreamPath = '/messages'
-    if (translated.warnings.length > 0) {
-      console.warn(
-        `[portara] OpenAI→Anthropic 翻译提示（${channel.name}）：${translated.warnings.join('；')}`
-      )
-    }
-  } else if (opts.scanUsage && streamFlag && outPayload) {
-    // 只有 OpenAI 协议才补 stream_options.include_usage
-    const patched = withStreamUsage(outPayload)
-    if (patched.injected) {
-      outPayload = patched.payload
-      needsReserialize = true
-    }
+  // ⑦ 规划上游请求：协议决定路径与请求体形态
+  //    （统一走 relay —— 此前网关与直连两条路径各写一遍，结果直连漏了协议处理）
+  const plan = planUpstreamRequest({
+    channel: channel as unknown as Parameters<typeof planUpstreamRequest>[0]['channel'],
+    upstreamModel,
+    restPath,
+    payload: outPayload,
+    rawBody: raw,
+    injectStreamUsage: opts.scanUsage,
+    // 命中映射时改写过 model —— 必须重新序列化，否则会把原始模型名发出去
+    payloadRewritten: upstreamModel !== model
+  })
+
+  if (plan.warnings.length > 0) {
+    console.warn(
+      `[portara] OpenAI→Anthropic 翻译提示（${channel.name}）：${plan.warnings.join('；')}`
+    )
   }
 
-  const bodyText = needsReserialize && outPayload ? JSON.stringify(outPayload) : raw || undefined
-
-  const url = buildUpstreamUrl(upstreamBaseUrl || channel.base_url, upstreamPath)
+  const url = plan.url
+  const protocol = plan.protocol
   // 客户端断开 或 上游超时 —— 任一触发都会取消上游请求（避免幽灵计费）
   const signal = AbortSignal.any([
     c.req.raw.signal,
@@ -277,7 +263,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           vendor: channel.vendor ?? 'generic'
         }
       ),
-      body: bodyText,
+      body: plan.bodyText,
       signal
     })
   } catch (err) {
@@ -312,45 +298,24 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   if (protocol === 'anthropic') {
     // 流式：逐事件翻译，原字节无法直通
     if (isStream && res.body) {
-      const translator = new AnthropicToOpenAiStream(model || upstreamModel)
-      const decoder = new TextDecoder()
-      let ttftMs: number | null = null
-
-      const stream = new ReadableStream<Uint8Array>({
-        start: async (controller) => {
-          const reader = res.body!.getReader()
-          const encoder = new TextEncoder()
-          try {
-            for (;;) {
-              const { done, value } = await reader.read()
-              if (done) break
-              if (ttftMs === null) ttftMs = Date.now() - startedAt
-              const text = translator.push(value)
-              if (text) controller.enqueue(encoder.encode(text))
-            }
-          } catch {
-            /* 中断交由 finally 记账 */
-          } finally {
-            const tail = translator.finish()
-            if (tail) controller.enqueue(new TextEncoder().encode(tail))
-            controller.close()
-
-            const usage = translator.usage
-            fireAndForgetLog({
-              ...logCtx,
-              statusCode: res.status,
-              promptTokens: usage.promptTokens,
-              completionTokens: usage.completionTokens,
-              totalTokens: usage.promptTokens + usage.completionTokens,
-              estimated: false,
-              latencyMs: Date.now() - startedAt,
-              ttftMs,
-              error: ''
-            })
-            void decoder
-          }
-        }
-      })
+      const stream = translateAnthropicStream(
+        res.body,
+        model || upstreamModel,
+        (usage, ttftMs) => {
+          fireAndForgetLog({
+            ...logCtx,
+            statusCode: res.status,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            estimated: false,
+            latencyMs: Date.now() - startedAt,
+            ttftMs,
+            error: ''
+          })
+        },
+        startedAt
+      )
 
       return new Response(stream, {
         status: res.status,
@@ -386,25 +351,21 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       })
     }
 
-    const translated = anthropicToOpenai(
-      parsed as Record<string, unknown>,
-      model || upstreamModel
-    )
-    const usage = translated.usage as Record<string, number>
+    const translated = translateAnthropicJson(text, model || upstreamModel)
 
     fireAndForgetLog({
       ...logCtx,
       statusCode: res.status,
-      promptTokens: usage.prompt_tokens ?? 0,
-      completionTokens: usage.completion_tokens ?? 0,
-      totalTokens: usage.total_tokens ?? 0,
+      promptTokens: translated.usage.promptTokens,
+      completionTokens: translated.usage.completionTokens,
+      totalTokens: translated.usage.totalTokens,
       estimated: false,
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
       error: ''
     })
 
-    return new Response(JSON.stringify(translated), {
+    return new Response(translated.body, {
       status: res.status,
       headers: {
         'content-type': 'application/json',

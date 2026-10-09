@@ -1717,6 +1717,52 @@ async function main() {
       assert.equal(lastAnthropicBody?.model, 'anthropic-model')
     )
 
+    // 直连渠道测试也必须按有效协议发请求
+    // （曾经的 bug：直连路径写死 /chat/completions，把 Anthropic 模型当 OpenAI 发出去）
+    lastAnthropicBody = null
+    const directAnth = await apiCall('POST', `/api/channels/${mixedId}/chat`, {
+      model: 'anthropic-model',
+      messages: [{ role: 'user', content: '直连' }]
+    })
+    check('直连测试对 Anthropic 模型改走 /messages', () => {
+      assert.equal(directAnth.status, 200)
+      assert.ok(lastAnthropicBody, '请求没有打到 /messages')
+      assert.equal(lastAnthropicBody.model, 'anthropic-model')
+      assert.ok(typeof lastAnthropicBody.max_tokens === 'number')
+    })
+    check('直连测试把 Anthropic 响应翻回 OpenAI 格式', () => {
+      assert.equal(directAnth.body?.object, 'chat.completion')
+      assert.equal(directAnth.body?.choices?.[0]?.message?.content, '你好，世界')
+      assert.equal(directAnth.body?.usage?.total_tokens, 18)
+    })
+
+    const directOpenai = await apiCall('POST', `/api/channels/${mixedId}/chat`, {
+      model: 'openai-model',
+      messages: [{ role: 'user', content: '直连' }]
+    })
+    check('直连测试对 OpenAI 模型仍走 OpenAI 路径', () => {
+      assert.equal(directOpenai.status, 200)
+      assert.equal(directOpenai.body?.received_model, 'openai-model')
+    })
+
+    // 逐模型 Base URL 填了完整端点也不能拼重复
+    await apiCall('PATCH', `/api/channels/${mixedId}`, {
+      modelOverrides: {
+        'anthropic-model': {
+          protocol: 'anthropic',
+          baseUrl: `${MOCK}/v1/messages`
+        }
+      }
+    })
+    const doubledCheck = await apiCall('POST', `/api/channels/${mixedId}/chat`, {
+      model: 'anthropic-model',
+      messages: [{ role: 'user', content: 'x' }]
+    })
+    check('Base URL 填成完整端点时不会拼出 /messages/messages', () => {
+      assert.equal(doubledCheck.status, 200, JSON.stringify(doubledCheck.body))
+      assert.equal(doubledCheck.body?.choices?.[0]?.message?.content, '你好，世界')
+    })
+
     const badOverride = await apiCall('PATCH', `/api/channels/${mixedId}`, {
       modelOverrides: { m: { baseUrl: 'ftp://bad' } }
     })

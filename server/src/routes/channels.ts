@@ -8,6 +8,12 @@ import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { fireAndForgetLog } from '../services/logger.js'
 import { extractUsage, SseUsageScanner } from '../services/proxy.js'
+import {
+  planUpstreamRequest,
+  translateAnthropicJson,
+  translateAnthropicStream,
+  type ChannelLike
+} from '../services/relay.js'
 import { buildModelsUrl, parseModelsResponse, type ModelInfo } from '../services/models.js'
 import {
   buildUpstreamHeaders,
@@ -510,11 +516,7 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     throw badRequest('请求体不是合法 JSON')
   }
 
-  let bodyText = raw
-  if (payload.stream === true) {
-    const patched = withStreamUsage(payload)
-    if (patched.injected) bodyText = JSON.stringify(patched.payload)
-  }
+  const model = typeof payload.model === 'string' ? payload.model : ''
 
   let upstreamKey = ''
   if (ch.api_key_cipher) {
@@ -525,19 +527,29 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     }
   }
 
-  const url = buildUpstreamUrl(ch.base_url, '/chat/completions')
-  const signal = AbortSignal.any([
-    c.req.raw.signal,
-    AbortSignal.timeout(ch.timeout_ms)
-  ])
-
-  const model = typeof payload.model === 'string' ? payload.model : ''
-
   /**
-   * 直连测试同样消耗上游额度、同样产生费用 —— **必须记账**。
-   * 用 source='playground' 与真实网关流量区分开（见迁移 006）。
-   * 连接失败也要记：否则「打了但没成功」这件事同样不可见。
+   * 直连测试同样要**按有效协议**发请求 —— 否则给 Anthropic 协议的模型发
+   * OpenAI 格式、打到 /chat/completions，上游只会回一句「该走 /messages」。
+   * 这里与网关路径共用同一个规划函数，两条路径不会再漂移。
    */
+  const plan = planUpstreamRequest({
+    channel: ch as unknown as ChannelLike,
+    upstreamModel: model,
+    restPath: '/chat/completions',
+    payload,
+    rawBody: raw,
+    injectStreamUsage: true
+  })
+
+  if (plan.warnings.length > 0) {
+    console.warn(
+      `[portara] 直连测试翻译提示（${ch.name}）：${plan.warnings.join('；')}`
+    )
+  }
+
+  const signal = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(ch.timeout_ms)])
+  const startedAt = Date.now()
+
   const baseLog = {
     apiKeyId: null,
     apiKeyName: '',
@@ -550,16 +562,15 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     source: 'playground'
   }
 
-  const startedAt = Date.now()
   let res: Response
   try {
-    res = await fetch(url, {
+    res = await fetch(plan.url, {
       method: 'POST',
       headers: buildUpstreamHeaders(upstreamKey, 'application/json', {
         extraHeaders: ch.extra_headers ?? {},
         vendor: ch.vendor
       }),
-      body: bodyText,
+      body: plan.bodyText,
       signal
     })
   } catch (err) {
@@ -583,9 +594,76 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
   }
 
   const contentType = res.headers.get('content-type') ?? 'application/json'
+  const isStream = contentType.includes('text/event-stream')
 
-  if (contentType.includes('text/event-stream') && res.body) {
-    // 流式：tee 出旁路扫描 usage，原字节照常下传
+  // ---- Anthropic 上游：响应要翻回 OpenAI 格式 ----
+  if (plan.protocol === 'anthropic') {
+    if (isStream && res.body) {
+      const stream = translateAnthropicStream(
+        res.body,
+        model,
+        (usage, ttftMs) => {
+          fireAndForgetLog({
+            ...baseLog,
+            statusCode: res.status,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            estimated: false,
+            latencyMs: Date.now() - startedAt,
+            ttftMs,
+            error: ''
+          })
+        },
+        startedAt
+      )
+      return new Response(stream, {
+        status: res.status,
+        headers: {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          'x-accel-buffering': 'no',
+          'x-portara-direct': ch.name,
+          'x-portara-protocol': 'anthropic'
+        }
+      })
+    }
+
+    const text = await res.text()
+    let body = text
+    let tokens = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+    if (res.ok) {
+      try {
+        const translated = translateAnthropicJson(text, model)
+        body = translated.body
+        tokens = translated.usage
+      } catch {
+        /* 解析失败就原样返回，错误由调用方看到 */
+      }
+    }
+
+    fireAndForgetLog({
+      ...baseLog,
+      statusCode: res.status,
+      ...tokens,
+      estimated: false,
+      latencyMs: Date.now() - startedAt,
+      ttftMs: null,
+      error: res.ok ? '' : text.slice(0, 300)
+    })
+
+    return new Response(body, {
+      status: res.status,
+      headers: {
+        'content-type': res.ok ? 'application/json' : contentType,
+        'x-portara-direct': ch.name,
+        'x-portara-protocol': 'anthropic'
+      }
+    })
+  }
+
+  // ---- OpenAI 上游：原样透传 ----
+  if (isStream && res.body) {
     const [clientStream, scanStream] = res.body.tee()
     const scanner = new SseUsageScanner()
     let ttftMs: number | null = null
