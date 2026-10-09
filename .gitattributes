@@ -1,0 +1,44 @@
+# 跨机协作（本机 Linux ↔ 主力机 Windows）行尾统一：仓库内一律 LF
+* text=auto eol=lf
+
+# 明确为文本的
+*.cs        text diff=csharp
+*.csproj    text
+*.slnx      text
+*.sln       text
+*.json      text
+*.yml       text
+*.yaml      text
+*.md        text
+*.ts        text
+*.vue       text
+*.rs        text
+*.go        text
+*.sql       text
+Dockerfile  text
+
+# 二进制，禁止行尾转换与 diff
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.dll       binary
+*.exe       binary
+*.so        binary
+
+# 锁文件：折叠 diff、避免合并噪音
+pnpm-lock.yaml  -diff linguist-generated=true
+package-lock.json -diff linguist-generated=true
+Cargo.lock      -diff linguist-generated=true
+go.sum          -diff linguist-generated=true
+
+# 生成物标记
+docs/generated/** linguist-generated=true

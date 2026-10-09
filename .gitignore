@@ -1,0 +1,91 @@
+# ---- 运行时不定的阶段，先同时覆盖各语言生态，D-002 裁定后删掉无关段 ----
+
+# .NET
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+artifacts/
+project.lock.json
+project.fragment.lock.json
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+TestResult.xml
+coverage*.json
+coverage*.xml
+coverage*.info
+*.binlog
+.vs/
+.localhistory/
+BenchmarkDotNet.Artifacts/
+healthchecksdb
+
+# Node / 前端控制台
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+.pnpm-store/
+coverage/
+*.tsbuildinfo
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# ---- IDE / 编辑器 ----
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.swp
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 机密与本地数据（切勿提交）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+appsettings.Local.json
+appsettings.*.Local.json
+
+# ---- 运行时产物 ----
+*.log
+logs/
+data/
+!src/**/data/
