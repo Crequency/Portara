@@ -12,6 +12,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api, ApiError, type ApiKey, type Channel, type User } from '../api'
 import PCheckbox from '../components/PCheckbox.vue'
+import PCombobox from '../components/PCombobox.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatCompact, formatLatency } from '../format'
 import { useI18n } from '../i18n'
@@ -375,12 +376,16 @@ onMounted(async () => {
 
         <div class="field">
           <label>
-            {{ t('chat.modelLabel') }} {{ loadingModels ? t('chat.modelLoading') : '' }}
+            {{ t('chat.modelLabel') }}
+            <span v-if="models.length" class="dim">（{{ models.length }}）</span>
+            {{ loadingModels ? t('chat.modelLoading') : '' }}
           </label>
-          <input v-model="model" list="model-options" :placeholder="t('chat.modelPlaceholder')" />
-          <datalist id="model-options">
-            <option v-for="m in models" :key="m" :value="m" />
-          </datalist>
+          <!-- 自绘 combobox：列出全部模型，且仍可手输任意模型名 -->
+          <PCombobox
+            v-model="model"
+            :options="models"
+            :placeholder="t('chat.modelPlaceholder')"
+          />
           <span v-if="models.length === 0 && !loadingModels" class="hint">
             {{ t('chat.noModels') }}
           </span>

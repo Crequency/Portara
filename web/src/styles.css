@@ -737,3 +737,51 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .group-body {
   margin-top: 8px;
 }
+
+/* 可输入下拉（combobox）：外观与 PSelect 一致，内部是输入框 */
+.pcombo-trigger {
+  padding: 0 8px 0 10px;
+  gap: 6px;
+  cursor: text;
+}
+
+.pcombo-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  box-shadow: none;
+}
+
+.pcombo-input:focus {
+  border: none;
+  box-shadow: none;
+}
+
+.pcombo-toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.pcombo-toggle:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+
+.psel-open .pcombo-toggle {
+  color: var(--accent);
+}
