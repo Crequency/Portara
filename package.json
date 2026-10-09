@@ -1,0 +1,25 @@
+{
+  "name": "portara",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portara — 企业级 AI API 网关",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "pnpm --filter @portara/server dev",
+    "dev:web": "pnpm --filter @portara/web dev",
+    "build": "pnpm --filter @portara/web build && pnpm --filter @portara/server build",
+    "start": "pnpm --filter @portara/server start",
+    "typecheck": "pnpm --filter @portara/server typecheck",
+    "test": "pnpm --filter @portara/server test",
+    "infra:up": "docker compose up -d postgres redis",
+    "infra:down": "docker compose down",
+    "app:up": "docker compose --profile app up -d --build",
+    "app:down": "docker compose --profile app down",
+    "smoke": "node scripts/smoke.mjs"
+  }
+}

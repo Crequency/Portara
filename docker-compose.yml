@@ -1,0 +1,80 @@
+# Portara — 开发与部署统一编排
+#
+#   开发（只起依赖，应用在宿主机跑 pnpm dev）：
+#     docker compose up -d postgres redis
+#
+#   部署（全栈容器化）：
+#     docker compose --profile app up -d --build
+#
+# 端口分配见决策记录 D-008（内部资料）；宿主机端口刻意避开既有容器占用
+# （55432 已被 other-project-pg 占用，故 PG 用 52744）。
+
+name: portara
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portara
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-portara}
+      POSTGRES_DB: portara
+    # 只绑回环，避免把数据库暴露到局域网
+    ports:
+      - "127.0.0.1:52744:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portara -d portara"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:52745:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  portara:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: portara:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORTARA_PORT: "52740"
+      PORTARA_HOST: "0.0.0.0"
+      DATABASE_URL: postgres://portara:${POSTGRES_PASSWORD:-portara}@postgres:5432/portara
+      REDIS_URL: redis://redis:6379
+      PORTARA_MASTER_KEY: ${PORTARA_MASTER_KEY:?生产部署必须设置 PORTARA_MASTER_KEY}
+      PORTARA_SESSION_SECRET: ${PORTARA_SESSION_SECRET:?生产部署必须设置 PORTARA_SESSION_SECRET}
+      PORTARA_ADMIN_USERNAME: ${PORTARA_ADMIN_USERNAME:-admin}
+      PORTARA_ADMIN_PASSWORD: ${PORTARA_ADMIN_PASSWORD:?必须设置初始管理员密码}
+      PORTARA_COOKIE_SECURE: ${PORTARA_COOKIE_SECURE:-false}
+    ports:
+      - "52740:52740"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:52740/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  pgdata:
+  redisdata:
