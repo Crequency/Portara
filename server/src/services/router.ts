@@ -1,6 +1,14 @@
 import { one, query } from '../db.js'
 import type { ChannelRow, ModelRouteRow } from '../types.js'
-import { pickChannel, pickRoute, type ChannelCandidate, type RouteTarget } from './routing.js'
+import {
+  pickChannel,
+  pickRoute,
+  resolveBaseUrl,
+  resolveProtocol,
+  type ChannelCandidate,
+  type EffectiveProtocol,
+  type RouteTarget
+} from './routing.js'
 
 export { pickChannel, pickRoute, normalizeWeight } from './routing.js'
 export type { ChannelCandidate, RouteTarget } from './routing.js'
@@ -14,6 +22,10 @@ export interface ResolvedTarget {
   channel: ChannelCandidate
   upstreamModel: string
   viaMapping: boolean
+  /** 实际使用的协议（由渠道默认与逐模型覆盖解析得出） */
+  protocol: EffectiveProtocol
+  /** 实际请求的 Base URL（逐模型覆盖优先） */
+  baseUrl: string
 }
 
 interface RouteJoin extends ModelRouteRow {
@@ -24,6 +36,8 @@ interface RouteJoin extends ModelRouteRow {
   c_vendor: string
   c_extra_headers: Record<string, string> | null
   c_timeout_ms: number
+  c_protocol: string
+  c_model_overrides: Record<string, { protocol?: string; baseUrl?: string }> | null
 }
 
 /** 别名映射查询：只取「映射启用 且 渠道启用」的目标 */
@@ -35,7 +49,9 @@ const ROUTE_SQL = `
          c.api_key_cipher  as c_api_key_cipher,
          c.vendor          as c_vendor,
          c.extra_headers   as c_extra_headers,
-         c.timeout_ms      as c_timeout_ms
+         c.timeout_ms      as c_timeout_ms,
+         c.protocol        as c_protocol,
+         c.model_overrides as c_model_overrides
     from model_routes r
     join channels c on c.id = r.channel_id
    where r.alias = $1
@@ -55,7 +71,24 @@ function toCandidate(row: RouteJoin): ChannelCandidate {
     timeout_ms: row.c_timeout_ms,
     status: row.c_status,
     vendor: row.c_vendor,
-    extra_headers: row.c_extra_headers ?? {}
+    extra_headers: row.c_extra_headers ?? {},
+    protocol: row.c_protocol,
+    model_overrides: row.c_model_overrides ?? {}
+  }
+}
+
+/** 由渠道 + 上游模型解析出协议与地址 */
+function targetOf(
+  channel: ChannelCandidate,
+  upstreamModel: string,
+  viaMapping: boolean
+): ResolvedTarget {
+  return {
+    channel,
+    upstreamModel,
+    viaMapping,
+    protocol: resolveProtocol(channel, upstreamModel),
+    baseUrl: resolveBaseUrl(channel, upstreamModel)
   }
 }
 
@@ -80,7 +113,7 @@ export async function resolveTarget(
       const picked = pickRoute(routes as unknown as RouteTarget[], round)
       if (picked) {
         const row = routes.find((r) => r.id === picked.id)!
-        return { channel: toCandidate(row), upstreamModel: row.upstream_model, viaMapping: true }
+        return targetOf(toCandidate(row), row.upstream_model, true)
       }
     }
   }
@@ -90,7 +123,7 @@ export async function resolveTarget(
   )
   const picked = pickChannel(channels as unknown as ChannelCandidate[], model, round)
   if (!picked) return null
-  return { channel: picked, upstreamModel: model, viaMapping: false }
+  return targetOf(picked, model, false)
 }
 
 /**
@@ -108,18 +141,10 @@ export async function resolveBoundTarget(
       [model, channel.id]
     )
     if (route) {
-      return {
-        channel: channel as unknown as ChannelCandidate,
-        upstreamModel: route.upstream_model,
-        viaMapping: true
-      }
+      return targetOf(channel as unknown as ChannelCandidate, route.upstream_model, true)
     }
   }
-  return {
-    channel: channel as unknown as ChannelCandidate,
-    upstreamModel: model,
-    viaMapping: false
-  }
+  return targetOf(channel as unknown as ChannelCandidate, model, false)
 }
 
 export async function getChannelById(id: string): Promise<ChannelRow | null> {

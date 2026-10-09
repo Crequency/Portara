@@ -17,6 +17,11 @@ import {
 } from '../services/proxy.js'
 import { checkRateLimit, quotaExceeded } from '../services/ratelimit.js'
 import {
+  AnthropicToOpenAiStream,
+  anthropicToOpenai,
+  openaiToAnthropic
+} from '../services/anthropic.js'
+import {
   getChannelById,
   resolveBoundTarget,
   resolveTarget,
@@ -195,6 +200,9 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
   const channel = pick.target.channel
   const upstreamModel = pick.target.upstreamModel
+  // 协议与地址可能被逐模型覆盖（混杂模式）
+  const protocol = pick.target.protocol
+  const upstreamBaseUrl = pick.target.baseUrl
   const logCtx = {
     ...baseLog,
     channelId: channel.id,
@@ -226,7 +234,20 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     needsReserialize = true
   }
 
-  if (opts.scanUsage && streamFlag && outPayload) {
+  // ③ 上游说 Anthropic 协议 → 把 OpenAI 请求翻成 /messages 格式
+  let upstreamPath = restPath
+  if (protocol === 'anthropic') {
+    const translated = openaiToAnthropic(outPayload ?? {}, upstreamModel)
+    outPayload = translated.body
+    needsReserialize = true
+    upstreamPath = '/messages'
+    if (translated.warnings.length > 0) {
+      console.warn(
+        `[portara] OpenAI→Anthropic 翻译提示（${channel.name}）：${translated.warnings.join('；')}`
+      )
+    }
+  } else if (opts.scanUsage && streamFlag && outPayload) {
+    // 只有 OpenAI 协议才补 stream_options.include_usage
     const patched = withStreamUsage(outPayload)
     if (patched.injected) {
       outPayload = patched.payload
@@ -236,7 +257,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
   const bodyText = needsReserialize && outPayload ? JSON.stringify(outPayload) : raw || undefined
 
-  const url = buildUpstreamUrl(channel.base_url, restPath)
+  const url = buildUpstreamUrl(upstreamBaseUrl || channel.base_url, upstreamPath)
   // 客户端断开 或 上游超时 —— 任一触发都会取消上游请求（避免幽灵计费）
   const signal = AbortSignal.any([
     c.req.raw.signal,
@@ -287,7 +308,113 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   const contentType = res.headers.get('content-type') ?? 'application/json'
   const isStream = contentType.includes('text/event-stream') || (streamFlag && res.ok)
 
-  // ⑦ 非流式：整体读回，解析 usage
+  // ⑦ Anthropic 上游：响应要翻回 OpenAI 格式（流式与非流式都是）
+  if (protocol === 'anthropic') {
+    // 流式：逐事件翻译，原字节无法直通
+    if (isStream && res.body) {
+      const translator = new AnthropicToOpenAiStream(model || upstreamModel)
+      const decoder = new TextDecoder()
+      let ttftMs: number | null = null
+
+      const stream = new ReadableStream<Uint8Array>({
+        start: async (controller) => {
+          const reader = res.body!.getReader()
+          const encoder = new TextEncoder()
+          try {
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              if (ttftMs === null) ttftMs = Date.now() - startedAt
+              const text = translator.push(value)
+              if (text) controller.enqueue(encoder.encode(text))
+            }
+          } catch {
+            /* 中断交由 finally 记账 */
+          } finally {
+            const tail = translator.finish()
+            if (tail) controller.enqueue(new TextEncoder().encode(tail))
+            controller.close()
+
+            const usage = translator.usage
+            fireAndForgetLog({
+              ...logCtx,
+              statusCode: res.status,
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.promptTokens + usage.completionTokens,
+              estimated: false,
+              latencyMs: Date.now() - startedAt,
+              ttftMs,
+              error: ''
+            })
+            void decoder
+          }
+        }
+      })
+
+      return new Response(stream, {
+        status: res.status,
+        headers: {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          'x-accel-buffering': 'no',
+          'x-portara-channel': channel.name,
+          'x-portara-protocol': 'anthropic'
+        }
+      })
+    }
+
+    // 非流式：解析 Anthropic 响应 → 翻成 OpenAI 响应
+    const text = await res.text()
+    const parsed = parseJsonSafe(text)
+
+    if (!res.ok || !parsed || typeof parsed !== 'object') {
+      fireAndForgetLog({
+        ...logCtx,
+        statusCode: res.status,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        estimated: false,
+        latencyMs: Date.now() - startedAt,
+        ttftMs: null,
+        error: text.slice(0, 300)
+      })
+      return new Response(text, {
+        status: res.status,
+        headers: { 'content-type': contentType, 'x-portara-protocol': 'anthropic' }
+      })
+    }
+
+    const translated = anthropicToOpenai(
+      parsed as Record<string, unknown>,
+      model || upstreamModel
+    )
+    const usage = translated.usage as Record<string, number>
+
+    fireAndForgetLog({
+      ...logCtx,
+      statusCode: res.status,
+      promptTokens: usage.prompt_tokens ?? 0,
+      completionTokens: usage.completion_tokens ?? 0,
+      totalTokens: usage.total_tokens ?? 0,
+      estimated: false,
+      latencyMs: Date.now() - startedAt,
+      ttftMs: null,
+      error: ''
+    })
+
+    return new Response(JSON.stringify(translated), {
+      status: res.status,
+      headers: {
+        'content-type': 'application/json',
+        'x-portara-channel': channel.name,
+        'x-portara-protocol': 'anthropic'
+      }
+    })
+  }
+
+  // ⑧ 非流式：整体读回，解析 usage
   if (!isStream) {
     const text = await res.text()
     const parsed = opts.scanUsage ? parseJsonSafe(text) : null
@@ -314,7 +441,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     })
   }
 
-  // ⑧ 流式：tee 出两条支路 —— 一条原样下传，一条旁路扫描 usage
+  // ⑨ 流式：tee 出两条支路 —— 一条原样下传，一条旁路扫描 usage
   const upstreamBody = res.body
   if (!upstreamBody) {
     return openaiError(c, 502, '上游返回了空的流式响应', 'api_error', 'empty_stream')
@@ -420,6 +547,16 @@ function decorateModel(
 v1Routes.get('/models', async (c) => {
   const key = c.get('apiKey') as ApiKeyRow
 
+  /**
+   * filter 取值：
+   *   all（默认）  映射别名 + 渠道声明的模型
+   *   mirror-only  只看**映射后**的模型 id（网关对外受理的那套）
+   *   origin-only  只看**渠道本身**声明的模型 id（上游原生那套）
+   */
+  const filterRaw = c.req.query('filter') ?? 'all'
+  const filter =
+    filterRaw === 'mirror-only' || filterRaw === 'origin-only' ? filterRaw : 'all'
+
   const channels = await query<ChannelRow>(
     `select * from channels where status = 'active' order by priority asc, name asc`
   )
@@ -441,30 +578,51 @@ v1Routes.get('/models', async (c) => {
       order by r.alias asc, r.priority asc, r.id asc`
   )
 
-  const entries = new Map<string, { owner: string; meta: unknown }>()
+  // 同一个 id 可能既是别名又是渠道声明的模型 —— 用集合记下它同时属于哪几类
+  const entries = new Map<
+    string,
+    { owner: string; meta: unknown; kinds: Set<'mirror' | 'origin'> }
+  >()
 
   for (const row of aliasRows) {
-    if (entries.has(row.alias)) continue
+    const existing = entries.get(row.alias)
     const meta = metaByChannel.get(row.channel_id)?.[row.upstream_model]
-    entries.set(row.alias, { owner: 'portara/mapping', meta })
+    if (existing) {
+      existing.kinds.add('mirror')
+      continue
+    }
+    entries.set(row.alias, {
+      owner: 'portara/mapping',
+      meta,
+      kinds: new Set(['mirror'])
+    })
   }
 
   for (const ch of channels) {
     for (const m of ch.models) {
-      if (entries.has(m)) continue
+      const existing = entries.get(m)
+      if (existing) {
+        existing.kinds.add('origin')
+        continue
+      }
       entries.set(m, {
         owner: `portara/${ch.name}`,
-        meta: (ch.models_meta ?? {})[m]
+        meta: (ch.models_meta ?? {})[m],
+        kinds: new Set(['origin'])
       })
     }
   }
 
-  const allowed = [...entries.entries()].filter(
-    ([id]) => key.model_allow.length === 0 || key.model_allow.includes(id)
-  )
+  const allowed = [...entries.entries()].filter(([id, info]) => {
+    if (key.model_allow.length > 0 && !key.model_allow.includes(id)) return false
+    if (filter === 'mirror-only') return info.kinds.has('mirror')
+    if (filter === 'origin-only') return info.kinds.has('origin')
+    return true
+  })
 
   return c.json({
     object: 'list',
+    filter,
     data: allowed.map(([id, info]) => decorateModel(id, info.owner, info.meta))
   })
 })

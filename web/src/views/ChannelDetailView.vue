@@ -12,6 +12,7 @@ import {
   type Channel,
   type ChannelTestResult,
   type ModelMeta,
+  type ModelOverride,
   type ModelRoute,
   type RangePreset,
   type RequestLog,
@@ -72,11 +73,19 @@ const modelRows = computed(() => {
   const ch = channel.value
   if (!ch) return []
   const meta = (ch.modelsMeta ?? {}) as Record<string, ModelMeta>
-  return ch.models.map((id) => ({
-    id,
-    meta: meta[id] ?? null,
-    aliases: aliasByModel.value.get(id) ?? []
-  }))
+  return ch.models.map((id) => {
+    const override = (ch.modelOverrides ?? {})[id]
+    return {
+      id,
+      meta: meta[id] ?? null,
+      aliases: aliasByModel.value.get(id) ?? [],
+      override: override ?? null,
+      // 有效协议：逐模型覆盖优先，其次渠道默认；混杂模式下未覆盖的按 openai
+      protocol:
+        override?.protocol ??
+        (ch.protocol === 'anthropic' ? 'anthropic' : 'openai')
+    }
+  })
 })
 
 const headerEntries = computed(() => Object.entries(channel.value?.extraHeaders ?? {}))
@@ -168,6 +177,83 @@ async function copyText(text: string): Promise<void> {
     toast.success(t('toast.copied'))
   } catch {
     toast.error(t('toast.copyFailed'))
+  }
+}
+
+// ---------------------------------------------------------------- 批量覆盖
+
+const overrideOpen = ref(false)
+const overrideSelected = ref<string[]>([])
+const overrideSearch = ref('')
+const overrideProtocol = ref<'' | 'openai' | 'anthropic'>('')
+const overrideBaseUrl = ref('')
+const overrideClear = ref(false)
+const savingOverride = ref(false)
+
+const overrideProtocolOptions = computed(() => [
+  { value: '', label: t('channelDetail.overrideInherit') },
+  { value: 'openai', label: t('channels.protocolOpenai') },
+  { value: 'anthropic', label: t('channels.protocolAnthropic') }
+])
+
+const overrideCandidates = computed(() => {
+  const q = overrideSearch.value.trim().toLowerCase()
+  return q ? modelRows.value.filter((m) => m.id.toLowerCase().includes(q)) : modelRows.value
+})
+
+function openOverride(): void {
+  overrideSelected.value = []
+  overrideSearch.value = ''
+  overrideProtocol.value = ''
+  overrideBaseUrl.value = ''
+  overrideClear.value = false
+  overrideOpen.value = true
+}
+
+function toggleOverrideModel(id: string): void {
+  const i = overrideSelected.value.indexOf(id)
+  if (i >= 0) overrideSelected.value.splice(i, 1)
+  else overrideSelected.value.push(id)
+}
+
+function selectAllOverride(): void {
+  overrideSelected.value = [...new Set([...overrideSelected.value, ...overrideCandidates.value.map((m) => m.id)])]
+}
+
+async function saveOverride(): Promise<void> {
+  const ch = channel.value
+  if (!ch) return
+  if (overrideSelected.value.length === 0) {
+    toast.error(t('channelDetail.selectModelsFirst'))
+    return
+  }
+
+  savingOverride.value = true
+  try {
+    const next: Record<string, ModelOverride> = { ...(ch.modelOverrides ?? {}) }
+
+    for (const id of overrideSelected.value) {
+      if (overrideClear.value) {
+        delete next[id]
+        continue
+      }
+      const current = next[id] ?? {}
+      const updated: ModelOverride = { ...current }
+      if (overrideProtocol.value) updated.protocol = overrideProtocol.value
+      if (overrideBaseUrl.value.trim()) updated.baseUrl = overrideBaseUrl.value.trim()
+      // 覆盖里什么都没设且原本没有 → 不必留下空对象
+      if (Object.keys(updated).length === 0) delete next[id]
+      else next[id] = updated
+    }
+
+    await api.patch('/api/channels/' + ch.id, { modelOverrides: next })
+    toast.success(t('channelDetail.overrideSaved', { n: overrideSelected.value.length }))
+    overrideOpen.value = false
+    await loadChannel()
+  } catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('channelDetail.overrideFailed'))
+  } finally {
+    savingOverride.value = false
   }
 }
 
@@ -325,7 +411,12 @@ onMounted(loadChannel)
         <div class="card-title">
           {{ t('channelDetail.models') }} · {{ t('channelDetail.modelsCount', { n: modelRows.length }) }}
         </div>
-        <span class="dim" style="font-size: 12px">{{ t('channels.modelsMetaHint') }}</span>
+        <div class="row">
+          <span class="dim" style="font-size: 12px">{{ t('channels.modelsMetaHint') }}</span>
+          <button v-if="isAdmin()" class="btn btn-sm" @click="openOverride">
+            {{ t('channelDetail.batchOverride') }}
+          </button>
+        </div>
       </div>
 
       <div v-if="modelRows.length === 0" class="empty">{{ t('channelDetail.noModels') }}</div>
@@ -334,6 +425,7 @@ onMounted(loadChannel)
           <thead>
             <tr>
               <th>{{ t('channelDetail.modelId') }}</th>
+              <th>{{ t('channelDetail.modelProtocol') }}</th>
               <th>{{ t('channelDetail.ctxLength') }}</th>
               <th>{{ t('channelDetail.maxOutput') }}</th>
               <th>{{ t('channelDetail.ownedBy') }}</th>
@@ -343,6 +435,22 @@ onMounted(loadChannel)
           <tbody>
             <tr v-for="m in modelRows" :key="m.id">
               <td class="mono">{{ m.id }}</td>
+              <td class="nowrap">
+                <span
+                  class="tag"
+                  :style="m.protocol === 'anthropic' ? 'color: var(--accent)' : ''"
+                >
+                  {{ m.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI' }}
+                </span>
+                <span
+                  v-if="m.override"
+                  class="tag"
+                  style="color: var(--warn); margin-left: 4px"
+                  :title="m.override.baseUrl ?? ''"
+                >
+                  {{ t('channelDetail.overridden') }}
+                </span>
+              </td>
               <td class="nowrap">
                 {{ m.meta?.contextLength ? m.meta.contextLength.toLocaleString('en-US') : '—' }}
               </td>
@@ -442,6 +550,72 @@ onMounted(loadChannel)
       </div>
     </div>
   </div>
+
+  <Modal
+    v-if="overrideOpen && channel"
+    :title="t('channelDetail.overrideTitle')"
+    wide
+    @close="overrideOpen = false"
+  >
+    <div class="alert alert-info">{{ t('channelDetail.overrideSub') }}</div>
+
+    <div class="form-grid">
+      <div class="field">
+        <div class="row-between">
+          <label>
+            {{ t('chat.batchSelectModels') }} · {{ t('chat.batchSelected', { n: overrideSelected.length }) }}
+          </label>
+          <div class="row">
+            <button class="btn btn-sm" @click="selectAllOverride">{{ t('chat.batchSelectAll') }}</button>
+            <button class="btn btn-sm" @click="overrideSelected = []">{{ t('chat.batchClear') }}</button>
+          </div>
+        </div>
+        <input v-model="overrideSearch" :placeholder="t('chat.batchSearch')" />
+        <div class="batch-pick">
+          <div
+            v-for="m in overrideCandidates"
+            :key="m.id"
+            class="batch-pick-item"
+            :class="{ on: overrideSelected.includes(m.id) }"
+            @click="toggleOverrideModel(m.id)"
+          >
+            <span class="batch-pick-box">
+              <svg v-if="overrideSelected.includes(m.id)" width="10" height="10" viewBox="0 0 12 12">
+                <path d="M2 6.4 4.6 9 10 3.4" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+            <span class="mono">{{ m.id }}</span>
+            <span class="spacer" />
+            <span class="tag">{{ m.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="field">
+          <label>{{ t('channelDetail.overrideProtocol') }}</label>
+          <PSelect v-model="overrideProtocol" :options="overrideProtocolOptions" />
+        </div>
+        <div class="field">
+          <label>{{ t('channelDetail.overrideBaseUrl') }}</label>
+          <input v-model="overrideBaseUrl" placeholder="https://api.anthropic.com/v1" />
+        </div>
+      </div>
+
+      <label class="row" style="gap: 8px; cursor: pointer">
+        <input v-model="overrideClear" type="checkbox" style="width: auto" />
+        <span>{{ t('channelDetail.overrideClear') }}</span>
+      </label>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn" @click="overrideOpen = false">{{ t('common.cancel') }}</button>
+      <button class="btn btn-primary" :disabled="savingOverride" @click="saveOverride">
+        {{ savingOverride ? t('common.saving') : t('common.save') }}
+      </button>
+    </div>
+  </Modal>
 
   <Modal
     v-if="revealOpen && channel"

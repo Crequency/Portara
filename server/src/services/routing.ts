@@ -22,6 +22,39 @@ export interface ChannelCandidate {
   vendor?: string
   /** 渠道自定义固定请求头 */
   extra_headers?: Record<string, string>
+  /** 渠道默认协议：openai | anthropic | mixed */
+  protocol?: string
+  /** 逐模型覆盖：协议与 Base URL */
+  model_overrides?: Record<string, { protocol?: string; baseUrl?: string }>
+}
+
+export type EffectiveProtocol = 'openai' | 'anthropic'
+
+/**
+ * 解析某个模型实际使用的协议。
+ *
+ * 优先级：逐模型覆盖 > 渠道默认协议。
+ * 渠道协议为 'mixed' 时，未覆盖的模型按 openai 处理（明确且可预期）。
+ */
+export function resolveProtocol(
+  channel: { protocol?: string; model_overrides?: Record<string, { protocol?: string }> },
+  upstreamModel: string
+): EffectiveProtocol {
+  const override = channel.model_overrides?.[upstreamModel]?.protocol
+  if (override === 'anthropic') return 'anthropic'
+  if (override === 'openai') return 'openai'
+  if (channel.protocol === 'anthropic') return 'anthropic'
+  return 'openai'
+}
+
+/** 解析某个模型实际请求的 Base URL（逐模型覆盖优先） */
+export function resolveBaseUrl(
+  channel: { base_url?: string; baseUrl?: string; model_overrides?: Record<string, { baseUrl?: string }> },
+  upstreamModel: string
+): string {
+  const override = channel.model_overrides?.[upstreamModel]?.baseUrl
+  if (typeof override === 'string' && override.trim().length > 0) return override.trim()
+  return channel.base_url ?? channel.baseUrl ?? ''
 }
 
 export function normalizeWeight(w: number): number {

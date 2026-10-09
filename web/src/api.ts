@@ -67,6 +67,7 @@ export interface Channel {
   extraHeaders: Record<string, string>
   modelsPath: string
   modelsMeta: Record<string, ModelMeta>
+  modelOverrides: Record<string, ModelOverride>
   baseUrl: string
   apiKeyMasked: string
   hasApiKey: boolean
@@ -80,6 +81,12 @@ export interface Channel {
   lastTestAt: string | null
   lastTestOk: boolean | null
   createdAt: string
+}
+
+/** 逐模型覆盖：协议与 Base URL */
+export interface ModelOverride {
+  protocol?: 'openai' | 'anthropic'
+  baseUrl?: string
 }
 
 /** /models 抓取到的模型信息 */

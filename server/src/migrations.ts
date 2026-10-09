@@ -204,5 +204,23 @@ export const migrations: { id: string; sql: string }[] = [
          and alias <> upstream_model
          and alias like '%/' || upstream_model;
     `
+  },
+  {
+    id: '009_channel_model_overrides',
+    sql: `
+      -- 逐模型的协议与 Base URL 覆盖。
+      --
+      -- 用途：同一渠道下不同模型可能说不同协议（例如 CommandCode 的模型列表里
+      -- 既有 OpenAI 协议的也有 Anthropic 协议的），此时渠道 protocol 设为 'mixed'，
+      -- 每个模型的实际协议与地址由此处覆盖决定。
+      --
+      -- 形如：{ "<上游模型 id>": { "protocol": "anthropic", "baseUrl": "https://..." } }
+      --
+      -- 与 models_meta 分开存是刻意的：
+      --   models_meta 是**从上游抓来的**元信息（重新抓取会整体替换）
+      --   model_overrides 是**用户配的**覆盖（不能被抓取冲掉）
+      -- 两者生命周期不同，混在一起必然丢配置。
+      alter table channels add column if not exists model_overrides jsonb not null default '{}'::jsonb;
+    `
   }
 ]

@@ -166,37 +166,102 @@ channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
   return c.json(result)
 })
 
-const createSchema = z.object({
-  name: z.string().min(1, '名称不能为空').max(64),
+/**
+ * 渠道字段的**形状**（不带默认值）。
+ *
+ * 关键：默认值不能写进 schema —— `createSchema.partial()` 会保留内层 `default()`，
+ * 导致「只传部分字段」的 PATCH 把其余字段统统重置成默认值
+ * （实测：PATCH {name} 会把 models 清空、protocol 重置为 openai）。
+ * 因此这里只定义形状，默认值在**创建路径**上显式补（withCreateDefaults）。
+ */
+const channelShape = {
+  name: z
+    .string()
+    .min(1, '名称不能为空')
+    .max(64),
   baseUrl: httpUrl,
-  protocol: z.enum(['openai']).default('openai'),
-  vendor: z.string().default('generic'),
-  extraHeaders: z.record(z.string(), z.string()).default({}),
+  /** openai / anthropic / mixed（混杂：逐模型决定协议） */
+  protocol: z.enum(['openai', 'anthropic', 'mixed']),
+  vendor: z.string(),
+  extraHeaders: z.record(z.string(), z.string()),
   /** 模型列表 API 路径；默认 /models 即 OpenAI 协议约定 */
-  modelsPath: z.string().max(200).default('/models'),
+  modelsPath: z.string().max(200),
   /** 模型元信息（上下文长度等），键为模型 id */
-  modelsMeta: z.record(z.string(), z.unknown()).default({}),
-  apiKey: z.string().default(''),
-  models: z.array(z.string().min(1)).default([]),
-  priority: z.coerce.number().int().min(1).max(9999).default(100),
-  weight: z.coerce.number().int().min(1).max(1000).default(1),
-  timeoutMs: z.coerce.number().int().min(1000).max(600000).default(120000),
-  status: z.enum(['active', 'disabled']).default('active'),
-  note: z.string().max(500).default('')
-})
+  modelsMeta: z.record(z.string(), z.unknown()),
+  /** 逐模型的协议 / Base URL 覆盖（混杂模式用） */
+  modelOverrides: z.record(
+    z.string(),
+    z.object({
+      protocol: z.enum(['openai', 'anthropic']).optional(),
+      baseUrl: z.string().max(500).optional()
+    })
+  ),
+  apiKey: z.string(),
+  models: z.array(z.string().min(1)),
+  priority: z.coerce.number().int().min(1).max(9999),
+  weight: z.coerce.number().int().min(1).max(1000),
+  timeoutMs: z.coerce.number().int().min(1000).max(600000),
+  status: z.enum(['active', 'disabled']),
+  note: z.string().max(500)
+}
 
-const updateSchema = createSchema.partial().extend({
-  clearApiKey: z.boolean().optional()
-})
+/** 创建：name / baseUrl 必填，其余可选（默认值在 withCreateDefaults 里补） */
+const createSchema = z
+  .object(channelShape)
+  .partial()
+  .extend({ name: channelShape.name, baseUrl: channelShape.baseUrl })
 
-/** 校验厂商标识与固定请求头；非法项直接 400，不静默丢弃 */
-function validateChannelInput(input: { vendor?: string; extraHeaders?: Record<string, string> }) {
+/** 更新：全部可选，**任何未传字段都保持不变** */
+const updateSchema = z
+  .object(channelShape)
+  .partial()
+  .extend({ clearApiKey: z.boolean().optional() })
+
+type CreateInput = z.infer<typeof createSchema>
+
+/** 只在创建路径上补默认值 */
+function withCreateDefaults(b: CreateInput) {
+  return {
+    name: b.name,
+    baseUrl: b.baseUrl,
+    protocol: b.protocol ?? 'openai',
+    vendor: b.vendor ?? 'generic',
+    extraHeaders: b.extraHeaders ?? {},
+    modelsPath: b.modelsPath ?? '/models',
+    modelsMeta: b.modelsMeta ?? {},
+    modelOverrides: b.modelOverrides ?? {},
+    apiKey: b.apiKey ?? '',
+    models: b.models ?? [],
+    priority: b.priority ?? 100,
+    weight: b.weight ?? 1,
+    timeoutMs: b.timeoutMs ?? 120000,
+    status: b.status ?? 'active',
+    note: b.note ?? ''
+  }
+}
+
+/** 校验厂商标识、固定请求头与逐模型覆盖；非法项直接 400，不静默丢弃 */
+function validateChannelInput(input: {
+  vendor?: string
+  extraHeaders?: Record<string, string>
+  modelOverrides?: Record<string, { protocol?: string; baseUrl?: string }>
+}) {
   if (input.vendor !== undefined && !isVendorPreset(input.vendor)) {
     throw badRequest(`不支持的厂商兼容选项：${input.vendor}`)
   }
   if (input.extraHeaders !== undefined) {
     const { errors } = sanitizeExtraHeaders(input.extraHeaders)
     if (errors.length > 0) throw badRequest('固定请求头有问题', { issues: errors })
+  }
+  if (input.modelOverrides !== undefined) {
+    const issues: string[] = []
+    for (const [model, ov] of Object.entries(input.modelOverrides)) {
+      if (!model.trim()) issues.push('覆盖里的模型 id 不能为空')
+      if (ov.baseUrl && !/^https?:\/\//i.test(ov.baseUrl)) {
+        issues.push(`模型「${model}」的 Base URL 必须以 http:// 或 https:// 开头`)
+      }
+    }
+    if (issues.length > 0) throw badRequest('模型覆盖配置有问题', { issues })
   }
 }
 
@@ -225,8 +290,9 @@ channelRoutes.get('/:id', async (c) => {
 })
 
 channelRoutes.post('/', requireAdmin, async (c) => {
-  const body = await parseJson(c, createSchema)
-  validateChannelInput(body)
+  const raw = await parseJson(c, createSchema)
+  validateChannelInput(raw)
+  const body = withCreateDefaults(raw)
 
   const exists = await one('select id from channels where name = $1', [body.name])
   if (exists) throw badRequest('渠道名称已存在')
@@ -239,8 +305,8 @@ channelRoutes.post('/', requireAdmin, async (c) => {
   const row = await one<ChannelRow>(
     `insert into channels
        (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
-        api_key_cipher, models, priority, weight, timeout_ms, status, note)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *`,
+        model_overrides, api_key_cipher, models, priority, weight, timeout_ms, status, note)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
     [
       body.name,
       body.baseUrl,
@@ -249,6 +315,7 @@ channelRoutes.post('/', requireAdmin, async (c) => {
       JSON.stringify(extraHeaders),
       body.modelsPath,
       JSON.stringify(body.modelsMeta),
+      JSON.stringify(body.modelOverrides),
       cipher,
       body.models,
       body.priority,
@@ -295,13 +362,14 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        extra_headers  = $6,
        models_path    = coalesce($7, models_path),
        models_meta    = coalesce($8, models_meta),
-       api_key_cipher = $9,
-       models         = coalesce($10, models),
-       priority       = coalesce($11, priority),
-       weight         = coalesce($12, weight),
-       timeout_ms     = coalesce($13, timeout_ms),
-       status         = coalesce($14, status),
-       note           = coalesce($15, note),
+       model_overrides = coalesce($9, model_overrides),
+       api_key_cipher = $10,
+       models         = coalesce($11, models),
+       priority       = coalesce($12, priority),
+       weight         = coalesce($13, weight),
+       timeout_ms     = coalesce($14, timeout_ms),
+       status         = coalesce($15, status),
+       note           = coalesce($16, note),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -314,6 +382,7 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       JSON.stringify(extraHeaders),
       body.modelsPath ?? null,
       body.modelsMeta === undefined ? null : JSON.stringify(body.modelsMeta),
+      body.modelOverrides === undefined ? null : JSON.stringify(body.modelOverrides),
       cipher,
       body.models ?? null,
       body.priority ?? null,

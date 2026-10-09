@@ -77,6 +77,8 @@ const MOCK_USAGE = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }
 
 /** 伪上游记录的最近一次 chat 请求头，用于断言厂商兼容头确实发出去了 */
 let lastUpstreamHeaders = {}
+/** 最近一次 Anthropic /messages 请求体（用于验证翻译是否真的发生） */
+let lastAnthropicBody = null
 
 function startMockUpstream() {
   const server = createServer((req, res) => {
@@ -119,6 +121,56 @@ function startMockUpstream() {
                     context_window: 200000
                   }
                 ]
+          })
+        )
+        return
+      }
+
+      // ---- Anthropic 协议（/messages）----
+      if (url.endsWith('/messages')) {
+        let body = {}
+        try {
+          body = JSON.parse(raw)
+        } catch {
+          /* 忽略 */
+        }
+        lastAnthropicBody = body
+        lastUpstreamHeaders = { ...req.headers }
+
+        const id = `msg_${RUN}`
+        const usage = { input_tokens: 11, output_tokens: 7 }
+
+        if (body.stream === true) {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache'
+          })
+          const events = [
+            ['message_start', { type: 'message_start', message: { id, model: body.model, usage: { input_tokens: 11, output_tokens: 0 } } }],
+            ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+            ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '你好' } }],
+            ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '，世界' } }],
+            ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+            ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 7 } }],
+            ['message_stop', { type: 'message_stop' }]
+          ]
+          for (const [ev, payload] of events) {
+            res.write(`event: ${ev}\ndata: ${JSON.stringify(payload)}\n\n`)
+          }
+          res.end()
+          return
+        }
+
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            id,
+            type: 'message',
+            role: 'assistant',
+            model: body.model,
+            content: [{ type: 'text', text: '你好，世界' }],
+            stop_reason: 'end_turn',
+            usage
           })
         )
         return
@@ -736,6 +788,28 @@ async function main() {
     check('列表绝不返回完整密钥', () =>
       assert.ok(!operatorList.text.includes(keyFull))
     )
+
+    // ---- 回归：partial PATCH 不得重置未传字段 ----
+    //
+    // 曾经的 bug：updateSchema = createSchema.partial() 会**保留内层 default()**，
+    // 于是 PATCH {note} 会把 models 清空、protocol 重置为 openai、priority 归 100。
+    // 修法是把默认值移出 schema，只在创建路径显式补。
+    const beforePatch = await apiCall('GET', `/api/channels/${channelId}`)
+    const partialPatch = await apiCall('PATCH', `/api/channels/${channelId}`, {
+      note: '只改备注'
+    })
+    check('部分字段 PATCH 不会重置其他字段', () => {
+      const after = partialPatch.body?.channel
+      const before = beforePatch.body?.channel
+      assert.equal(after.note, '只改备注')
+      assert.equal(after.protocol, before.protocol, 'protocol 被重置')
+      assert.deepEqual(after.models, before.models, 'models 被重置')
+      assert.equal(after.priority, before.priority, 'priority 被重置')
+      assert.equal(after.modelsPath, before.modelsPath, 'modelsPath 被重置')
+      assert.equal(after.timeoutMs, before.timeoutMs, 'timeoutMs 被重置')
+      assert.deepEqual(after.extraHeaders, before.extraHeaders, 'extraHeaders 被重置')
+    })
+    await apiCall('PATCH', `/api/channels/${channelId}`, { note: '' })
 
     // ---- 上游渠道密钥的查看：同一套安全约束 ----
     const channelReveal = await apiCall('GET', `/api/channels/${channelId}/reveal`)
@@ -1500,8 +1574,223 @@ async function main() {
       )
     })
 
+    // ---------------------------------------------------------- Anthropic 协议
+    section('㉓ Anthropic 协议代理与混杂模式')
+
+    // 纯 Anthropic 渠道
+    const anthChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-anthropic-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      protocol: 'anthropic',
+      models: ['claude-test'],
+      priority: 10
+    })
+    check('可创建 Anthropic 协议渠道', () => {
+      assert.equal(anthChannel.status, 201)
+      assert.equal(anthChannel.body.channel.protocol, 'anthropic')
+    })
+    const anthChannelId = anthChannel.body.channel.id
+    await apiCall('POST', '/api/model-routes', {
+      alias: `anth-${RUN}`,
+      targets: [{ channelId: anthChannelId, upstreamModel: 'claude-test', priority: 10, weight: 1 }]
+    })
+
+    const anthCall = await proxyCall(
+      '/v1/chat/completions',
+      { model: `anth-${RUN}`, messages: [{ role: 'user', content: '你好' }] },
+      mapKey
+    )
+    check('Anthropic 渠道可经网关调用（返回 OpenAI 格式）', () => {
+      assert.equal(anthCall.status, 200)
+      assert.equal(anthCall.body?.object, 'chat.completion')
+      assert.equal(anthCall.body?.choices?.[0]?.message?.content, '你好，世界')
+    })
+    check('usage 从 Anthropic 字段正确换算', () => {
+      assert.deepEqual(anthCall.body?.usage, {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18
+      })
+    })
+    check('回给调用方的模型名是请求时的别名', () =>
+      assert.equal(anthCall.body?.model, `anth-${RUN}`)
+    )
+    check('响应头标明上游协议', () =>
+      assert.equal(anthCall.headers.get('x-portara-protocol'), 'anthropic')
+    )
+
+    check('上游收到的确实是 Anthropic 格式请求', () => {
+      assert.ok(lastAnthropicBody, '未捕获到 /messages 请求')
+      assert.equal(lastAnthropicBody.model, 'claude-test')
+      assert.ok(Array.isArray(lastAnthropicBody.messages), '缺少 Anthropic messages')
+      assert.ok(typeof lastAnthropicBody.max_tokens === 'number', 'Anthropic 要求 max_tokens')
+      assert.equal(lastAnthropicBody.stream_options, undefined, '不应带 OpenAI 的 stream_options')
+    })
+    check('未给 max_tokens 时自动补默认值', () =>
+      assert.equal(lastAnthropicBody.max_tokens, 4096)
+    )
+
+    // 流式翻译
+    const anthStream = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${mapKey}` },
+      body: JSON.stringify({
+        model: `anth-${RUN}`,
+        stream: true,
+        messages: [{ role: 'user', content: '你好' }]
+      })
+    })
+    const anthStreamText = await anthStream.text()
+    check('Anthropic 流式被翻成 OpenAI SSE', () => {
+      assert.equal(anthStream.status, 200)
+      assert.ok(anthStreamText.includes('chat.completion.chunk'), '不是 OpenAI chunk 格式')
+      assert.ok(anthStreamText.includes('你好'), '缺少文本增量')
+      assert.ok(anthStreamText.includes('"finish_reason":"stop"'), '缺少收尾')
+      assert.ok(anthStreamText.includes('"usage"'), '缺少 usage chunk')
+      assert.ok(anthStreamText.includes('[DONE]'), '缺少 [DONE]')
+    })
+    check('流式不会泄漏 Anthropic 的事件名', () => {
+      assert.ok(!anthStreamText.includes('content_block_delta'), '泄漏了 Anthropic 事件')
+      assert.ok(!anthStreamText.includes('message_start'), '泄漏了 Anthropic 事件')
+    })
+
+    await sleep(700)
+    const anthLogs = await apiCall('GET', '/api/logs?limit=50')
+    const anthLog = (anthLogs.body?.logs ?? []).find((l) => l.model === `anth-${RUN}`)
+    check('Anthropic 调用同样记账', () => {
+      assert.ok(anthLog, '未找到日志')
+      assert.equal(anthLog.channelName, `smoke-anthropic-${RUN}`)
+    })
+
+    // 混杂模式：同一渠道里逐模型指定协议与 Base URL
+    const mixedChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-mixed-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      protocol: 'mixed',
+      models: ['openai-model', 'anthropic-model'],
+      modelOverrides: {
+        'anthropic-model': { protocol: 'anthropic' }
+      },
+      priority: 10
+    })
+    check('可创建混杂模式渠道', () => {
+      assert.equal(mixedChannel.status, 201)
+      assert.equal(mixedChannel.body.channel.protocol, 'mixed')
+      assert.equal(
+        mixedChannel.body.channel.modelOverrides['anthropic-model'].protocol,
+        'anthropic'
+      )
+    })
+    const mixedId = mixedChannel.body.channel.id
+    await apiCall('POST', '/api/model-routes', {
+      alias: `mixed-openai-${RUN}`,
+      targets: [{ channelId: mixedId, upstreamModel: 'openai-model', priority: 10, weight: 1 }]
+    })
+    await apiCall('POST', '/api/model-routes', {
+      alias: `mixed-anth-${RUN}`,
+      targets: [{ channelId: mixedId, upstreamModel: 'anthropic-model', priority: 10, weight: 1 }]
+    })
+
+    const mixedOpenai = await proxyCall(
+      '/v1/chat/completions',
+      { model: `mixed-openai-${RUN}`, messages: [{ role: 'user', content: 'x' }] },
+      mapKey
+    )
+    check('混杂模式下未覆盖的模型走 OpenAI 协议', () => {
+      assert.equal(mixedOpenai.status, 200)
+      assert.equal(mixedOpenai.body?.received_model, 'openai-model')
+    })
+
+    const mixedAnth = await proxyCall(
+      '/v1/chat/completions',
+      { model: `mixed-anth-${RUN}`, messages: [{ role: 'user', content: 'x' }] },
+      mapKey
+    )
+    check('混杂模式下被覆盖的模型走 Anthropic 协议', () => {
+      assert.equal(mixedAnth.status, 200)
+      assert.equal(mixedAnth.headers.get('x-portara-protocol'), 'anthropic')
+      assert.equal(mixedAnth.body?.choices?.[0]?.message?.content, '你好，世界')
+    })
+    check('混杂模式里 Anthropic 请求打到了 /messages', () =>
+      assert.equal(lastAnthropicBody?.model, 'anthropic-model')
+    )
+
+    const badOverride = await apiCall('PATCH', `/api/channels/${mixedId}`, {
+      modelOverrides: { m: { baseUrl: 'ftp://bad' } }
+    })
+    check('非法的覆盖 Base URL 被拒（400）', () => assert.equal(badOverride.status, 400))
+
+    // 清理
+    for (const a of [`anth-${RUN}`, `mixed-openai-${RUN}`, `mixed-anth-${RUN}`]) {
+      await apiCall('POST', '/api/model-routes/purge', { alias: a })
+    }
+    await apiCall('DELETE', `/api/channels/${anthChannelId}`)
+    await apiCall('DELETE', `/api/channels/${mixedId}`)
+
+    // ---------------------------------------------------------- /models 过滤
+    section('㉔ /v1/models 的 filter 参数')
+
+    // 先前的别名都已被清理，这里重新建一条，否则 mirror-only 必然为空
+    const filterAlias = `filter-alias-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: filterAlias,
+      targets: [{ channelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }]
+    })
+
+    const allModels = await fetch(`${BASE}/v1/models`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const allJson = await allModels.json()
+
+    const mirrorOnly = await fetch(`${BASE}/v1/models?filter=mirror-only`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const mirrorJson = await mirrorOnly.json()
+    const originOnly = await fetch(`${BASE}/v1/models?filter=origin-only`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const originJson = await originOnly.json()
+
+    check('filter 参数被回显', () => {
+      assert.equal(allJson.filter, 'all')
+      assert.equal(mirrorJson.filter, 'mirror-only')
+      assert.equal(originJson.filter, 'origin-only')
+    })
+    check('mirror-only 只返回映射别名', () => {
+      assert.ok(mirrorJson.data.length > 0, 'mirror-only 为空')
+      assert.ok(
+        mirrorJson.data.some((m) => m.id === filterAlias),
+        `未包含刚建的别名：${JSON.stringify(mirrorJson.data.map((m) => m.id).slice(0, 5))}`
+      )
+      // 渠道声明的裸模型名不应出现在 mirror-only 里
+      assert.ok(
+        !mirrorJson.data.some((m) => m.id === MOCK_MODEL),
+        'mirror-only 里混进了渠道声明的模型'
+      )
+    })
+    check('origin-only 只返回渠道声明的模型', () => {
+      assert.ok(originJson.data.some((m) => m.id === MOCK_MODEL), '缺少渠道声明的模型')
+      assert.ok(
+        !originJson.data.some((m) => m.id.startsWith('smoke-prefix-')),
+        'origin-only 里混进了映射别名'
+      )
+    })
+    check('不传 filter 时两类都返回', () => {
+      assert.ok(allJson.data.some((m) => m.id === MOCK_MODEL))
+      assert.ok(allJson.data.length >= originJson.data.length)
+    })
+    const bogusFilter = await fetch(`${BASE}/v1/models?filter=bogus`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const bogusJson = await bogusFilter.json()
+    check('未知 filter 值回退为 all', () => assert.equal(bogusJson.filter, 'all'))
+
+    await apiCall('POST', '/api/model-routes/purge', { alias: filterAlias })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉓ 密钥不泄漏到日志')
+    section('㉕ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -1513,7 +1802,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉔ 清理测试数据')
+    section('㉖ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

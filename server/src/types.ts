@@ -28,6 +28,8 @@ export interface ChannelRow {
   models_path: string
   /** 模型元信息（上下文长度等），键为模型 id */
   models_meta: Record<string, unknown>
+  /** 逐模型的协议 / Base URL 覆盖，键为模型 id */
+  model_overrides: Record<string, ModelOverride>
   models: string[]
   priority: number
   weight: number
@@ -60,6 +62,12 @@ export interface ApiKeyRow {
   created_at: string
   /** 仅 list 查询带出（join users） */
   owner_name?: string | null
+}
+
+/** 逐模型覆盖：协议与 Base URL */
+export interface ModelOverride {
+  protocol?: 'openai' | 'anthropic'
+  baseUrl?: string
 }
 
 export interface ModelRouteRow {
@@ -156,6 +164,7 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     extraHeaders: ch.extra_headers ?? {},
     modelsPath: ch.models_path ?? '/models',
     modelsMeta: ch.models_meta ?? {},
+    modelOverrides: ch.model_overrides ?? {},
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     hasApiKey: Boolean(ch.api_key_cipher),

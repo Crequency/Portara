@@ -46,7 +46,9 @@ const form = reactive({
 })
 
 const protocolOptions = computed(() => [
-  { value: 'openai', label: t('channels.protocolOpenai') }
+  { value: 'openai', label: t('channels.protocolOpenai') },
+  { value: 'anthropic', label: t('channels.protocolAnthropic') },
+  { value: 'mixed', label: t('channels.protocolMixed') }
 ])
 
 const vendorOptions = computed(() => [
@@ -684,8 +686,16 @@ onMounted(async () => {
               <td>
                 <div>{{ ch.name }}</div>
                 <div class="tag-list" style="margin-top: 3px">
-                  <span class="tag">
-                    {{ ch.protocol === 'openai' ? t('channels.protocolOpenai') : ch.protocol }}
+                  <span class="tag" :style="ch.protocol === 'mixed' ? 'color: var(--warn)' : ''">
+                    {{
+                      ch.protocol === 'openai'
+                        ? t('channels.protocolOpenai')
+                        : ch.protocol === 'anthropic'
+                          ? t('channels.protocolAnthropic')
+                          : ch.protocol === 'mixed'
+                            ? t('channels.protocolMixed')
+                            : ch.protocol
+                    }}
                   </span>
                   <span v-if="ch.vendor !== 'generic'" class="tag" style="color: var(--accent)">
                     {{ ch.vendor }}
@@ -949,6 +959,9 @@ onMounted(async () => {
           <label>{{ t('channels.protocol') }}</label>
           <PSelect v-model="form.protocol" :options="protocolOptions" />
           <span class="hint">{{ t('channels.protocolHint') }}</span>
+          <span v-if="form.protocol === 'mixed'" class="hint" style="color: var(--warn)">
+            {{ t('channels.protocolMixedHint') }}
+          </span>
         </div>
         <div class="field">
           <label>{{ t('channels.vendor') }}</label>
