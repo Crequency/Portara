@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { loadDotEnv } from './lib/dotenv.js'
 
 /**
  * 运行时配置。
@@ -7,6 +8,10 @@ import { fileURLToPath } from 'node:url'
  * 设计原则：**生产必须显式提供密钥**；缺失时开发模式回退到内置弱值，
  * 并在启动日志中高声告警 —— 绝不静默使用弱密钥。
  */
+
+// 本地开发读取仓库根目录的 .env；已存在的环境变量优先（容器/测试注入）
+loadDotEnv(fileURLToPath(new URL('../../.env', import.meta.url)))
+loadDotEnv(fileURLToPath(new URL('../../server/.env', import.meta.url)))
 
 const DEV_MASTER_KEY_SEED = 'portara-dev-insecure-master-key'
 const DEV_SESSION_SECRET = 'portara-dev-insecure-session-secret'
