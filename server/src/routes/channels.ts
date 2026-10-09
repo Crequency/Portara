@@ -3,9 +3,11 @@ import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret, encryptSecret, maskSecret } from '../lib/crypto.js'
-import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
+import { ApiError, badRequest, clientIp, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
+import { fireAndForgetLog } from '../services/logger.js'
+import { extractUsage, SseUsageScanner } from '../services/proxy.js'
 import { buildModelsUrl, parseModelsResponse, type ModelInfo } from '../services/models.js'
 import {
   buildUpstreamHeaders,
@@ -452,6 +454,26 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     AbortSignal.timeout(ch.timeout_ms)
   ])
 
+  const model = typeof payload.model === 'string' ? payload.model : ''
+
+  /**
+   * 直连测试同样消耗上游额度、同样产生费用 —— **必须记账**。
+   * 用 source='playground' 与真实网关流量区分开（见迁移 006）。
+   * 连接失败也要记：否则「打了但没成功」这件事同样不可见。
+   */
+  const baseLog = {
+    apiKeyId: null,
+    apiKeyName: '',
+    channelId: ch.id,
+    channelName: ch.name,
+    model,
+    upstreamModel: model,
+    path: '/chat/completions',
+    clientIp: clientIp(c),
+    source: 'playground'
+  }
+
+  const startedAt = Date.now()
   let res: Response
   try {
     res = await fetch(url, {
@@ -467,13 +489,60 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     const message = signal.aborted
       ? `上游响应超时（${ch.timeout_ms}ms）`
       : `连接上游失败：${err instanceof Error ? err.message : String(err)}`
+
+    fireAndForgetLog({
+      ...baseLog,
+      statusCode: 502,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      estimated: false,
+      latencyMs: Date.now() - startedAt,
+      ttftMs: null,
+      error: message
+    })
+
     throw new ApiError(502, 'upstream_unreachable', message)
   }
 
   const contentType = res.headers.get('content-type') ?? 'application/json'
 
   if (contentType.includes('text/event-stream') && res.body) {
-    return new Response(res.body, {
+    // 流式：tee 出旁路扫描 usage，原字节照常下传
+    const [clientStream, scanStream] = res.body.tee()
+    const scanner = new SseUsageScanner()
+    let ttftMs: number | null = null
+
+    void (async () => {
+      const reader = scanStream.getReader()
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (ttftMs === null) ttftMs = Date.now() - startedAt
+          scanner.push(value)
+        }
+      } catch {
+        /* 中断交由 finally 记账 */
+      } finally {
+        scanner.finish()
+        const exact = scanner.usage
+        const usage = exact ?? scanner.estimateFromBytes()
+        fireAndForgetLog({
+          ...baseLog,
+          statusCode: res.status,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          estimated: !exact,
+          latencyMs: Date.now() - startedAt,
+          ttftMs,
+          error: exact ? '' : '上游未返回 usage，token 数为估算'
+        })
+      }
+    })()
+
+    return new Response(clientStream, {
       status: res.status,
       headers: {
         'content-type': contentType,
@@ -485,6 +554,20 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
   }
 
   const text = await res.text()
+  const usage = extractUsage(parseJsonSafe(text))
+
+  fireAndForgetLog({
+    ...baseLog,
+    statusCode: res.status,
+    promptTokens: usage?.promptTokens ?? 0,
+    completionTokens: usage?.completionTokens ?? 0,
+    totalTokens: usage?.totalTokens ?? 0,
+    estimated: false,
+    latencyMs: Date.now() - startedAt,
+    ttftMs: null,
+    error: res.ok ? '' : text.slice(0, 300)
+  })
+
   return new Response(text, {
     status: res.status,
     headers: { 'content-type': contentType, 'x-portara-direct': ch.name }

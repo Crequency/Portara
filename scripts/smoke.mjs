@@ -849,11 +849,24 @@ async function main() {
       assert.equal(operatorDirect.status, 403)
     )
 
+    await sleep(700)
     const logsAfterDirect = await apiCall('GET', '/api/logs?limit=100')
-    const directRows = (logsAfterDirect.body?.logs ?? []).filter((l) =>
-      String(l.error).includes('直连')
+    const directRows = (logsAfterDirect.body?.logs ?? []).filter(
+      (l) => l.source === 'playground'
     )
-    check('直连请求未进入 request_logs', () => assert.equal(directRows.length, 0))
+    check('直连测试写入 request_logs 并标记来源', () => {
+      assert.ok(directRows.length > 0, '未找到 source=playground 的记录')
+      assert.equal(directRows[0].channelName, `smoke-mock-${RUN}`)
+    })
+
+    const overviewWithDirect = await apiCall('GET', '/api/stats/overview?range=today')
+    check('直连测试计入概览总量并被单独标出', () => {
+      assert.ok(overviewWithDirect.body.totals.requests > 0)
+      assert.ok(
+        overviewWithDirect.body.totals.diagnosticRequests > 0,
+        `diagnosticRequests=${overviewWithDirect.body.totals.diagnosticRequests}`
+      )
+    })
 
     // ---------------------------------------------------------- Key 归属
     section('⑭ 密钥归属：非管理员只见自己的')

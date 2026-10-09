@@ -149,6 +149,7 @@ export interface RequestLog {
   completionTokens: number
   totalTokens: number
   estimated: boolean
+  source: string
   latencyMs: number
   ttftMs: number | null
   clientIp: string
@@ -171,6 +172,7 @@ export interface StatsTotals {
   promptTokens: number
   completionTokens: number
   estimated: number
+  diagnosticRequests: number
   avgLatencyMs: number
   p95LatencyMs: number
 }

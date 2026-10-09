@@ -105,6 +105,7 @@ export interface RequestLogRow {
   completion_tokens: number
   total_tokens: number
   estimated: boolean
+  source: string
   latency_ms: number
   ttft_ms: number | null
   client_ip: string

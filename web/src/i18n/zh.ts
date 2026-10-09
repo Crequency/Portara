@@ -74,6 +74,7 @@ export const zh = {
     p95: 'P95',
     estimated: '估算计量',
     estimatedHint: '上游未返回 usage 的请求数',
+    diagnostic: '其中直连测试 {n} 次',
     trend: '请求量趋势',
     resources: '渠道 {active}/{total} · 有效密钥 {keys} · 用户 {users}',
     topModels: 'Top 模型',

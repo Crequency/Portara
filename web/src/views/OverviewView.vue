@@ -178,6 +178,13 @@ onMounted(load)
           {{ t('overview.failed') }} {{ formatNumber(stats?.totals.errors) }} ·
           {{ formatPercent(stats?.totals.errorRate ?? 0) }}
         </div>
+        <div
+          v-if="(stats?.totals.diagnosticRequests ?? 0) > 0"
+          class="stat-hint"
+          style="color: var(--warn)"
+        >
+          {{ t('overview.diagnostic', { n: formatNumber(stats?.totals.diagnosticRequests) }) }}
+        </div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t('overview.tokens') }}</div>

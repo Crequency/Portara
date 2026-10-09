@@ -159,5 +159,16 @@ export const migrations: { id: string; sql: string }[] = [
       -- 老行取默认值 {} 即「该模型无元信息」，代码按缺失优雅降级。
       alter table channels add column if not exists models_meta jsonb not null default '{}'::jsonb;
     `
+  },
+  {
+    id: '006_request_log_source',
+    sql: `
+      -- 请求来源：
+      --   gateway    经网关转发的真实调用（历史数据全部属于此类，故默认值语义正确）
+      --   playground 对话测试页的「上游渠道测试」直连调用 —— 同样消耗上游额度，
+      --              必须可见，但要能与真实流量区分开
+      alter table request_logs add column if not exists source text not null default 'gateway';
+      create index if not exists request_logs_source_idx on request_logs (source, ts desc);
+    `
   }
 ]

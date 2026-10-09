@@ -100,7 +100,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     // 尚未选定渠道时上游模型未知；选定后由 logCtx 覆盖为真实值
     upstreamModel: '',
     path: restPath,
-    clientIp: ip
+    clientIp: ip,
+    source: 'gateway'
   }
 
   // ① 模型白名单

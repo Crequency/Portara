@@ -72,6 +72,7 @@ logRoutes.get('/logs', async (c) => {
       completionTokens: r.completion_tokens,
       totalTokens: r.total_tokens,
       estimated: r.estimated,
+      source: r.source,
       latencyMs: r.latency_ms,
       ttftMs: r.ttft_ms,
       clientIp: r.client_ip,
@@ -140,6 +141,7 @@ logRoutes.get('/stats/overview', async (c) => {
        coalesce(sum(total_tokens), 0)::text                                  as tokens,
        count(*) filter (where status_code >= 400)::text                      as errors,
        count(*) filter (where estimated)::text                               as estimated,
+       count(*) filter (where source <> 'gateway')::text                     as diagnostic,
        coalesce(avg(latency_ms), 0)::text                                    as avg_latency,
        coalesce(percentile_cont(0.95) within group (order by latency_ms), 0)::text as p95_latency
      from request_logs
@@ -199,6 +201,8 @@ logRoutes.get('/stats/overview', async (c) => {
       promptTokens: num(t.prompt_tokens),
       completionTokens: num(t.completion_tokens),
       estimated: num(t.estimated),
+      // 直连测试（对话测试页的上游渠道测试）：计入总量，但单独标出以便区分
+      diagnosticRequests: num(t.diagnostic),
       avgLatencyMs: Math.round(num(t.avg_latency)),
       p95LatencyMs: Math.round(num(t.p95_latency))
     },

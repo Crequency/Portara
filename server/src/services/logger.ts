@@ -18,6 +18,8 @@ export interface LogInput {
   ttftMs: number | null
   clientIp: string
   error: string
+  /** 请求来源：gateway（经网关）/ playground（对话测试页直连） */
+  source: string
 }
 
 /**
@@ -29,8 +31,8 @@ export async function writeLog(input: LogInput): Promise<void> {
     `insert into request_logs
        (api_key_id, api_key_name, channel_id, channel_name, model, upstream_model, path,
         status_code, prompt_tokens, completion_tokens, total_tokens, estimated,
-        latency_ms, ttft_ms, client_ip, error)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+        latency_ms, ttft_ms, client_ip, error, source)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
     [
       input.apiKeyId,
       input.apiKeyName,
@@ -47,7 +49,8 @@ export async function writeLog(input: LogInput): Promise<void> {
       input.latencyMs,
       input.ttftMs,
       input.clientIp,
-      input.error.slice(0, 500)
+      input.error.slice(0, 500),
+      input.source
     ]
   )
 

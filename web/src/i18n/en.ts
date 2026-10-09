@@ -74,6 +74,7 @@ export const en = {
     p95: 'P95',
     estimated: 'Estimated',
     estimatedHint: 'Requests where upstream returned no usage',
+    diagnostic: 'incl. {n} direct tests',
     trend: 'Request volume',
     resources: 'Channels {active}/{total} · Active keys {keys} · Users {users}',
     topModels: 'Top models',
