@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { api, ApiError, type Channel, type ChannelTestResult, type User } from '../api'
 import Modal from '../components/Modal.vue'
-import { parseList } from '../format'
+import { formatTime, parseList } from '../format'
 import { toast } from '../toast'
 
 const props = defineProps<{ user?: User }>()
@@ -110,6 +110,10 @@ async function test(ch: Channel): Promise<void> {
   try {
     const res = await api.post<ChannelTestResult>(`/api/channels/${ch.id}/test`)
     testResults[ch.id] = res
+    // 同步到行数据：延迟列立即显示最新值（服务端也已落库，刷新后仍在）
+    ch.lastLatencyMs = res.latencyMs
+    ch.lastTestAt = res.testedAt ?? new Date().toISOString()
+    ch.lastTestOk = res.ok
     if (res.ok) toast.success(`「${ch.name}」连通正常（${res.latencyMs}ms）`)
     else toast.error(`「${ch.name}」${res.message}`)
   } catch (err) {
@@ -120,6 +124,9 @@ async function test(ch: Channel): Promise<void> {
       models: [],
       message: err instanceof ApiError ? err.message : '测试失败'
     }
+    ch.lastLatencyMs = 0
+    ch.lastTestAt = new Date().toISOString()
+    ch.lastTestOk = false
     toast.error('连通性测试失败')
   }
 }
@@ -133,6 +140,23 @@ async function remove(ch: Channel): Promise<void> {
   } catch (err) {
     toast.error(err instanceof ApiError ? err.message : '删除失败')
   }
+}
+
+/** 延迟展示：优先本次会话刚测出的值，其次用服务端持久化的最近一次 */
+function latencyOf(ch: Channel): number | null {
+  const fresh = testResults[ch.id]
+  if (fresh && fresh !== 'loading') return fresh.latencyMs
+  return ch.lastLatencyMs
+}
+
+function latencyAt(ch: Channel): string | null {
+  return testResults[ch.id] === 'loading' ? null : ch.lastTestAt
+}
+
+function latencyOk(ch: Channel): boolean {
+  const fresh = testResults[ch.id]
+  if (fresh && fresh !== 'loading') return fresh.ok
+  return ch.lastTestOk !== false
 }
 
 onMounted(load)
@@ -169,6 +193,7 @@ onMounted(load)
             <th>模型</th>
             <th>优先级 / 权重</th>
             <th>状态</th>
+            <th style="min-width: 108px">延迟</th>
             <th style="width: 190px">操作</th>
           </tr>
         </thead>
@@ -196,6 +221,22 @@ onMounted(load)
               <span class="badge" :class="ch.status === 'active' ? 'badge-ok' : 'badge-off'">
                 {{ ch.status === 'active' ? '启用' : '停用' }}
               </span>
+            </td>
+            <td class="nowrap">
+              <span v-if="testResults[ch.id] === 'loading'" class="dim">测试中…</span>
+              <template v-else-if="latencyOf(ch) !== null">
+                <span
+                  class="badge"
+                  :class="latencyOk(ch) ? 'badge-ok' : 'badge-err'"
+                  :title="latencyOk(ch) ? '连通正常' : '连接失败'"
+                >
+                  {{ latencyOf(ch) }} ms
+                </span>
+                <div v-if="latencyAt(ch)" class="dim" style="font-size: 11px">
+                  {{ formatTime(latencyAt(ch)) }}
+                </div>
+              </template>
+              <span v-else class="dim">未测试</span>
             </td>
             <td>
               <div class="row">

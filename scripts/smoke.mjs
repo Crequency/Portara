@@ -29,6 +29,8 @@ const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
 // 固定管理凭据：配合「按用户名引导」语义，脚本可无限次重复运行
 const ADMIN_USER = 'smoke-admin'
 const ADMIN_PASS = 'smoke-admin-password'
+const OPERATOR_USER = 'smoke-operator'
+const OPERATOR_PASS = 'smoke-operator-password'
 
 let passed = 0
 let failed = 0
@@ -206,17 +208,22 @@ async function waitReady(timeoutMs = 30_000) {
 
 let cookie = ''
 
-async function apiCall(method, pathname, body) {
+async function apiCall(method, pathname, body, opts = {}) {
+  // opts.cookie：以指定身份发起请求（不污染默认会话，用于验证权限边界）
+  const useCookie = opts.cookie ?? cookie
   const res = await fetch(`${BASE}${pathname}`, {
     method,
     headers: {
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      ...(cookie ? { cookie } : {})
+      ...(useCookie ? { cookie: useCookie } : {})
     },
     body: body === undefined ? undefined : JSON.stringify(body)
   })
+
   const setCookie = res.headers.getSetCookie?.() ?? []
-  if (setCookie.length > 0) cookie = setCookie.map((c) => c.split(';')[0]).join('; ')
+  const freshCookie = setCookie.map((c) => c.split(';')[0]).join('; ')
+  // keepSession：以他人身份登录时不要覆盖默认（管理员）会话
+  if (freshCookie && !opts.cookie && !opts.keepSession) cookie = freshCookie
 
   const text = await res.text()
   let json = null
@@ -225,7 +232,7 @@ async function apiCall(method, pathname, body) {
   } catch {
     /* 非 JSON */
   }
-  return { status: res.status, body: json, text }
+  return { status: res.status, body: json, text, cookie: freshCookie || useCookie }
 }
 
 async function proxyCall(pathname, body, key) {
@@ -324,6 +331,23 @@ async function main() {
     check('连通性测试通过且拿到模型列表', () => {
       assert.equal(test.body?.ok, true)
       assert.deepEqual(test.body?.models, [MOCK_MODEL])
+    })
+    check('测试返回延迟与测试时间', () => {
+      assert.ok(typeof test.body?.latencyMs === 'number')
+      assert.ok(test.body.latencyMs >= 0)
+      assert.ok(test.body?.testedAt)
+    })
+
+    const afterTest = await apiCall('GET', '/api/channels')
+    const testedChannel = afterTest.body?.channels?.find((c) => c.id === channelId)
+    check('延迟已持久化（刷新面板仍可显示）', () => {
+      assert.ok(testedChannel, '未找到渠道')
+      assert.ok(
+        typeof testedChannel.lastLatencyMs === 'number',
+        `lastLatencyMs=${testedChannel.lastLatencyMs}`
+      )
+      assert.equal(testedChannel.lastTestOk, true)
+      assert.ok(testedChannel.lastTestAt)
     })
 
     // ---------------------------------------------------------- 密钥
@@ -522,8 +546,102 @@ async function main() {
     )
     check('白名单外的模型返回 403', () => assert.equal(denied.status, 403))
 
+    // ---------------------------------------------------------- 查看 Key
+    section('⑪ 查看密钥（仅管理员 + 审计留痕）')
+
+    const revealed = await apiCall('GET', `/api/keys/${keyRes.body.apiKey.id}/reveal`)
+    check('管理员可查看完整密钥', () => assert.equal(revealed.status, 200))
+    check('查看得到的明文与创建时一致', () =>
+      assert.equal(revealed.body?.key, keyFull)
+    )
+
+    // 建一个操作员账号，验证权限边界（幂等：已存在则复用）
+    const operatorPassword = OPERATOR_PASS
+    const createOperator = await apiCall('POST', '/api/users', {
+      username: OPERATOR_USER,
+      displayName: '冒烟操作员',
+      password: operatorPassword,
+      role: 'operator'
+    })
+    const operatorExists =
+      createOperator.status === 201 ||
+      (createOperator.status === 400 &&
+        String(createOperator.body?.error?.message ?? '').includes('已存在'))
+    check('可创建（或复用）操作员账号', () => assert.ok(operatorExists))
+
+    const operatorLogin = await apiCall(
+      'POST',
+      '/api/auth/login',
+      { username: OPERATOR_USER, password: operatorPassword },
+      { keepSession: true }
+    )
+    check('操作员可登录', () => assert.equal(operatorLogin.status, 200))
+    const operatorCookie = operatorLogin.cookie
+
+    const operatorReveal = await apiCall(
+      'GET',
+      `/api/keys/${keyRes.body.apiKey.id}/reveal`,
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('操作员查看密钥被拒（403）', () => assert.equal(operatorReveal.status, 403))
+
+    const operatorList = await apiCall('GET', '/api/keys', undefined, {
+      cookie: operatorCookie
+    })
+    check('操作员仍可列出密钥（只读）', () => assert.equal(operatorList.status, 200))
+    check('列表绝不返回完整密钥', () =>
+      assert.ok(!operatorList.text.includes(keyFull))
+    )
+
+    const audit = await apiCall('GET', '/api/audit?action=key.reveal&limit=20')
+    check('查看密钥已写入审计日志', () => {
+      assert.equal(audit.status, 200)
+      const hit = (audit.body?.events ?? []).find(
+        (e) => e.targetId === keyRes.body.apiKey.id
+      )
+      assert.ok(hit, '未找到 key.reveal 审计记录')
+      assert.equal(hit.actor, ADMIN_USER)
+    })
+
+    const operatorAudit = await apiCall('GET', '/api/audit', undefined, {
+      cookie: operatorCookie
+    })
+    check('操作员无权查询审计日志（403）', () =>
+      assert.equal(operatorAudit.status, 403)
+    )
+
+    // ---------------------------------------------------------- 对话测试页的前置链路
+    section('⑫ 对话测试页所依赖的链路')
+
+    const chatModels = await fetch(`${BASE}/v1/models`, {
+      headers: { authorization: `Bearer ${revealed.body.key}` }
+    })
+    const chatModelsJson = await chatModels.json()
+
+    const chatCall = await proxyCall(
+      '/v1/chat/completions',
+      {
+        model: MOCK_MODEL,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [{ role: 'user', content: '来自对话测试页' }]
+      },
+      revealed.body.key
+    )
+    check('对话测试页的流式请求可用（模拟页面行为）', () => {
+      assert.equal(chatCall.status, 200)
+      // 流式是分片下发的：'你好' 与 '世界' 在不同 SSE 帧里，不能断言拼接后的整串
+      assert.ok(chatCall.text.includes('你好'), '缺少首片内容')
+      assert.ok(chatCall.text.includes('世界'), '缺少末片内容')
+      assert.ok(chatCall.text.includes('"usage"'), '缺少 usage 帧')
+    })
+    check('该密钥可见的模型列表非空', () =>
+      assert.ok(chatModelsJson.data.length > 0)
+    )
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('⑪ 密钥不泄漏到日志')
+    section('⑬ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -535,7 +653,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('⑫ 清理测试数据')
+    section('⑭ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

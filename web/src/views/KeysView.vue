@@ -5,7 +5,9 @@ import Modal from '../components/Modal.vue'
 import { formatNumber, formatTime, parseList } from '../format'
 import { toast } from '../toast'
 
-defineProps<{ user?: User }>()
+const props = defineProps<{ user?: User }>()
+
+const isAdmin = (): boolean => props.user?.role === 'admin'
 
 const keys = ref<ApiKey[]>([])
 const channels = ref<Channel[]>([])
@@ -13,9 +15,14 @@ const loading = ref(true)
 const showForm = ref(false)
 const saving = ref(false)
 
-/** 明文只在创建/轮换那一刻拿到，关掉弹窗就再也取不回 */
+/** 明文只在创建/轮换那一刻拿到；此后需经 reveal 接口（仅管理员，留审计）*/
 const issuedKey = ref('')
 const issuedName = ref('')
+
+const revealTarget = ref<ApiKey | null>(null)
+const revealedKey = ref('')
+const revealError = ref('')
+const revealing = ref(false)
 
 const form = reactive({
   name: '',
@@ -119,6 +126,28 @@ async function remove(k: ApiKey): Promise<void> {
   }
 }
 
+async function reveal(k: ApiKey): Promise<void> {
+  revealTarget.value = k
+  revealedKey.value = ''
+  revealError.value = ''
+  revealing.value = true
+  try {
+    const res = await api.get<{ key: string }>(`/api/keys/${k.id}/reveal`)
+    revealedKey.value = res.key
+  } catch (err) {
+    revealError.value =
+      err instanceof ApiError ? err.message : '无法读取密钥，请稍后重试'
+  } finally {
+    revealing.value = false
+  }
+}
+
+function closeReveal(): void {
+  revealTarget.value = null
+  revealedKey.value = ''
+  revealError.value = ''
+}
+
 async function copy(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
@@ -167,7 +196,7 @@ onMounted(load)
             <th>配额用量</th>
             <th>最近使用</th>
             <th>状态</th>
-            <th style="width: 210px">操作</th>
+            <th style="width: 250px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -218,6 +247,15 @@ onMounted(load)
             </td>
             <td>
               <div class="row">
+                <button
+                  v-if="isAdmin()"
+                  class="btn btn-sm"
+                  :disabled="!k.revealable"
+                  :title="k.revealable ? '查看完整密钥（会记入审计日志）' : '该密钥创建于启用可查看之前，无法找回'"
+                  @click="reveal(k)"
+                >
+                  查看
+                </button>
                 <button class="btn btn-sm" @click="rotate(k)">轮换</button>
                 <button class="btn btn-sm" @click="toggle(k)">
                   {{ k.status === 'active' ? '停用' : '启用' }}
@@ -230,6 +268,35 @@ onMounted(load)
       </table>
     </div>
   </div>
+
+  <Modal
+    v-if="revealTarget"
+    :title="`查看密钥 · ${revealTarget.name}`"
+    wide
+    @close="closeReveal"
+  >
+    <div class="alert">
+      <b>安全风险提示：</b>完整密钥等同于该调用方的全部权限。请勿截图、勿粘贴到聊天工具或工单系统、
+      勿写入前端代码或公开仓库。每次查看都会<b>记录审计日志</b>（谁、何时、哪把密钥、来源 IP）。
+    </div>
+
+    <div v-if="revealing" class="loading">读取中…</div>
+    <div v-else-if="revealError" class="err-text">{{ revealError }}</div>
+    <template v-else>
+      <div class="code-box">{{ revealedKey }}</div>
+      <div class="row" style="margin-top: 12px">
+        <button class="btn btn-primary btn-sm" @click="copy(revealedKey)">复制完整密钥</button>
+        <span class="dim" style="font-size: 12px">
+          前缀 {{ revealTarget.keyPrefix }}· 用于
+          <span class="mono">Authorization: Bearer &lt;key&gt;</span>
+        </span>
+      </div>
+    </template>
+
+    <div class="modal-foot">
+      <button class="btn" @click="closeReveal">关闭</button>
+    </div>
+  </Modal>
 
   <Modal
     v-if="showForm"

@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, query } from '../db.js'
-import { generateApiKey } from '../lib/crypto.js'
-import { badRequest, notFound, parseJson } from '../lib/http.js'
-import { requireAuth } from '../middleware/auth.js'
+import { env } from '../env.js'
+import { decryptSecret, encryptSecret, generateApiKey } from '../lib/crypto.js'
+import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
+import { requireAdmin, requireAuth } from '../middleware/auth.js'
+import { recordAudit } from '../services/audit.js'
 import { toApiKeyDto, type ApiKeyRow } from '../types.js'
 
 export const keyRoutes = new Hono()
@@ -59,12 +61,14 @@ keyRoutes.post('/', async (c) => {
 
   const row = await one<ApiKeyRow>(
     `insert into api_keys
-       (name, key_prefix, key_hash, user_id, channel_id, model_allow, rpm_limit, quota_tokens, expires_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+       (name, key_prefix, key_hash, key_cipher, user_id, channel_id, model_allow, rpm_limit, quota_tokens, expires_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
     [
       body.name,
       prefix,
       hash,
+      // 可解密副本，供管理员在面板上查看与复制（见 DECISIONS D-013）
+      encryptSecret(key, env.masterKey),
       body.userId || null,
       body.channelId || null,
       body.modelAllow,
@@ -73,6 +77,11 @@ keyRoutes.post('/', async (c) => {
       body.expiresAt ? new Date(body.expiresAt) : null
     ]
   )
+
+  await recordAudit(c, 'key.create', { type: 'api_key', id: row!.id }, {
+    name: row!.name,
+    prefix: row!.key_prefix
+  })
 
   return c.json({ apiKey: toApiKeyDto(row!), key }, 201)
 })
@@ -114,6 +123,41 @@ keyRoutes.patch('/:id', async (c) => {
   return c.json({ apiKey: toApiKeyDto(row!) })
 })
 
+/** 查看明文密钥：仅管理员，且**必然留审计**（见 DECISIONS D-013） */
+keyRoutes.get('/:id/reveal', requireAdmin, async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const row = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
+  if (!row) throw notFound('密钥不存在')
+
+  if (!row.key_cipher) {
+    // 旧数据没有可解密副本 —— 诚实告知，而不是假装能恢复
+    throw new ApiError(
+      409,
+      'key_not_revealable',
+      '该密钥创建于启用「可查看」之前，服务端只保留哈希，无法找回。请使用轮换生成新密钥。'
+    )
+  }
+
+  let key: string
+  try {
+    key = decryptSecret(row.key_cipher, env.masterKey)
+  } catch {
+    throw new ApiError(
+      500,
+      'key_decrypt_failed',
+      '密钥解密失败：主密钥可能已变更（PORTARA_MASTER_KEY）'
+    )
+  }
+
+  // 审计写入失败会让整个请求失败（fail-closed），不留无声的痕迹
+  await recordAudit(c, 'key.reveal', { type: 'api_key', id }, {
+    name: row.name,
+    prefix: row.key_prefix
+  })
+
+  return c.json({ key, keyPrefix: row.key_prefix, name: row.name })
+})
+
 /** 轮换：生成新明文，旧 Key 立即失效（id 与配额用量保留） */
 keyRoutes.post('/:id/rotate', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
@@ -122,16 +166,28 @@ keyRoutes.post('/:id/rotate', async (c) => {
 
   const { key, prefix, hash } = generateApiKey()
   const row = await one<ApiKeyRow>(
-    `update api_keys set key_prefix = $2, key_hash = $3 where id = $1 returning *`,
-    [id, prefix, hash]
+    `update api_keys
+        set key_prefix = $2, key_hash = $3, key_cipher = $4
+      where id = $1 returning *`,
+    [id, prefix, hash, encryptSecret(key, env.masterKey)]
   )
+
+  await recordAudit(c, 'key.rotate', { type: 'api_key', id }, {
+    name: current.name,
+    newPrefix: prefix
+  })
+
   return c.json({ apiKey: toApiKeyDto(row!), key })
 })
 
 keyRoutes.delete('/:id', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
-  const current = await one('select id from api_keys where id = $1', [id])
+  const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!current) throw notFound('密钥不存在')
   await query('delete from api_keys where id = $1', [id])
+  await recordAudit(c, 'key.delete', { type: 'api_key', id }, {
+    name: current.name,
+    prefix: current.key_prefix
+  })
   return c.json({ ok: true })
 })

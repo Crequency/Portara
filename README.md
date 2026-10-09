@@ -38,8 +38,10 @@ var client = new OpenAIClient(
 | --- | --- |
 | 管理员登录（JWT + HttpOnly Cookie） | ✅ |
 | 用户管理（管理员 / 操作员、启用禁用、改密） | ✅ |
-| 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试） | ✅ |
+| 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试 + 延迟展示） | ✅ |
 | API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |
+| 查看完整 Key（仅管理员 + 风险提示 + 审计留痕，见 D-013） | ✅ |
+| 对话测试页（仅管理员，用真实 Key 走一遍网关链路） | ✅ |
 | 请求代理转发（`/v1/chat/completions` 非流式 + SSE 流式透传） | ✅ |
 | 速率限制（RPM，Redis 原子计数） | ✅ |
 | Token 配额（用尽返回 402） | ✅ |
@@ -101,6 +103,8 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 ```
 
 6. **请求日志** 里查看 token、耗时与状态
+7. **对话测试**（管理员）里选一把 Key 直接聊两句 —— 走的是真实 `/v1` 链路
+8. **上游渠道** 点「测试」即刷新该行的延迟显示
 
 ## 对外端点
 
@@ -124,6 +128,8 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理 |
 | `POST /api/channels/:id/test` | 上游连通性测试 |
 | `GET/POST/PATCH/DELETE /api/keys[/:id]`、`POST /api/keys/:id/rotate` | 密钥 |
+| `GET /api/keys/:id/reveal` | 查看完整密钥（**仅管理员**，必写审计） |
+| `GET /api/audit` | 审计日志查询（仅管理员） |
 | `GET /api/logs`、`GET /api/stats/overview`、`GET /api/stats/series` | 日志与统计 |
 | `GET /healthz` `GET /readyz` | 存活 / 就绪（就绪会检查 PG 与 Redis） |
 
@@ -167,10 +173,17 @@ Portara/
 | 对象 | 处理 |
 | --- | --- |
 | 登录口令 | `scrypt` + 随机盐 + `timingSafeEqual` |
-| 客户端 API Key | 只存 SHA-256 哈希 + 展示前缀，明文仅在创建/轮换时返回一次 |
+| 客户端 API Key | SHA-256 哈希（鉴权用）+ AES-256-GCM 密文（供管理员查看，见下）+ 展示前缀 |
 | 上游渠道密钥 | AES-256-GCM 信封加密，主密钥来自 `PORTARA_MASTER_KEY` |
 | 管理会话 | HS256 JWT，HttpOnly + SameSite=Lax |
 | 日志 | 密钥一律不落日志；请求/响应**正文默认不留存** |
+
+> **关于「查看 Key」的权衡（DECISIONS D-013）**：为了支持管理员在面板上查看并
+> 复制完整 Key，服务端在哈希之外额外存了一份可解密的密文。这意味着
+> **若数据库与 `PORTARA_MASTER_KEY` 同时泄漏，客户端 Key 可被解密** ——
+> 这是明确接受的代价。补偿措施：查看接口仅管理员可用、每次查看写入审计日志
+> （fail-closed）、列表接口只返回前缀、旧 Key 无密文时明确报错而不假装可恢复。
+> 若要回到「只存哈希」，清空 `api_keys.key_cipher` 即可。
 
 生产必须显式设置 `PORTARA_MASTER_KEY` 与 `PORTARA_SESSION_SECRET`
 （`openssl rand -base64 32` / `openssl rand -hex 32`）；未设置时开发模式会回退到

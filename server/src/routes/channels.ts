@@ -138,17 +138,26 @@ channelRoutes.delete('/:id', requireAdmin, async (c) => {
   return c.json({ ok: true })
 })
 
-/** 连通性测试：GET {base}/models，不落任何密钥到日志 */
+/** 连通性测试：GET {base}/models，并把最近一次结果（延迟/成败）落库供面板展示 */
 channelRoutes.post('/:id/test', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')
+
+  const record = async (latencyMs: number, ok: boolean) => {
+    await query(
+      `update channels set last_latency_ms = $2, last_test_at = now(), last_test_ok = $3
+        where id = $1`,
+      [id, Math.max(0, Math.round(latencyMs)), ok]
+    )
+  }
 
   let upstreamKey = ''
   if (ch.api_key_cipher) {
     try {
       upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
     } catch {
+      await record(0, false)
       return c.json({ ok: false, status: 0, message: '密钥无法解密，请重新填写', models: [] })
     }
   }
@@ -180,18 +189,24 @@ channelRoutes.post('/:id/test', async (c) => {
       /* 非 JSON 响应也算连通，只是拿不到模型列表 */
     }
 
+    await record(latencyMs, res.ok)
+
     return c.json({
       ok: res.ok,
       status: res.status,
       latencyMs,
+      testedAt: new Date().toISOString(),
       models,
       message: res.ok ? '连通正常' : `上游返回 ${res.status}：${text.slice(0, 200)}`
     })
   } catch (err) {
+    const latencyMs = Date.now() - started
+    await record(latencyMs, false)
     return c.json({
       ok: false,
       status: 0,
-      latencyMs: Date.now() - started,
+      latencyMs,
+      testedAt: new Date().toISOString(),
       models: [],
       message: `连接失败：${err instanceof Error ? err.message : String(err)}`
     })

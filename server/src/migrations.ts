@@ -76,5 +76,35 @@ export const migrations: { id: string; sql: string }[] = [
       create index if not exists request_logs_ts_idx  on request_logs (ts desc);
       create index if not exists request_logs_key_idx on request_logs (api_key_id, ts desc);
     `
+  },
+  {
+    id: '002_channel_latency_key_reveal',
+    sql: `
+      -- 渠道最近一次连通性测试的结果（面板刷新后仍可看到延迟）
+      alter table channels add column if not exists last_latency_ms int;
+      alter table channels add column if not exists last_test_at    timestamptz;
+      alter table channels add column if not exists last_test_ok    boolean;
+
+      -- 客户端 Key 的可解密副本。
+      -- 这是**明确的安全权衡**（见 DECISIONS D-013）：默认方案只存哈希，
+      -- 为了支持「管理员查看并复制 Key」才额外存一份 AES-256-GCM 密文。
+      -- 留空表示该 Key 创建于开启此功能之前，无法找回，只能轮换。
+      alter table api_keys add column if not exists key_cipher text not null default '';
+
+      -- 审计日志：敏感操作（如查看密钥）留痕
+      create table if not exists audit_events (
+        id             bigserial primary key,
+        ts             timestamptz not null default now(),
+        actor_user_id  uuid,
+        actor_username text not null default '',
+        action         text not null,
+        target_type    text not null default '',
+        target_id      text not null default '',
+        detail         jsonb not null default '{}'::jsonb,
+        client_ip      text not null default ''
+      );
+      create index if not exists audit_events_ts_idx on audit_events (ts desc);
+      create index if not exists audit_events_action_idx on audit_events (action, ts desc);
+    `
   }
 ]

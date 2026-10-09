@@ -71,6 +71,9 @@ export interface Channel {
   timeoutMs: number
   status: 'active' | 'disabled'
   note: string
+  lastLatencyMs: number | null
+  lastTestAt: string | null
+  lastTestOk: boolean | null
   createdAt: string
 }
 
@@ -78,6 +81,7 @@ export interface ApiKey {
   id: string
   name: string
   keyPrefix: string
+  revealable: boolean
   userId: string | null
   channelId: string | null
   modelAllow: string[]
@@ -130,6 +134,18 @@ export interface ChannelTestResult {
   ok: boolean
   status: number
   latencyMs: number
+  testedAt?: string
   models: string[]
   message: string
+}
+
+export interface AuditEvent {
+  id: string
+  ts: string
+  actor: string
+  action: string
+  targetType: string
+  targetId: string
+  detail: Record<string, unknown>
+  clientIp: string
 }

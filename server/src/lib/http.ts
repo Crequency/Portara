@@ -2,6 +2,13 @@ import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { ZodType } from 'zod'
 
+/** 取客户端 IP（尊重反代头），日志与审计共用 */
+export function clientIp(c: Context): string {
+  const xff = c.req.header('x-forwarded-for')
+  if (xff) return xff.split(',')[0]!.trim()
+  return c.req.header('x-real-ip') ?? 'unknown'
+}
+
 /** 控制面统一错误对象 */
 export class ApiError extends Error {
   constructor(

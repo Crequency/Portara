@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api, type User } from './api'
 import ToastHost from './components/ToastHost.vue'
 import ChannelsView from './views/ChannelsView.vue'
+import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
 import LoginView from './views/LoginView.vue'
 import LogsView from './views/LogsView.vue'
@@ -14,17 +15,24 @@ const ready = ref(false)
 const route = ref(currentRoute())
 
 const NAV = [
-  { id: 'overview', label: '概览', icon: 'M3 12h4l3 8 4-16 3 8h4' },
-  { id: 'channels', label: '上游渠道', icon: 'M4 7h16M4 12h16M4 17h10' },
-  { id: 'keys', label: 'API 密钥', icon: 'M14 7a4 4 0 1 0-3.5 4L4 17v3h3v-2h2v-2h2l1.5-1.5' },
-  { id: 'users', label: '用户', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5' },
-  { id: 'logs', label: '请求日志', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5' }
+  { id: 'overview', label: '概览', icon: 'M3 12h4l3 8 4-16 3 8h4', adminOnly: false },
+  { id: 'channels', label: '上游渠道', icon: 'M4 7h16M4 12h16M4 17h10', adminOnly: false },
+  { id: 'keys', label: 'API 密钥', icon: 'M14 7a4 4 0 1 0-3.5 4L4 17v3h3v-2h2v-2h2l1.5-1.5', adminOnly: false },
+  { id: 'chat', label: '对话测试', icon: 'M4 5h16v11H8l-4 4z', adminOnly: true },
+  { id: 'users', label: '用户', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
+  { id: 'logs', label: '请求日志', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false }
 ] as const
+
+/** 对话测试需要读取密钥明文，仅管理员可见 */
+const navItems = computed(() =>
+  NAV.filter((item) => !item.adminOnly || user.value?.role === 'admin')
+)
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: '概览', sub: '网关运行状态与今日用量' },
   channels: { title: '上游渠道', sub: '配置 OpenAI 兼容的上游服务' },
-  keys: { title: 'API 密钥', sub: '签发与吊销调用方密钥' },
+  keys: { title: 'API 密钥', sub: '签发、查看与吊销调用方密钥' },
+  chat: { title: '对话测试', sub: '用真实 Key 走一遍网关链路（仅管理员）' },
   users: { title: '用户', sub: '管理控制台账号与权限' },
   logs: { title: '请求日志', sub: '每一次转发的元数据（不含正文）' }
 }
@@ -35,6 +43,8 @@ const currentView = computed(() => {
       return ChannelsView
     case 'keys':
       return KeysView
+    case 'chat':
+      return ChatView
     case 'users':
       return UsersView
     case 'logs':
@@ -110,7 +120,7 @@ function go(id: string): void {
       </div>
 
       <button
-        v-for="item in NAV"
+        v-for="item in navItems"
         :key="item.id"
         class="nav-item"
         :class="{ active: route === item.id }"

@@ -4,6 +4,7 @@ import { query } from './db.js'
 import { env } from './env.js'
 import { ApiError, errorResponse, openaiError } from './lib/http.js'
 import { redis } from './redis.js'
+import { auditRoutes } from './routes/audit.js'
 import { authRoutes } from './routes/auth.js'
 import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
@@ -88,6 +89,7 @@ export function createApp(): Hono {
   app.route('/api/users', userRoutes)
   app.route('/api/channels', channelRoutes)
   app.route('/api/keys', keyRoutes)
+  app.route('/api/audit', auditRoutes)
   app.route('/api', logRoutes) // /api/logs、/api/stats/*
 
   // ---- 数据面（OpenAI 兼容）----

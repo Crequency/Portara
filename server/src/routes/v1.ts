@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret } from '../lib/crypto.js'
-import { openaiError } from '../lib/http.js'
+import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
@@ -22,12 +22,6 @@ import type { ApiKeyRow, ChannelRow } from '../types.js'
 export const v1Routes = new Hono()
 
 v1Routes.use('*', apiKeyAuth)
-
-function clientIp(c: Context): string {
-  const xff = c.req.header('x-forwarded-for')
-  if (xff) return xff.split(',')[0]!.trim()
-  return c.req.header('x-real-ip') ?? 'unknown'
-}
 
 /** 全局轮转计数：多实例下同一优先级组内的权重轮转保持一致 */
 async function nextRotation(): Promise<number> {

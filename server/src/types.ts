@@ -24,6 +24,9 @@ export interface ChannelRow {
   timeout_ms: number
   status: 'active' | 'disabled'
   note: string
+  last_latency_ms: number | null
+  last_test_at: string | null
+  last_test_ok: boolean | null
   created_at: string
   updated_at: string
 }
@@ -33,6 +36,8 @@ export interface ApiKeyRow {
   name: string
   key_prefix: string
   key_hash: string
+  /** 可解密副本；空字符串表示该 Key 不可查看（创建于旧版本） */
+  key_cipher: string
   user_id: string | null
   channel_id: string | null
   model_allow: string[]
@@ -43,6 +48,18 @@ export interface ApiKeyRow {
   expires_at: string | null
   last_used_at: string | null
   created_at: string
+}
+
+export interface AuditEventRow {
+  id: string
+  ts: string
+  actor_user_id: string | null
+  actor_username: string
+  action: string
+  target_type: string
+  target_id: string
+  detail: Record<string, unknown>
+  client_ip: string
 }
 
 export interface RequestLogRow {
@@ -93,16 +110,23 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     timeoutMs: ch.timeout_ms,
     status: ch.status,
     note: ch.note,
+    lastLatencyMs: ch.last_latency_ms,
+    lastTestAt: ch.last_test_at,
+    lastTestOk: ch.last_test_ok,
     createdAt: ch.created_at
   }
 }
 
-/** 密钥对外表示：只有前缀，没有哈希、没有明文 */
+/**
+ * 密钥对外表示：只有前缀，**绝不包含 key_hash 与 key_cipher**。
+ * revealable 只表示「是否存有可解密副本」，不泄漏任何密钥内容。
+ */
 export function toApiKeyDto(k: ApiKeyRow) {
   return {
     id: k.id,
     name: k.name,
     keyPrefix: k.key_prefix,
+    revealable: Boolean(k.key_cipher),
     userId: k.user_id,
     channelId: k.channel_id,
     modelAllow: k.model_allow,
