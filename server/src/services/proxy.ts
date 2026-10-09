@@ -138,6 +138,8 @@ export class SseUsageScanner {
  */
 export const RESERVED_HEADERS = new Set([
   'authorization',
+  // Anthropic 协议用 x-api-key 传凭据，同样必须由「上游 API Key」字段提供
+  'x-api-key',
   'content-type',
   'content-length',
   'host',
@@ -236,7 +238,12 @@ export function vendorHeaders(
 export interface UpstreamHeaderOptions {
   extraHeaders?: Record<string, string>
   vendor?: string
+  /** 上游协议决定用哪种认证头（见下） */
+  protocol?: 'openai' | 'anthropic'
 }
+
+/** Anthropic 要求显式声明 API 版本 */
+export const ANTHROPIC_VERSION = '2023-06-01'
 
 /**
  * 组装转发到上游的请求头。
@@ -259,9 +266,22 @@ export function buildUpstreamHeaders(
   Object.assign(headers, vendorHeaders(options.vendor ?? 'generic', extra))
   Object.assign(headers, extra)
 
-  // 上游密钥永远压过一切，包括用户误填的同名头
+  // 上游密钥永远压过一切，包括用户误填的同名头。
+  //
+  // 认证方式按协议不同：
+  //   OpenAI    → Authorization: Bearer <key>
+  //   Anthropic → x-api-key: <key>（且要求 anthropic-version）
+  // 用错头会得到一句「Authentication failed」，而上游不会告诉你头用错了。
   if (upstreamApiKey) {
-    headers.authorization = `Bearer ${upstreamApiKey}`
+    if (options.protocol === 'anthropic') {
+      headers['x-api-key'] = upstreamApiKey
+      // 用户可通过固定请求头覆盖版本号（anthropic-version 不在保留列表里）
+      if (!('anthropic-version' in headers)) {
+        headers['anthropic-version'] = ANTHROPIC_VERSION
+      }
+    } else {
+      headers.authorization = `Bearer ${upstreamApiKey}`
+    }
   }
 
   return headers

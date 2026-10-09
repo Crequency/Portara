@@ -88,9 +88,13 @@ function startMockUpstream() {
       const raw = Buffer.concat(chunks).toString('utf8')
       const url = req.url ?? ''
 
-      // 鉴权校验：网关必须带上渠道密钥
+      // 鉴权校验：网关必须带上渠道密钥。
+      // OpenAI 协议用 Bearer，Anthropic 协议用 x-api-key —— 两种都接受，
+      // 具体用了哪种由断言去校验（伪上游不该替应用规定用哪种）。
       const auth = req.headers.authorization ?? ''
-      if (url.startsWith('/v1') && auth !== `Bearer ${UPSTREAM_KEY}`) {
+      const xApiKey = req.headers['x-api-key'] ?? ''
+      const authed = auth === `Bearer ${UPSTREAM_KEY}` || xApiKey === UPSTREAM_KEY
+      if (url.startsWith('/v1') && !authed) {
         res.writeHead(401, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { message: 'bad upstream key' } }))
         return
@@ -1629,6 +1633,17 @@ async function main() {
     })
     check('未给 max_tokens 时自动补默认值', () =>
       assert.equal(lastAnthropicBody.max_tokens, 4096)
+    )
+    check('Anthropic 上游用 x-api-key 认证（不是 Bearer）', () => {
+      assert.equal(lastUpstreamHeaders['x-api-key'], UPSTREAM_KEY, '缺少 x-api-key')
+      assert.equal(
+        lastUpstreamHeaders.authorization,
+        undefined,
+        'Anthropic 端点收到 Bearer 会报 Authentication failed'
+      )
+    })
+    check('Anthropic 请求带 anthropic-version', () =>
+      assert.ok(lastUpstreamHeaders['anthropic-version'], '缺少 anthropic-version')
     )
 
     // 流式翻译

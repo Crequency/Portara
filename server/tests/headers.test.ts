@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  ANTHROPIC_VERSION,
   buildUpstreamHeaders,
   isVendorPreset,
   sanitizeExtraHeaders,
@@ -106,4 +107,44 @@ test('buildUpstreamHeaders 中上游密钥压过用户误填的同名头', () =>
 test('buildUpstreamHeaders 在无上游密钥时不带 authorization', () => {
   const headers = buildUpstreamHeaders('', 'application/json')
   assert.equal(headers.authorization, undefined)
+})
+
+// ------------------------------------------------------------ 认证头按协议选择
+
+test('OpenAI 协议用 Authorization: Bearer', () => {
+  const h = buildUpstreamHeaders('sk-abc', 'application/json', { protocol: 'openai' })
+  assert.equal(h.authorization, 'Bearer sk-abc')
+  assert.equal(h['x-api-key'], undefined)
+})
+
+test('Anthropic 协议用 x-api-key 而非 Bearer，并带 anthropic-version', () => {
+  const h = buildUpstreamHeaders('sk-ant', 'application/json', { protocol: 'anthropic' })
+  assert.equal(h['x-api-key'], 'sk-ant')
+  assert.equal(h['anthropic-version'], ANTHROPIC_VERSION)
+  // 用错头会得到一句「Authentication failed」，而上游不会告诉你头用错了
+  assert.equal(h.authorization, undefined)
+})
+
+test('未指定协议时按 OpenAI 处理（保持既有行为）', () => {
+  const h = buildUpstreamHeaders('sk-abc', 'application/json')
+  assert.equal(h.authorization, 'Bearer sk-abc')
+})
+
+test('x-api-key 属于保留头，不允许用户自定义', () => {
+  const { headers, errors } = sanitizeExtraHeaders({ 'x-api-key': 'evil', 'X-Ok': '1' })
+  assert.deepEqual(headers, { 'X-Ok': '1' })
+  assert.equal(errors.length, 1)
+})
+
+test('用户可通过固定请求头覆盖 anthropic-version（它不是凭据）', () => {
+  const h = buildUpstreamHeaders('sk-ant', 'application/json', {
+    protocol: 'anthropic',
+    extraHeaders: { 'anthropic-version': '2024-01-01' }
+  })
+  assert.equal(h['anthropic-version'], '2024-01-01')
+})
+
+test('无上游密钥时两种协议都不带认证头', () => {
+  assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'openai' }).authorization, undefined)
+  assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'anthropic' })['x-api-key'], undefined)
 })

@@ -49,6 +49,8 @@ async function fetchModelsFor(opts: {
   timeoutMs: number
   extraHeaders: Record<string, string>
   vendor: string
+  /** 渠道默认协议决定认证头；mixed 按 openai 处理（模型列表接口本身是 OpenAI 风格） */
+  protocol?: string
 }): Promise<{
   ok: boolean
   status: number
@@ -64,7 +66,10 @@ async function fetchModelsFor(opts: {
     const res = await fetch(url, {
       headers: buildUpstreamHeaders(opts.upstreamKey, 'application/json', {
         extraHeaders: opts.extraHeaders,
-        vendor: opts.vendor
+        vendor: opts.vendor,
+        // 模型列表接口本身是 OpenAI 风格，只有纯 anthropic 渠道才换认证头；
+        // mixed 渠道这里按 openai 处理
+        protocol: opts.protocol === 'anthropic' ? 'anthropic' : 'openai'
       }),
       signal: AbortSignal.timeout(Math.min(opts.timeoutMs, 20_000))
     })
@@ -123,7 +128,9 @@ const fetchModelsSchema = z.object({
   modelsPath: z.string().max(200).default('/models'),
   timeoutMs: z.coerce.number().int().min(1000).max(600000).default(20000),
   extraHeaders: z.record(z.string(), z.string()).default({}),
-  vendor: z.string().default('generic')
+  vendor: z.string().default('generic'),
+  /** 决定用哪种认证头（anthropic 用 x-api-key） */
+  protocol: z.enum(['openai', 'anthropic', 'mixed']).default('openai')
 })
 
 /**
@@ -141,7 +148,8 @@ channelRoutes.post('/fetch-models', requireAdmin, async (c) => {
     modelsPath: body.modelsPath,
     timeoutMs: body.timeoutMs,
     extraHeaders: headers,
-    vendor: body.vendor
+    vendor: body.vendor,
+    protocol: body.protocol
   })
   return c.json(result)
 })
@@ -167,7 +175,8 @@ channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
     modelsPath: ch.models_path ?? '/models',
     timeoutMs: ch.timeout_ms,
     extraHeaders: ch.extra_headers ?? {},
-    vendor: ch.vendor
+    vendor: ch.vendor,
+    protocol: ch.protocol
   })
   return c.json(result)
 })
@@ -478,7 +487,8 @@ channelRoutes.post('/:id/test', async (c) => {
     modelsPath: ch.models_path ?? '/models',
     timeoutMs: ch.timeout_ms,
     extraHeaders: ch.extra_headers ?? {},
-    vendor: ch.vendor
+    vendor: ch.vendor,
+    protocol: ch.protocol
   })
 
   await record(result.latencyMs, result.ok)
@@ -568,7 +578,8 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
       method: 'POST',
       headers: buildUpstreamHeaders(upstreamKey, 'application/json', {
         extraHeaders: ch.extra_headers ?? {},
-        vendor: ch.vendor
+        vendor: ch.vendor,
+        protocol: plan.protocol
       }),
       body: plan.bodyText,
       signal
