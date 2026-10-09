@@ -9,6 +9,7 @@ import {
   type User
 } from '../api'
 import Modal from '../components/Modal.vue'
+import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatTime, headerLines, parseHeaderLines, parseList } from '../format'
 import { useI18n } from '../i18n'
@@ -55,6 +56,43 @@ const statusOptions = computed(() => [
 ])
 
 const isAdmin = (): boolean => props.user?.role === 'admin'
+
+// ---------------------------------------------------------------- 查看上游密钥
+
+const revealTarget = ref<Channel | null>(null)
+const revealedKey = ref('')
+const revealError = ref('')
+const revealing = ref(false)
+
+async function revealChannelKey(ch: Channel): Promise<void> {
+  revealTarget.value = ch
+  revealedKey.value = ''
+  revealError.value = ''
+  revealing.value = true
+  try {
+    const res = await api.get<{ key: string }>('/api/channels/' + ch.id + '/reveal')
+    revealedKey.value = res.key
+  } catch (err) {
+    revealError.value = err instanceof ApiError ? err.message : t('channels.revealKeyFailed')
+  } finally {
+    revealing.value = false
+  }
+}
+
+function closeReveal(): void {
+  revealTarget.value = null
+  revealedKey.value = ''
+  revealError.value = ''
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success(t('toast.copied'))
+  } catch {
+    toast.error(t('toast.copyFailed'))
+  }
+}
 
 // ---------------------------------------------------------------- 模型映射
 
@@ -522,7 +560,12 @@ onMounted(async () => {
               <th>{{ t('channels.baseUrl') }}</th>
               <th>{{ t('channels.upstreamKey') }}</th>
               <th>{{ t('channels.models') }}</th>
-              <th>{{ t('channels.priority') }} / {{ t('channels.weight') }}</th>
+              <th>
+                <span class="row" style="gap: 5px; display: inline-flex">
+                  {{ t('channels.priority') }} / {{ t('channels.weight') }}
+                  <PInfo :text="t('channels.priorityWeightHint')" />
+                </span>
+              </th>
               <th>{{ t('common.status') }}</th>
               <th style="min-width: 118px">{{ t('channels.latency') }}</th>
               <th style="width: 200px">{{ t('common.actions') }}</th>
@@ -552,7 +595,18 @@ onMounted(async () => {
                 </div>
               </td>
               <td class="mono" style="max-width: 240px; word-break: break-all">{{ ch.baseUrl }}</td>
-              <td class="mono dim">{{ ch.apiKeyMasked || '—' }}</td>
+              <td class="mono dim">
+                <span class="row" style="gap: 7px">
+                  <span>{{ ch.apiKeyMasked || '—' }}</span>
+                  <button
+                    v-if="isAdmin() && ch.hasApiKey"
+                    class="btn btn-sm"
+                    @click="revealChannelKey(ch)"
+                  >
+                    {{ t('channels.revealKey') }}
+                  </button>
+                </span>
+              </td>
               <td>
                 <span v-if="ch.models.length === 0" class="badge badge-info">
                   {{ t('channels.allModels') }}
@@ -738,6 +792,31 @@ onMounted(async () => {
       </div>
     </div>
   </div>
+
+  <Modal
+    v-if="revealTarget"
+    :title="t('channels.revealKeyTitle', { name: revealTarget.name })"
+    wide
+    @close="closeReveal"
+  >
+    <div class="alert">{{ t('channels.revealKeyWarning') }}</div>
+
+    <div v-if="revealing" class="loading">{{ t('channels.revealKeyReading') }}</div>
+    <div v-else-if="revealError" class="err-text">{{ revealError }}</div>
+    <template v-else>
+      <div class="code-box">{{ revealedKey }}</div>
+      <div class="row row-wrap" style="margin-top: 12px">
+        <button class="btn btn-primary btn-sm" @click="copyText(revealedKey)">
+          {{ t('channels.copyFullKey') }}
+        </button>
+        <span class="dim mono" style="font-size: 12px">{{ revealTarget.baseUrl }}</span>
+      </div>
+    </template>
+
+    <div class="modal-foot">
+      <button class="btn" @click="closeReveal">{{ t('common.close') }}</button>
+    </div>
+  </Modal>
 
   <Modal
     v-if="showForm"

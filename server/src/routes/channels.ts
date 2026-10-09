@@ -5,6 +5,7 @@ import { env } from '../env.js'
 import { decryptSecret, encryptSecret, maskSecret } from '../lib/crypto.js'
 import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
+import { recordAudit } from '../services/audit.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamUrl,
@@ -175,6 +176,39 @@ channelRoutes.delete('/:id', requireAdmin, async (c) => {
   if (!current) throw notFound('渠道不存在')
   await query('delete from channels where id = $1', [id])
   return c.json({ ok: true })
+})
+
+/**
+ * 查看上游渠道的 API Key 明文：**仅管理员，且必然留审计**。
+ * 与客户端 Key 的 reveal 同一套安全约束（见 DECISIONS D-013 / D-022）。
+ */
+channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
+  if (!ch) throw notFound('渠道不存在')
+
+  if (!ch.api_key_cipher) {
+    throw new ApiError(409, 'channel_key_empty', '该渠道没有配置上游密钥')
+  }
+
+  let key: string
+  try {
+    key = decryptSecret(ch.api_key_cipher, env.masterKey)
+  } catch {
+    throw new ApiError(
+      500,
+      'channel_key_decrypt_failed',
+      '密钥解密失败：主密钥可能已变更（PORTARA_MASTER_KEY）'
+    )
+  }
+
+  // 审计写入失败会让整个请求失败（fail-closed），不留无声的痕迹
+  await recordAudit(c, 'channel.reveal', { type: 'channel', id }, {
+    name: ch.name,
+    baseUrl: ch.base_url
+  })
+
+  return c.json({ key, name: ch.name, baseUrl: ch.base_url })
 })
 
 /** 连通性测试：GET {base}/models，并把最近一次结果（延迟/成败）落库供面板展示 */

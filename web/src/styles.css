@@ -785,3 +785,112 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .psel-open .pcombo-toggle {
   color: var(--accent);
 }
+
+/* 圆圈问号图标与悬浮说明 */
+.pinfo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  color: var(--text-faint);
+  cursor: help;
+  vertical-align: -2px;
+  outline: none;
+}
+
+.pinfo:hover,
+.pinfo:focus-visible {
+  color: var(--accent);
+}
+
+.pinfo-tip {
+  position: fixed;
+  z-index: 260;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  white-space: normal;
+}
+
+/* 批量测试结果 */
+.batch-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.4fr) 68px 76px 84px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.batch-row:last-child {
+  border-bottom: none;
+}
+
+.batch-head {
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-weight: 560;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.batch-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.batch-pick {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  display: grid;
+  gap: 2px;
+}
+
+.batch-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.batch-pick-item:hover {
+  background: var(--bg-elev-2);
+}
+
+.batch-pick-item.on {
+  color: var(--accent);
+}
+
+.batch-pick-box {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  display: grid;
+  place-items: center;
+  color: var(--accent-contrast);
+}
+
+.batch-pick-item.on .batch-pick-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}

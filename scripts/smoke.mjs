@@ -717,6 +717,43 @@ async function main() {
       assert.ok(!operatorList.text.includes(keyFull))
     )
 
+    // ---- 上游渠道密钥的查看：同一套安全约束 ----
+    const channelReveal = await apiCall('GET', `/api/channels/${channelId}/reveal`)
+    check('管理员可查看上游渠道密钥', () => assert.equal(channelReveal.status, 200))
+    check('上游密钥明文正确', () => assert.equal(channelReveal.body?.key, UPSTREAM_KEY))
+
+    const operatorChannelReveal = await apiCall(
+      'GET',
+      `/api/channels/${channelId}/reveal`,
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('操作员查看上游密钥被拒（403）', () =>
+      assert.equal(operatorChannelReveal.status, 403)
+    )
+
+    const noKeyChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-nokey-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      models: [MOCK_MODEL]
+    })
+    const noKeyReveal = await apiCall(
+      'GET',
+      `/api/channels/${noKeyChannel.body.channel.id}/reveal`
+    )
+    check('未配置密钥的渠道查看返回 409', () => {
+      assert.equal(noKeyReveal.status, 409)
+      assert.equal(noKeyReveal.body?.error?.code, 'channel_key_empty')
+    })
+    await apiCall('DELETE', `/api/channels/${noKeyChannel.body.channel.id}`)
+
+    const channelAudit = await apiCall('GET', '/api/audit?action=channel.reveal&limit=20')
+    check('查看上游密钥已写入审计日志', () => {
+      const hit = (channelAudit.body?.events ?? []).find((e) => e.targetId === channelId)
+      assert.ok(hit, '未找到 channel.reveal 审计记录')
+      assert.equal(hit.actor, ADMIN_USER)
+    })
+
     const audit = await apiCall('GET', '/api/audit?action=key.reveal&limit=20')
     check('查看密钥已写入审计日志', () => {
       assert.equal(audit.status, 200)

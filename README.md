@@ -41,6 +41,8 @@ var client = new OpenAIClient(
 | 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试 + 延迟展示） | ✅ |
 | API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |
 | 查看完整 Key（仅管理员 + 风险提示 + 审计留痕，见 D-013） | ✅ |
+| 查看上游渠道 API Key（仅管理员 + 审计留痕，见 D-022） | ✅ |
+| 对话测试支持**批量模型测试**（多选 + 有限并发 + 聚合结果） | ✅ |
 | 对话测试页（仅管理员；可选「网关自身测试」或「上游渠道直连测试」） | ✅ |
 | 渠道协议与厂商兼容（OpenAI 兼容 / OpenCode）+ 自定义固定请求头 | ✅ |
 | **模型映射**（网关模型 ID → 上游模型；一个 ID 负载均衡到多渠道多模型） | ✅ |
@@ -145,6 +147,7 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理 |
 | `POST /api/channels/:id/test` | 上游连通性测试（并记录延迟） |
 | `POST /api/channels/:id/chat` | **直连上游**的对话测试（仅管理员，绕过网关治理） |
+| `GET /api/channels/:id/reveal` | 查看上游密钥明文（**仅管理员**，必写审计） |
 | `GET/POST/PATCH/DELETE /api/keys[/:id]`、`POST /api/keys/:id/rotate` | 密钥 |
 | `GET /api/keys/:id/reveal` | 查看完整密钥（**仅管理员**，必写审计） |
 | `GET /api/audit` | 审计日志查询（仅管理员） |

@@ -11,6 +11,7 @@
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api, ApiError, type ApiKey, type Channel, type User } from '../api'
+import Modal from '../components/Modal.vue'
 import PCheckbox from '../components/PCheckbox.vue'
 import PCombobox from '../components/PCombobox.vue'
 import PSelect from '../components/PSelect.vue'
@@ -308,6 +309,218 @@ async function send(): Promise<void> {
   }
 }
 
+
+// ---------------------------------------------------------------- 批量测试
+
+interface BatchResult {
+  model: string
+  status: 'pending' | 'running' | 'ok' | 'error'
+  statusCode?: number
+  latencyMs?: number
+  totalTokens?: number
+  content?: string
+  error?: string
+}
+
+const batchOpen = ref(false)
+const batchSelected = ref<string[]>([])
+const batchPrompt = ref('')
+const batchSearch = ref('')
+const batchRunning = ref(false)
+const batchStopped = ref(false)
+const batchConcurrency = ref(3)
+const batchResults = ref<BatchResult[]>([])
+
+/** 可测试的模型：跟随当前测试对象（网关模式=该 Key 可见模型，渠道模式=该渠道声明模型） */
+const batchCandidates = computed(() => {
+  const q = batchSearch.value.trim().toLowerCase()
+  const all = models.value
+  return q ? all.filter((m) => m.toLowerCase().includes(q)) : all
+})
+
+const batchDoneCount = computed(
+  () => batchResults.value.filter((r) => r.status === 'ok' || r.status === 'error').length
+)
+
+const batchSummary = computed(() => {
+  const done = batchResults.value.filter((r) => r.status === 'ok' || r.status === 'error')
+  const ok = done.filter((r) => r.status === 'ok')
+  const fail = done.length - ok.length
+  const avg =
+    ok.length > 0
+      ? Math.round(ok.reduce((sum, r) => sum + (r.latencyMs ?? 0), 0) / ok.length)
+      : 0
+  return { ok: ok.length, fail, avg, total: batchResults.value.length }
+})
+
+/** 网关模式下可能触发限流时给出预警 */
+const batchRpmWarning = computed(() => {
+  if (testTarget.value !== 'gateway') return ''
+  const rpm = selectedKey.value?.rpmLimit ?? 0
+  if (rpm <= 0) return ''
+  const n = batchSelected.value.length
+  if (n <= rpm) return ''
+  return t('chat.batchRpmWarning', { rpm, n })
+})
+
+function openBatch(): void {
+  batchSelected.value = []
+  batchResults.value = []
+  batchSearch.value = ''
+  batchPrompt.value = input.value.trim()
+  batchRunning.value = false
+  batchStopped.value = false
+  batchOpen.value = true
+}
+
+function closeBatch(): void {
+  if (batchRunning.value) batchStopped.value = true
+  batchOpen.value = false
+}
+
+function toggleBatchModel(m: string): void {
+  const i = batchSelected.value.indexOf(m)
+  if (i >= 0) batchSelected.value.splice(i, 1)
+  else batchSelected.value.push(m)
+}
+
+function selectAllBatch(): void {
+  batchSelected.value = [...new Set([...batchSelected.value, ...batchCandidates.value])]
+}
+
+function invertBatch(): void {
+  const set = new Set(batchSelected.value)
+  batchSelected.value = batchCandidates.value.filter((m) => !set.has(m))
+}
+
+function clearBatch(): void {
+  batchSelected.value = []
+}
+
+/** 单个模型的请求（批量统一用非流式，便于直接取到 usage） */
+async function requestOne(
+  model: string,
+  prompt: string
+): Promise<Partial<BatchResult>> {
+  const started = Date.now()
+  const payload = {
+    model,
+    messages: [{ role: 'user', content: prompt }],
+    stream: false
+  }
+
+  let res: Response
+  if (testTarget.value === 'channel') {
+    res = await fetch('/api/channels/' + channelId.value + '/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+  } else {
+    const token = await ensurePlainKey()
+    res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify(payload)
+    })
+  }
+
+  const text = await res.text()
+  let body: {
+    choices?: { message?: { content?: string } }[]
+    usage?: { total_tokens?: number }
+    error?: { message?: string }
+  } | null = null
+  try {
+    body = text ? JSON.parse(text) : null
+  } catch {
+    body = null
+  }
+
+  const latencyMs = Date.now() - started
+
+  if (!res.ok) {
+    return {
+      status: 'error',
+      statusCode: res.status,
+      latencyMs,
+      error: body?.error?.message ?? text.slice(0, 200) ?? 'HTTP ' + res.status
+    }
+  }
+
+  return {
+    status: 'ok',
+    statusCode: res.status,
+    latencyMs,
+    totalTokens: body?.usage?.total_tokens ?? 0,
+    content: body?.choices?.[0]?.message?.content ?? t('chat.emptyResponse')
+  }
+}
+
+/** 有限并发地跑完所有选中模型 */
+async function runBatch(): Promise<void> {
+  const selected = [...batchSelected.value]
+  if (selected.length === 0) {
+    toast.error(t('chat.batchEmptySelection'))
+    return
+  }
+  const prompt = batchPrompt.value.trim()
+  if (!prompt) {
+    toast.error(t('chat.batchNoPrompt'))
+    return
+  }
+
+  batchResults.value = selected.map((m) => ({ model: m, status: 'pending' as const }))
+  batchRunning.value = true
+  batchStopped.value = false
+
+  const queue = selected.map((model, index) => ({ model, index }))
+  const workers = Math.max(1, Math.min(Number(batchConcurrency.value) || 1, queue.length))
+
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (;;) {
+        if (batchStopped.value) return
+        const item = queue.shift()
+        if (!item) return
+        const row = batchResults.value[item.index]
+        if (!row) return
+        row.status = 'running'
+        try {
+          Object.assign(row, await requestOne(item.model, prompt))
+        } catch (err) {
+          row.status = 'error'
+          row.error = err instanceof Error ? err.message : String(err)
+        }
+      }
+    })
+  )
+
+  batchRunning.value = false
+}
+
+function stopBatch(): void {
+  batchStopped.value = true
+}
+
+async function copyBatchJson(): Promise<void> {
+  const data = batchResults.value.map((r) => ({
+    model: r.model,
+    status: r.status,
+    statusCode: r.statusCode ?? null,
+    latencyMs: r.latencyMs ?? null,
+    totalTokens: r.totalTokens ?? null,
+    response: r.content ?? null,
+    error: r.error ?? null
+  }))
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+    toast.success(t('toast.copied'))
+  } catch {
+    toast.error(t('toast.copyFailed'))
+  }
+}
+
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -343,8 +556,15 @@ onMounted(async () => {
             </template>
           </div>
         </div>
-        <div class="row">
+        <div class="row row-wrap">
           <button class="btn btn-sm" @click="loadModels">{{ t('chat.refreshModels') }}</button>
+          <button
+            class="btn btn-sm"
+            :disabled="models.length === 0"
+            @click="openBatch"
+          >
+            {{ t('chat.batchTest') }}
+          </button>
           <button class="btn btn-sm" @click="newSession">{{ t('chat.newSession') }}</button>
         </div>
       </div>
@@ -506,4 +726,156 @@ onMounted(async () => {
       </div>
     </div>
   </div>
+
+  <Modal
+    v-if="batchOpen"
+    :title="t('chat.batchTitle')"
+    wide
+    @close="closeBatch"
+  >
+    <div class="alert alert-info">{{ t('chat.batchSub') }}</div>
+
+    <div v-if="models.length === 0" class="empty">{{ t('chat.batchNoModels') }}</div>
+
+    <template v-else>
+      <div class="form-grid">
+        <div class="field">
+          <div class="row-between">
+            <label>
+              {{ t('chat.batchSelectModels') }} ·
+              {{ t('chat.batchSelected', { n: batchSelected.length }) }}
+            </label>
+            <div class="row">
+              <button class="btn btn-sm" @click="selectAllBatch">
+                {{ t('chat.batchSelectAll') }}
+              </button>
+              <button class="btn btn-sm" @click="invertBatch">
+                {{ t('chat.batchInvert') }}
+              </button>
+              <button class="btn btn-sm" @click="clearBatch">{{ t('chat.batchClear') }}</button>
+            </div>
+          </div>
+
+          <input v-model="batchSearch" :placeholder="t('chat.batchSearch')" />
+
+          <div class="batch-pick">
+            <div
+              v-for="m in batchCandidates"
+              :key="m"
+              class="batch-pick-item"
+              :class="{ on: batchSelected.includes(m) }"
+              @click="toggleBatchModel(m)"
+            >
+              <span class="batch-pick-box">
+                <svg v-if="batchSelected.includes(m)" width="10" height="10" viewBox="0 0 12 12">
+                  <path
+                    d="M2 6.4 4.6 9 10 3.4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </span>
+              <span class="mono">{{ m }}</span>
+            </div>
+            <div v-if="batchCandidates.length === 0" class="empty" style="padding: 14px">
+              {{ t('common.empty') }}
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field">
+            <label>{{ t('chat.batchPrompt') }}</label>
+            <input
+              v-model="batchPrompt"
+              :placeholder="t('chat.batchPromptPlaceholder')"
+              :disabled="batchRunning"
+            />
+          </div>
+          <div class="field">
+            <label>{{ t('chat.batchConcurrency') }}</label>
+            <input
+              v-model.number="batchConcurrency"
+              type="number"
+              min="1"
+              max="10"
+              :disabled="batchRunning"
+            />
+          </div>
+        </div>
+
+        <div v-if="batchRpmWarning" class="alert" style="margin-bottom: 0">
+          {{ batchRpmWarning }}
+        </div>
+
+        <div v-if="batchResults.length > 0" class="field">
+          <div class="row-between">
+            <label>
+              {{ t('chat.batchSummary', {
+                ok: batchSummary.ok,
+                fail: batchSummary.fail,
+                avg: formatLatency(batchSummary.avg)
+              }) }}
+              <span v-if="batchRunning" class="dim">
+                · {{ t('chat.batchRunning', {
+                  done: batchDoneCount,
+                  total: batchSummary.total
+                }) }}
+              </span>
+            </label>
+            <button class="btn btn-sm" @click="copyBatchJson">
+              {{ t('chat.batchCopyJson') }}
+            </button>
+          </div>
+
+          <div class="batch-scroll">
+            <div class="batch-row batch-head">
+              <span>{{ t('chat.batchModel') }}</span>
+              <span>{{ t('chat.batchStatus') }}</span>
+              <span>{{ t('chat.batchLatency') }}</span>
+              <span>{{ t('chat.batchTokens') }}</span>
+              <span>{{ t('chat.batchResponse') }}</span>
+            </div>
+            <div v-for="r in batchResults" :key="r.model" class="batch-row">
+              <span class="mono" style="overflow: hidden; text-overflow: ellipsis">{{ r.model }}</span>
+              <span>
+                <span v-if="r.status === 'pending'" class="dim">—</span>
+                <span v-else-if="r.status === 'running'" class="badge badge-info">…</span>
+                <span v-else-if="r.status === 'ok'" class="badge badge-ok">{{ r.statusCode }}</span>
+                <span v-else class="badge badge-err">{{ r.statusCode ?? 'ERR' }}</span>
+              </span>
+              <span class="nowrap">{{ r.latencyMs === undefined ? '—' : formatLatency(r.latencyMs) }}</span>
+              <span class="nowrap">{{ r.totalTokens ?? '—' }}</span>
+              <span
+                :class="r.status === 'error' ? 'err-text' : 'dim'"
+                style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                :title="r.error || r.content || ''"
+              >
+                {{ r.error || r.content || '' }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <div class="modal-foot">
+      <button class="btn" @click="closeBatch">{{ t('common.close') }}</button>
+      <button v-if="batchRunning" class="btn btn-danger" @click="stopBatch">
+        {{ t('chat.batchStop') }}
+      </button>
+      <button
+        v-else
+        class="btn btn-primary"
+        :disabled="batchSelected.length === 0"
+        @click="runBatch"
+      >
+        {{ t('chat.batchRun') }}
+      </button>
+    </div>
+  </Modal>
+
 </template>
