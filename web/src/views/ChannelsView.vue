@@ -13,7 +13,13 @@ import {
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
-import { formatTime, headerLines, parseHeaderLines, parseList } from '../format'
+import {
+  formatNumber,
+  formatTime,
+  headerLines,
+  parseHeaderLines,
+  parseList
+} from '../format'
 import { useI18n } from '../i18n'
 import { toast } from '../toast'
 
@@ -448,6 +454,8 @@ function openCreate(): void {
     note: ''
   })
   fetchState.value = null
+  rawModelsBody.value = ''
+  rawTruncated.value = false
   showForm.value = true
 }
 
@@ -470,11 +478,16 @@ function openEdit(ch: Channel): void {
     note: ch.note
   })
   fetchState.value = null
+  rawModelsBody.value = ''
+  rawTruncated.value = false
   showForm.value = true
 }
 
 const fetchingModels = ref(false)
 const fetchState = ref<{ ok: boolean; message: string; warnings: string[] } | null>(null)
+/** 上游 /models 的原始响应体（供复制排查） */
+const rawModelsBody = ref('')
+const rawTruncated = ref(false)
 
 /** 已获取到元信息的模型（用于在弹窗里展示上下文长度） */
 const metaList = computed(() =>
@@ -492,6 +505,8 @@ const metaWithCtx = computed(() => metaList.value.filter((m) => m.contextLength 
 async function fetchModelsFromApi(): Promise<void> {
   fetchingModels.value = true
   fetchState.value = null
+  rawModelsBody.value = ''
+  rawTruncated.value = false
   try {
     const useStored = editingId.value && !form.apiKey
     const res = useStored
@@ -504,6 +519,10 @@ async function fetchModelsFromApi(): Promise<void> {
           extraHeaders: parseHeaderLines(form.headersText).headers,
           vendor: form.vendor
         })
+
+    // 无论成功失败都留一份原始响应体 —— 失败时往往更需要它
+    rawModelsBody.value = res.raw ?? ''
+    rawTruncated.value = res.rawTruncated === true
 
     if (!res.ok) {
       fetchState.value = { ok: false, message: res.message, warnings: [] }
@@ -528,6 +547,21 @@ async function fetchModelsFromApi(): Promise<void> {
     toast.error(message)
   } finally {
     fetchingModels.value = false
+  }
+}
+
+/** 复制上游 /models 的原始响应体 */
+async function copyRawModelsBody(): Promise<void> {
+  if (!rawModelsBody.value) return
+  try {
+    await navigator.clipboard.writeText(rawModelsBody.value)
+    toast.success(
+      rawTruncated.value
+        ? t('channels.copiedRawTruncated')
+        : t('channels.copiedRaw', { n: formatNumber(rawModelsBody.value.length) })
+    )
+  } catch {
+    toast.error(t('toast.copyFailed'))
   }
 }
 
@@ -1011,13 +1045,27 @@ onMounted(async () => {
       <div class="field">
         <div class="row-between">
           <label>{{ t('channels.models') }}</label>
-          <button
-            class="btn btn-sm"
-            :disabled="fetchingModels || !form.baseUrl.trim()"
-            @click="fetchModelsFromApi"
-          >
-            {{ fetchingModels ? t('channels.fetchingModels') : t('channels.fetchModels') }}
-          </button>
+          <div class="row">
+            <button
+              class="btn btn-sm"
+              :disabled="fetchingModels || !form.baseUrl.trim()"
+              @click="fetchModelsFromApi"
+            >
+              {{ fetchingModels ? t('channels.fetchingModels') : t('channels.fetchModels') }}
+            </button>
+            <button
+              class="btn btn-sm btn-icon"
+              :disabled="!rawModelsBody"
+              :title="t('channels.copyRawBody')"
+              @click="copyRawModelsBody"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5.5" y="5.5" width="8" height="9" rx="1.5" />
+                <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v7A1.5 1.5 0 0 0 4 12.5h1.5" />
+              </svg>
+            </button>
+          </div>
         </div>
         <textarea
           v-model="form.modelsText"
@@ -1030,6 +1078,10 @@ onMounted(async () => {
           {{ fetchState.message }}
           <template v-if="fetchState.warnings.length">
             · {{ t('channels.fetchWarnings', { n: fetchState.warnings.length }) }}
+          </template>
+          <template v-if="rawModelsBody">
+            · {{ t('channels.rawBodySize', { n: formatNumber(rawModelsBody.length) }) }}
+            <span v-if="rawTruncated">{{ t('channels.rawBodyTruncated') }}</span>
           </template>
         </div>
 

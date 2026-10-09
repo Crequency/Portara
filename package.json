@@ -14,7 +14,7 @@
     "dev:web": "pnpm --filter @portara/web dev",
     "build": "pnpm --filter @portara/web build && pnpm --filter @portara/server build",
     "start": "pnpm --filter @portara/server start",
-    "typecheck": "pnpm --filter @portara/server typecheck",
+    "typecheck": "pnpm --filter @portara/server typecheck && pnpm --filter @portara/web typecheck",
     "test": "pnpm --filter @portara/server test",
     "infra:up": "docker compose up -d postgres redis",
     "infra:down": "docker compose down",

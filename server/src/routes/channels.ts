@@ -58,6 +58,9 @@ async function fetchModelsFor(opts: {
   models: ModelInfo[]
   warnings: string[]
   message: string
+  /** 上游 /models 的原始响应体（供用户复制排查，可能被截断） */
+  raw: string
+  rawTruncated: boolean
 }> {
   const url = buildModelsUrl(opts.baseUrl, opts.modelsPath)
   const started = Date.now()
@@ -76,6 +79,11 @@ async function fetchModelsFor(opts: {
     const latencyMs = Date.now() - started
     const text = await res.text()
 
+    // 原始响应体一并返回：用户常需要拿它去核对上游到底给了什么
+    const RAW_LIMIT = 512 * 1024
+    const raw = text.length > RAW_LIMIT ? text.slice(0, RAW_LIMIT) : text
+    const rawTruncated = text.length > RAW_LIMIT
+
     if (!res.ok) {
       return {
         ok: false,
@@ -83,7 +91,9 @@ async function fetchModelsFor(opts: {
         latencyMs,
         models: [],
         warnings: [],
-        message: `上游返回 ${res.status}：${text.slice(0, 200)}`
+        message: `上游返回 ${res.status}：${text.slice(0, 200)}`,
+        raw,
+        rawTruncated
       }
     }
 
@@ -97,7 +107,9 @@ async function fetchModelsFor(opts: {
         latencyMs,
         models: [],
         warnings: [],
-        message: '上游返回的不是合法 JSON'
+        message: '上游返回的不是合法 JSON',
+        raw,
+        rawTruncated
       }
     }
 
@@ -108,7 +120,9 @@ async function fetchModelsFor(opts: {
       latencyMs,
       models,
       warnings,
-      message: models.length > 0 ? `获取到 ${models.length} 个模型` : '上游没有返回任何模型'
+      message: models.length > 0 ? `获取到 ${models.length} 个模型` : '上游没有返回任何模型',
+      raw,
+      rawTruncated
     }
   } catch (err) {
     return {
@@ -117,7 +131,9 @@ async function fetchModelsFor(opts: {
       latencyMs: Date.now() - started,
       models: [],
       warnings: [],
-      message: `连接失败：${err instanceof Error ? err.message : String(err)}`
+      message: `连接失败：${err instanceof Error ? err.message : String(err)}`,
+      raw: '',
+      rawTruncated: false
     }
   }
 }

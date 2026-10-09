@@ -106,7 +106,7 @@ onMounted(async () => {
 function onLoggedIn(u: User): void {
   user.value = u
   location.hash = '#/overview'
-  route.value = 'overview'
+  route.value = { name: 'overview', param: '' }
 }
 
 async function logout(): Promise<void> {

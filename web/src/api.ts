@@ -109,6 +109,9 @@ export interface FetchModelsResult {
   models: ModelInfo[]
   warnings: string[]
   message: string
+  /** 上游 /models 的原始响应体 */
+  raw: string
+  rawTruncated: boolean
 }
 
 export interface ModelRoute {

@@ -1415,6 +1415,14 @@ async function main() {
       assert.equal(draftFetch.status, 200)
       assert.equal(draftFetch.body?.ok, true)
     })
+    check('拉取模型时一并返回原始响应体', () => {
+      const raw = draftFetch.body?.raw
+      assert.ok(typeof raw === 'string' && raw.length > 0, '缺少 raw')
+      const parsed = JSON.parse(raw) // 必须是可直接解析的 JSON
+      assert.ok(Array.isArray(parsed.data), 'raw 不是上游原样返回的 JSON')
+      assert.equal(draftFetch.body.rawTruncated, false)
+    })
+
     check('解析出上下文长度与最大输出', () => {
       const m = (draftFetch.body?.models ?? []).find((x) => x.id === MOCK_MODEL)
       assert.ok(m, '未找到主模型')
