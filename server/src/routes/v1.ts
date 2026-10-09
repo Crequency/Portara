@@ -372,42 +372,99 @@ v1Routes.post('/embeddings', (c) => handleProxy(c, '/embeddings', { scanUsage: t
 v1Routes.post('/responses', (c) => handleProxy(c, '/responses', { scanUsage: true }))
 
 /**
+ * 把模型元信息（上下文长度等）附加到 /v1/models 的条目上。
+ *
+ * OpenAI 规范里 /models 只有 id/object/created/owned_by，
+ * 但很多实现会额外返回上下文长度、价格等；既然 Portara 抓到了这些信息，
+ * 就应当透传出去 —— 否则调用方在网关后面反而看不到它们。
+ */
+function decorateModel(
+  id: string,
+  owner: string,
+  meta: unknown
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    id,
+    object: 'model',
+    created: 0,
+    owned_by: owner
+  }
+
+  if (!meta || typeof meta !== 'object') return base
+  const m = meta as Record<string, unknown>
+  const extra: Record<string, unknown> = {}
+
+  // 透传上游原始标量字段（跳过会与规范字段冲突的键）
+  const raw = m.raw
+  if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (['id', 'object', 'created', 'owned_by', 'name', 'model'].includes(k)) continue
+      if (v === null || ['string', 'number', 'boolean'].includes(typeof v)) extra[k] = v
+    }
+  }
+
+  // 归一化后的字段以规范名输出（不同厂商叫法不一，这里统一成 context_length）
+  if (typeof m.contextLength === 'number') extra.context_length = m.contextLength
+  if (typeof m.maxOutputTokens === 'number') extra.max_output_tokens = m.maxOutputTokens
+
+  // base 放后面：规范字段优先级最高，不被 raw 里的同名键覆盖
+  return { ...extra, ...base }
+}
+
+/**
  * 聚合可用的模型 id：
- *   ① 模型映射的别名（网关受理的 id）
+ *   ① 模型映射的别名（网关受理的 id），元信息取该别名首个目标的渠道配置
  *   ② 各启用渠道声明的模型（未配映射时的直通 id）
  */
 v1Routes.get('/models', async (c) => {
   const key = c.get('apiKey') as ApiKeyRow
 
-  const aliasRows = await query<{ alias: string }>(
-    `select distinct alias from model_routes where status = 'active' order by alias asc`
-  )
   const channels = await query<ChannelRow>(
     `select * from channels where status = 'active' order by priority asc, name asc`
   )
-
-  const seen = new Map<string, string>()
-  for (const row of aliasRows) {
-    if (!seen.has(row.alias)) seen.set(row.alias, 'portara/mapping')
+  const metaByChannel = new Map<string, Record<string, unknown>>()
+  for (const ch of channels) {
+    metaByChannel.set(ch.id, (ch.models_meta ?? {}) as Record<string, unknown>)
   }
+
+  // 别名 → 其首个目标的 (渠道, 上游模型)，据此取元信息
+  const aliasRows = await query<{
+    alias: string
+    channel_id: string
+    upstream_model: string
+  }>(
+    `select distinct on (r.alias) r.alias, r.channel_id, r.upstream_model
+       from model_routes r
+       join channels c on c.id = r.channel_id
+      where r.status = 'active' and c.status = 'active'
+      order by r.alias asc, r.priority asc, r.id asc`
+  )
+
+  const entries = new Map<string, { owner: string; meta: unknown }>()
+
+  for (const row of aliasRows) {
+    if (entries.has(row.alias)) continue
+    const meta = metaByChannel.get(row.channel_id)?.[row.upstream_model]
+    entries.set(row.alias, { owner: 'portara/mapping', meta })
+  }
+
   for (const ch of channels) {
     for (const m of ch.models) {
-      if (!seen.has(m)) seen.set(m, `portara/${ch.name}`)
+      if (entries.has(m)) continue
+      entries.set(m, {
+        owner: `portara/${ch.name}`,
+        meta: (ch.models_meta ?? {})[m]
+      })
     }
   }
 
-  const allowed = [...seen.entries()].filter(
-    ([m]) => key.model_allow.length === 0 || key.model_allow.includes(m)
+  const allowed = [...entries.entries()].filter(
+    ([id]) => key.model_allow.length === 0 || key.model_allow.includes(id)
   )
 
   return c.json({
     object: 'list',
-    data: allowed.map(([id, owner]) => ({
-      id,
-      object: 'model',
-      created: Math.floor(Date.now() / 1000),
-      owned_by: owner
-    }))
+    data: allowed.map(([id, info]) => decorateModel(id, info.owner, info.meta))
   })
 })
 

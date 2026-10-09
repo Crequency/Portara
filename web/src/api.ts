@@ -65,6 +65,8 @@ export interface Channel {
   protocol: string
   vendor: string
   extraHeaders: Record<string, string>
+  modelsPath: string
+  modelsMeta: Record<string, ModelMeta>
   baseUrl: string
   apiKeyMasked: string
   hasApiKey: boolean
@@ -78,6 +80,28 @@ export interface Channel {
   lastTestAt: string | null
   lastTestOk: boolean | null
   createdAt: string
+}
+
+/** /models 抓取到的模型信息 */
+export interface ModelInfo {
+  id: string
+  contextLength: number | null
+  maxOutputTokens: number | null
+  ownedBy: string | null
+  created: number | null
+  raw: Record<string, unknown>
+}
+
+/** 渠道上保存的模型元信息（与 ModelInfo 同形） */
+export type ModelMeta = ModelInfo
+
+export interface FetchModelsResult {
+  ok: boolean
+  status: number
+  latencyMs: number
+  models: ModelInfo[]
+  warnings: string[]
+  message: string
 }
 
 export interface ModelRoute {
@@ -192,6 +216,7 @@ export interface ChannelTestResult {
   latencyMs: number
   testedAt?: string
   models: string[]
+  modelInfo?: ModelInfo[]
   message: string
 }
 

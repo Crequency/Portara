@@ -24,6 +24,10 @@ export interface ChannelRow {
   api_key_cipher: string
   /** 用户自定义固定请求头（明文保存，见 D-016） */
   extra_headers: Record<string, string>
+  /** 模型列表 API 的路径，默认 /models（OpenAI 协议约定） */
+  models_path: string
+  /** 模型元信息（上下文长度等），键为模型 id */
+  models_meta: Record<string, unknown>
   models: string[]
   priority: number
   weight: number
@@ -146,6 +150,8 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     protocol: ch.protocol,
     vendor: ch.vendor,
     extraHeaders: ch.extra_headers ?? {},
+    modelsPath: ch.models_path ?? '/models',
+    modelsMeta: ch.models_meta ?? {},
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     hasApiKey: Boolean(ch.api_key_cipher),

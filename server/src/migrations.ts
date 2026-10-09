@@ -144,5 +144,20 @@ export const migrations: { id: string; sql: string }[] = [
       -- 请求日志同时记录「受理模型」与「实际上游模型」，便于排查映射问题
       alter table request_logs add column if not exists upstream_model text not null default '';
     `
+  },
+  {
+    id: '005_channel_models_api',
+    sql: `
+      -- 模型列表 API 的路径。默认 /models 即 OpenAI 协议的约定；
+      -- 不同厂商可能不同，故做成渠道级可配置。
+      alter table channels add column if not exists models_path text not null default '/models';
+
+      -- 模型元信息（上下文长度等），键为模型 id。
+      --
+      -- 为什么新增列而不是改 models 的类型：models 仍是 text[]（模型 id 列表），
+      -- 元信息作为旁挂数据存这里 —— 纯加法迁移，**既有数据零改动、零丢失**。
+      -- 老行取默认值 {} 即「该模型无元信息」，代码按缺失优雅降级。
+      alter table channels add column if not exists models_meta jsonb not null default '{}'::jsonb;
+    `
   }
 ]

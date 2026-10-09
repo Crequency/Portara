@@ -5,6 +5,8 @@ import {
   ApiError,
   type Channel,
   type ChannelTestResult,
+  type FetchModelsResult,
+  type ModelMeta,
   type ModelRoute,
   type User
 } from '../api'
@@ -32,6 +34,8 @@ const form = reactive({
   apiKey: '',
   protocol: 'openai',
   vendor: 'generic',
+  modelsPath: '/models',
+  modelsMeta: {} as Record<string, ModelMeta>,
   headersText: '',
   modelsText: '',
   priority: 100,
@@ -404,6 +408,8 @@ function openCreate(): void {
     apiKey: '',
     protocol: 'openai',
     vendor: 'generic',
+    modelsPath: '/models',
+    modelsMeta: {},
     headersText: '',
     modelsText: '',
     priority: 100,
@@ -412,6 +418,7 @@ function openCreate(): void {
     status: 'active',
     note: ''
   })
+  fetchState.value = null
   showForm.value = true
 }
 
@@ -423,6 +430,8 @@ function openEdit(ch: Channel): void {
     apiKey: '',
     protocol: ch.protocol,
     vendor: ch.vendor,
+    modelsPath: ch.modelsPath ?? '/models',
+    modelsMeta: { ...(ch.modelsMeta ?? {}) },
     headersText: headerLines(ch.extraHeaders ?? {}),
     modelsText: ch.models.join('\n'),
     priority: ch.priority,
@@ -431,7 +440,66 @@ function openEdit(ch: Channel): void {
     status: ch.status,
     note: ch.note
   })
+  fetchState.value = null
   showForm.value = true
+}
+
+const fetchingModels = ref(false)
+const fetchState = ref<{ ok: boolean; message: string; warnings: string[] } | null>(null)
+
+/** 已获取到元信息的模型（用于在弹窗里展示上下文长度） */
+const metaList = computed(() =>
+  Object.values(form.modelsMeta)
+    .filter((m) => form.modelsText.includes(m.id))
+    .sort((a, b) => a.id.localeCompare(b.id))
+)
+const metaWithCtx = computed(() => metaList.value.filter((m) => m.contextLength !== null).length)
+
+/**
+ * 从上游拉取模型列表并自动填入。
+ * 编辑已有渠道且未重新输入密钥时，走后端用已存密钥的接口；
+ * 否则把当前表单里的配置（含新填的密钥）发给草稿接口。
+ */
+async function fetchModelsFromApi(): Promise<void> {
+  fetchingModels.value = true
+  fetchState.value = null
+  try {
+    const useStored = editingId.value && !form.apiKey
+    const res = useStored
+      ? await api.post<FetchModelsResult>('/api/channels/' + editingId.value + '/fetch-models')
+      : await api.post<FetchModelsResult>('/api/channels/fetch-models', {
+          baseUrl: form.baseUrl.trim(),
+          apiKey: form.apiKey,
+          modelsPath: form.modelsPath.trim() || '/models',
+          timeoutMs: Number(form.timeoutMs),
+          extraHeaders: parseHeaderLines(form.headersText).headers,
+          vendor: form.vendor
+        })
+
+    if (!res.ok) {
+      fetchState.value = { ok: false, message: res.message, warnings: [] }
+      toast.error(res.message)
+      return
+    }
+
+    // 自动填入模型列表，并记录元信息（上下文长度等）
+    form.modelsText = res.models.map((m) => m.id).join('\n')
+    form.modelsMeta = Object.fromEntries(res.models.map((m) => [m.id, m]))
+
+    const withCtx = res.models.filter((m) => m.contextLength !== null).length
+    fetchState.value = { ok: true, message: res.message, warnings: res.warnings }
+    toast.success(
+      withCtx > 0
+        ? t('channels.fetchOk', { n: res.models.length, withCtx })
+        : t('channels.fetchOkNoCtx', { n: res.models.length })
+    )
+  } catch (err) {
+    const message = err instanceof ApiError ? err.message : t('channels.fetchFailed')
+    fetchState.value = { ok: false, message, warnings: [] }
+    toast.error(message)
+  } finally {
+    fetchingModels.value = false
+  }
 }
 
 async function submit(): Promise<void> {
@@ -443,13 +511,20 @@ async function submit(): Promise<void> {
 
   saving.value = true
   try {
+    const modelIds = parseList(form.modelsText)
+
     const body = {
       name: form.name.trim(),
       baseUrl: form.baseUrl.trim(),
       protocol: form.protocol,
       vendor: form.vendor,
       extraHeaders: parsedHeaders.headers,
-      models: parseList(form.modelsText),
+      modelsPath: form.modelsPath.trim() || '/models',
+      // 只保留仍在模型列表里的元信息，避免留下陈旧条目
+      modelsMeta: Object.fromEntries(
+        Object.entries(form.modelsMeta).filter(([id]) => modelIds.includes(id))
+      ),
+      models: modelIds,
       priority: Number(form.priority),
       weight: Number(form.weight),
       timeoutMs: Number(form.timeoutMs),
@@ -882,13 +957,57 @@ onMounted(async () => {
       </div>
 
       <div class="field">
-        <label>{{ t('channels.models') }}</label>
+        <label>{{ t('channels.modelsApiPath') }}</label>
+        <input v-model="form.modelsPath" placeholder="/models" />
+        <span class="hint">{{ t('channels.modelsApiPathHint') }}</span>
+      </div>
+
+      <div class="field">
+        <div class="row-between">
+          <label>{{ t('channels.models') }}</label>
+          <button
+            class="btn btn-sm"
+            :disabled="fetchingModels || !form.baseUrl.trim()"
+            @click="fetchModelsFromApi"
+          >
+            {{ fetchingModels ? t('channels.fetchingModels') : t('channels.fetchModels') }}
+          </button>
+        </div>
         <textarea
           v-model="form.modelsText"
-          rows="3"
+          rows="4"
           :placeholder="t('channels.modelsPlaceholder')"
         />
-        <span class="hint">{{ t('channels.modelsHint') }}</span>
+        <span class="hint">{{ t('channels.modelsHint') }} · {{ t('channels.fillFromApi') }}</span>
+
+        <div v-if="fetchState" class="hint" :class="{ 'err-text': !fetchState.ok }">
+          {{ fetchState.message }}
+          <template v-if="fetchState.warnings.length">
+            · {{ t('channels.fetchWarnings', { n: fetchState.warnings.length }) }}
+          </template>
+        </div>
+
+        <div v-if="metaList.length" style="margin-top: 8px">
+          <div class="dim" style="font-size: 12px; margin-bottom: 5px">
+            {{ t('channels.modelsMetaTitle') }} · {{ t('channels.modelsMetaHint') }}
+          </div>
+          <div class="batch-scroll" style="max-height: 160px">
+            <div v-for="m in metaList" :key="m.id" class="batch-row" style="grid-template-columns: 1.6fr 1fr 1fr">
+              <span class="mono" style="overflow: hidden; text-overflow: ellipsis">{{ m.id }}</span>
+              <span class="nowrap">
+                <span class="dim">{{ t('channels.ctxLength') }}</span>
+                {{ m.contextLength === null ? '—' : m.contextLength.toLocaleString('en-US') }}
+              </span>
+              <span class="nowrap">
+                <span class="dim">{{ t('channels.maxOutput') }}</span>
+                {{ m.maxOutputTokens === null ? '—' : m.maxOutputTokens.toLocaleString('en-US') }}
+              </span>
+            </div>
+          </div>
+          <div class="dim" style="font-size: 11.5px; margin-top: 4px">
+            {{ t('channels.fetchOk', { n: metaList.length, withCtx: metaWithCtx }) }}
+          </div>
+        </div>
       </div>
 
       <div class="form-row">

@@ -39,6 +39,8 @@ var client = new OpenAIClient(
 | 管理员登录（JWT + HttpOnly Cookie） | ✅ |
 | 用户管理（管理员 / 操作员、启用禁用、改密） | ✅ |
 | 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试 + 延迟展示） | ✅ |
+| 模型列表 API 路径可配置 + **从 API 自动获取模型与上下文长度** | ✅ |
+| `/v1/models` **透传上下文长度等元信息**（含别名条目） | ✅ |
 | API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |
 | 查看完整 Key（仅管理员 + 风险提示 + 审计留痕，见 D-013） | ✅ |
 | 查看上游渠道 API Key（仅管理员 + 审计留痕，见 D-022） | ✅ |
@@ -145,7 +147,9 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `POST /api/auth/login` `logout` `GET /api/auth/me` | 会话 |
 | `GET/POST/PATCH/DELETE /api/users[/:id]` | 用户管理（写操作需管理员） |
 | `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理 |
-| `POST /api/channels/:id/test` | 上游连通性测试（并记录延迟） |
+| `POST /api/channels/:id/test` | 上游连通性测试（按渠道配置的模型列表路径，并记录延迟） |
+| `POST /api/channels/fetch-models` | 用临时配置拉取模型列表（新建时） |
+| `POST /api/channels/:id/fetch-models` | 用已存密钥拉取模型列表（编辑时） |
 | `POST /api/channels/:id/chat` | **直连上游**的对话测试（仅管理员，绕过网关治理） |
 | `GET /api/channels/:id/reveal` | 查看上游密钥明文（**仅管理员**，必写审计） |
 | `GET/POST/PATCH/DELETE /api/keys[/:id]`、`POST /api/keys/:id/rotate` | 密钥 |

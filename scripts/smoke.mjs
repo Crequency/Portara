@@ -95,11 +95,30 @@ function startMockUpstream() {
       }
 
       if (url.endsWith('/models')) {
+        // 自定义路径返回不同的模型 —— 用于验证网关确实按渠道配置的路径请求
+        const isCustom = url.includes('/custom/')
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(
           JSON.stringify({
             object: 'list',
-            data: [{ id: MOCK_MODEL, object: 'model', owned_by: 'mock' }]
+            data: isCustom
+              ? [{ id: 'custom-path-model', object: 'model', owned_by: 'mock-custom' }]
+              : [
+                  {
+                    id: MOCK_MODEL,
+                    object: 'model',
+                    owned_by: 'mock',
+                    // 各家对上下文长度的叫法不一，这里混用两种字段名
+                    context_length: 131072,
+                    max_output_tokens: 8192
+                  },
+                  {
+                    id: 'alt-model',
+                    object: 'model',
+                    owned_by: 'mock',
+                    context_window: 200000
+                  }
+                ]
           })
         )
         return
@@ -374,7 +393,8 @@ async function main() {
     const test = await apiCall('POST', `/api/channels/${channelId}/test`)
     check('连通性测试通过且拿到模型列表', () => {
       assert.equal(test.body?.ok, true)
-      assert.deepEqual(test.body?.models, [MOCK_MODEL])
+      // 伪上游返回多个模型（含用于验证字段名识别的 alt-model）
+      assert.ok(test.body?.models?.includes(MOCK_MODEL), JSON.stringify(test.body?.models))
     })
     check('测试返回延迟与测试时间', () => {
       assert.ok(typeof test.body?.latencyMs === 'number')
@@ -1261,8 +1281,112 @@ async function main() {
     await apiCall('POST', '/api/model-routes/purge', { alias: jsonAlias })
     await apiCall('POST', '/api/model-routes/purge', { alias: jsonLbAlias })
 
+    // ---------------------------------------------------------- 模型列表 API
+    section('㉑ 模型列表 API：自定义路径、自动获取、元信息透传')
+
+    const draftFetch = await apiCall('POST', '/api/channels/fetch-models', {
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      modelsPath: '/models',
+      timeoutMs: 15000
+    })
+    check('草稿态可拉取模型列表', () => {
+      assert.equal(draftFetch.status, 200)
+      assert.equal(draftFetch.body?.ok, true)
+    })
+    check('解析出上下文长度与最大输出', () => {
+      const m = (draftFetch.body?.models ?? []).find((x) => x.id === MOCK_MODEL)
+      assert.ok(m, '未找到主模型')
+      assert.equal(m.contextLength, 131072)
+      assert.equal(m.maxOutputTokens, 8192)
+    })
+    check('识别不同厂商的字段名（context_window）', () => {
+      const m = (draftFetch.body?.models ?? []).find((x) => x.id === 'alt-model')
+      assert.equal(m?.contextLength, 200000)
+    })
+
+    const savedFetch = await apiCall('POST', `/api/channels/${channelId}/fetch-models`)
+    check('已存渠道可用库里的密钥拉取', () => assert.equal(savedFetch.body?.ok, true))
+
+    // 自定义模型列表路径：伪上游在该路径下返回不同模型
+    const customPathChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-modelspath-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      modelsPath: '/custom/models',
+      models: ['custom-path-model'],
+      priority: 500
+    })
+    check('渠道可保存自定义模型列表路径', () => {
+      assert.equal(customPathChannel.status, 201)
+      assert.equal(customPathChannel.body.channel.modelsPath, '/custom/models')
+    })
+    const customTest = await apiCall(
+      'POST',
+      `/api/channels/${customPathChannel.body.channel.id}/test`
+    )
+    check('连通性测试按配置的路径请求（而非写死 /models）', () => {
+      assert.equal(customTest.body?.ok, true)
+      assert.ok(
+        customTest.body?.models?.includes('custom-path-model'),
+        `实际拿到：${JSON.stringify(customTest.body?.models)}`
+      )
+    })
+
+    // 元信息随 /v1/models 透传
+    const withMeta = await apiCall('PATCH', `/api/channels/${channelId}`, {
+      models: [MOCK_MODEL],
+      modelsMeta: {
+        [MOCK_MODEL]: {
+          id: MOCK_MODEL,
+          contextLength: 131072,
+          maxOutputTokens: 8192,
+          ownedBy: 'mock',
+          created: null,
+          raw: { context_length: 131072, custom_field: 'kept' }
+        }
+      }
+    })
+    check('渠道可保存模型元信息', () => {
+      assert.equal(withMeta.status, 200)
+      assert.equal(withMeta.body.channel.modelsMeta[MOCK_MODEL].contextLength, 131072)
+    })
+
+    const modelsWithMeta = await fetch(`${BASE}/v1/models`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const modelsWithMetaJson = await modelsWithMeta.json()
+    const declared = (modelsWithMetaJson.data ?? []).find((m) => m.id === MOCK_MODEL)
+    check('/v1/models 透传上下文长度与最大输出', () => {
+      assert.ok(declared, '未找到该模型')
+      assert.equal(declared.context_length, 131072)
+      assert.equal(declared.max_output_tokens, 8192)
+    })
+    check('/v1/models 保留上游原始标量字段', () =>
+      assert.equal(declared.custom_field, 'kept')
+    )
+
+    // 注意：先前的别名已在「整组删除」那节被清掉，这里重新建一个
+    const metaAlias = `meta-alias-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: metaAlias,
+      targets: [{ channelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }]
+    })
+    const modelsWithAliasMeta = await fetch(`${BASE}/v1/models`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const aliasJson = await modelsWithAliasMeta.json()
+    const aliasEntry = (aliasJson.data ?? []).find((m) => m.id === metaAlias)
+    check('别名条目同样带出上下文长度（取自其目标的渠道配置）', () => {
+      assert.ok(aliasEntry, '未找到别名条目')
+      assert.equal(aliasEntry.context_length, 131072)
+    })
+    await apiCall('POST', '/api/model-routes/purge', { alias: metaAlias })
+
+    await apiCall('DELETE', `/api/channels/${customPathChannel.body.channel.id}`)
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉑ 密钥不泄漏到日志')
+    section('㉒ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -1274,7 +1398,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉒ 清理测试数据')
+    section('㉓ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

@@ -6,6 +6,7 @@ import { decryptSecret, encryptSecret, maskSecret } from '../lib/crypto.js'
 import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
+import { buildModelsUrl, parseModelsResponse, type ModelInfo } from '../services/models.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamUrl,
@@ -29,12 +30,150 @@ const httpUrl = z
   .min(1, 'Base URL 不能为空')
   .refine((v) => /^https?:\/\//i.test(v), 'Base URL 必须以 http:// 或 https:// 开头')
 
+/**
+ * 拉取某渠道的模型列表并解析元信息（上下文长度等）。
+ * 渠道级配置（路径 / 固定请求头 / 厂商兼容 / 超时）都会生效。
+ */
+async function fetchModelsFor(opts: {
+  baseUrl: string
+  upstreamKey: string
+  modelsPath: string
+  timeoutMs: number
+  extraHeaders: Record<string, string>
+  vendor: string
+}): Promise<{
+  ok: boolean
+  status: number
+  latencyMs: number
+  models: ModelInfo[]
+  warnings: string[]
+  message: string
+}> {
+  const url = buildModelsUrl(opts.baseUrl, opts.modelsPath)
+  const started = Date.now()
+
+  try {
+    const res = await fetch(url, {
+      headers: buildUpstreamHeaders(opts.upstreamKey, 'application/json', {
+        extraHeaders: opts.extraHeaders,
+        vendor: opts.vendor
+      }),
+      signal: AbortSignal.timeout(Math.min(opts.timeoutMs, 20_000))
+    })
+    const latencyMs = Date.now() - started
+    const text = await res.text()
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        latencyMs,
+        models: [],
+        warnings: [],
+        message: `上游返回 ${res.status}：${text.slice(0, 200)}`
+      }
+    }
+
+    let parsed: unknown = null
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return {
+        ok: false,
+        status: res.status,
+        latencyMs,
+        models: [],
+        warnings: [],
+        message: '上游返回的不是合法 JSON'
+      }
+    }
+
+    const { models, warnings } = parseModelsResponse(parsed)
+    return {
+      ok: true,
+      status: res.status,
+      latencyMs,
+      models,
+      warnings,
+      message: models.length > 0 ? `获取到 ${models.length} 个模型` : '上游没有返回任何模型'
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: Date.now() - started,
+      models: [],
+      warnings: [],
+      message: `连接失败：${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
+const fetchModelsSchema = z.object({
+  baseUrl: httpUrl,
+  apiKey: z.string().default(''),
+  modelsPath: z.string().max(200).default('/models'),
+  timeoutMs: z.coerce.number().int().min(1000).max(600000).default(20000),
+  extraHeaders: z.record(z.string(), z.string()).default({}),
+  vendor: z.string().default('generic')
+})
+
+/**
+ * 新建渠道时先拉一次模型列表（此时渠道尚未保存，配置由前端临时提交）。
+ * 仅管理员：会带着上游密钥发请求。
+ */
+channelRoutes.post('/fetch-models', requireAdmin, async (c) => {
+  const body = await parseJson(c, fetchModelsSchema)
+  validateChannelInput(body)
+  const { headers } = sanitizeExtraHeaders(body.extraHeaders)
+
+  const result = await fetchModelsFor({
+    baseUrl: body.baseUrl,
+    upstreamKey: body.apiKey,
+    modelsPath: body.modelsPath,
+    timeoutMs: body.timeoutMs,
+    extraHeaders: headers,
+    vendor: body.vendor
+  })
+  return c.json(result)
+})
+
+/** 已保存的渠道：用库里存的密钥拉取 */
+channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
+  if (!ch) throw notFound('渠道不存在')
+
+  let upstreamKey = ''
+  if (ch.api_key_cipher) {
+    try {
+      upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
+    } catch {
+      throw badRequest('该渠道的密钥无法解密，请重新填写')
+    }
+  }
+
+  const result = await fetchModelsFor({
+    baseUrl: ch.base_url,
+    upstreamKey,
+    modelsPath: ch.models_path ?? '/models',
+    timeoutMs: ch.timeout_ms,
+    extraHeaders: ch.extra_headers ?? {},
+    vendor: ch.vendor
+  })
+  return c.json(result)
+})
+
 const createSchema = z.object({
   name: z.string().min(1, '名称不能为空').max(64),
   baseUrl: httpUrl,
   protocol: z.enum(['openai']).default('openai'),
   vendor: z.string().default('generic'),
   extraHeaders: z.record(z.string(), z.string()).default({}),
+  /** 模型列表 API 路径；默认 /models 即 OpenAI 协议约定 */
+  modelsPath: z.string().max(200).default('/models'),
+  /** 模型元信息（上下文长度等），键为模型 id */
+  modelsMeta: z.record(z.string(), z.unknown()).default({}),
   apiKey: z.string().default(''),
   models: z.array(z.string().min(1)).default([]),
   priority: z.coerce.number().int().min(1).max(9999).default(100),
@@ -89,14 +228,17 @@ channelRoutes.post('/', requireAdmin, async (c) => {
 
   const row = await one<ChannelRow>(
     `insert into channels
-       (name, base_url, protocol, vendor, extra_headers, api_key_cipher, models, priority, weight, timeout_ms, status, note)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
+       (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
+        api_key_cipher, models, priority, weight, timeout_ms, status, note)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *`,
     [
       body.name,
       body.baseUrl,
       body.protocol,
       body.vendor,
       JSON.stringify(extraHeaders),
+      body.modelsPath,
+      JSON.stringify(body.modelsMeta),
       cipher,
       body.models,
       body.priority,
@@ -141,13 +283,15 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        protocol       = coalesce($4, protocol),
        vendor         = coalesce($5, vendor),
        extra_headers  = $6,
-       api_key_cipher = $7,
-       models         = coalesce($8, models),
-       priority       = coalesce($9, priority),
-       weight         = coalesce($10, weight),
-       timeout_ms     = coalesce($11, timeout_ms),
-       status         = coalesce($12, status),
-       note           = coalesce($13, note),
+       models_path    = coalesce($7, models_path),
+       models_meta    = coalesce($8, models_meta),
+       api_key_cipher = $9,
+       models         = coalesce($10, models),
+       priority       = coalesce($11, priority),
+       weight         = coalesce($12, weight),
+       timeout_ms     = coalesce($13, timeout_ms),
+       status         = coalesce($14, status),
+       note           = coalesce($15, note),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -158,6 +302,8 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       body.protocol ?? null,
       body.vendor ?? null,
       JSON.stringify(extraHeaders),
+      body.modelsPath ?? null,
+      body.modelsMeta === undefined ? null : JSON.stringify(body.modelsMeta),
       cipher,
       body.models ?? null,
       body.priority ?? null,
@@ -211,7 +357,7 @@ channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
   return c.json({ key, name: ch.name, baseUrl: ch.base_url })
 })
 
-/** 连通性测试：GET {base}/models，并把最近一次结果（延迟/成败）落库供面板展示 */
+/** 连通性测试：拉取模型列表，并把最近一次结果（延迟/成败）落库供面板展示 */
 channelRoutes.post('/:id/test', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
@@ -231,59 +377,37 @@ channelRoutes.post('/:id/test', async (c) => {
       upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
     } catch {
       await record(0, false)
-      return c.json({ ok: false, status: 0, message: '密钥无法解密，请重新填写', models: [] })
+      return c.json({
+        ok: false,
+        status: 0,
+        latencyMs: 0,
+        models: [],
+        message: '密钥无法解密，请重新填写'
+      })
     }
   }
 
-  const url = buildUpstreamUrl(ch.base_url, '/models')
-  const started = Date.now()
+  const result = await fetchModelsFor({
+    baseUrl: ch.base_url,
+    upstreamKey,
+    modelsPath: ch.models_path ?? '/models',
+    timeoutMs: ch.timeout_ms,
+    extraHeaders: ch.extra_headers ?? {},
+    vendor: ch.vendor
+  })
 
-  try {
-    const res = await fetch(url, {
-      headers: buildUpstreamHeaders(upstreamKey, 'application/json', {
-        extraHeaders: ch.extra_headers ?? {},
-        vendor: ch.vendor
-      }),
-      signal: AbortSignal.timeout(Math.min(ch.timeout_ms, 15_000))
-    })
-    const latencyMs = Date.now() - started
-    const text = await res.text()
+  await record(result.latencyMs, result.ok)
 
-    let models: string[] = []
-    try {
-      const parsed = JSON.parse(text) as { data?: { id?: unknown }[] }
-      if (Array.isArray(parsed.data)) {
-        models = parsed.data
-          .map((m) => (typeof m?.id === 'string' ? m.id : ''))
-          .filter(Boolean)
-          .slice(0, 100)
-      }
-    } catch {
-      /* 非 JSON 响应也算连通，只是拿不到模型列表 */
-    }
-
-    await record(latencyMs, res.ok)
-
-    return c.json({
-      ok: res.ok,
-      status: res.status,
-      latencyMs,
-      testedAt: new Date().toISOString(),
-      models,
-      message: res.ok ? '连通正常' : `上游返回 ${res.status}：${text.slice(0, 200)}`
-    })
-  } catch (err) {
-    const latencyMs = Date.now() - started
-    await record(latencyMs, false)
-    return c.json({
-      ok: false,
-      status: 0,
-      latencyMs,
-      testedAt: new Date().toISOString(),
-      models: [],
-      message: `连接失败：${err instanceof Error ? err.message : String(err)}`
-    })
-  }
+  return c.json({
+    ok: result.ok,
+    status: result.status,
+    latencyMs: result.latencyMs,
+    testedAt: new Date().toISOString(),
+    // 兼容既有前端：仍给出 id 列表，同时附上元信息
+    models: result.models.map((m) => m.id),
+    modelInfo: result.models,
+    message: result.ok ? '连通正常' : result.message
+  })
 })
 
 /**
