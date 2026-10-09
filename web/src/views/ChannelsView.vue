@@ -135,11 +135,34 @@ const routeGroups = computed(() => {
  * 再按前缀分组 —— 批量映射产生的别名形如 `前缀/模型`，
  * 它们天然是一组，UI 上折叠起来才不会让页面无限变长。
  */
+/**
+ * 分组键（渠道 id 头）。
+ *
+ * 不能简单地按 `/` 切 —— 上游模型 id 自身可能含 `/`，
+ * 例如 `commandcode/deepseek/deepseek-v4-flash` 用 lastIndexOf 会切出
+ * `commandcode/deepseek`，把一组碎成一片。按可信度依次取：
+ *
+ *   ① 批量映射时**记录下来的**前缀（最可靠，创建时就知道）
+ *   ② 从行内**精确推导**：别名去掉末尾的 `/<上游模型 id>` 就是前缀
+ *   ③ 最后兜底：第一个 `/` 之前的部分
+ */
+function groupKeyOf(alias: string, targets: ModelRoute[]): string {
+  const recorded = targets.find((t) => t.groupKey)?.groupKey
+  if (recorded) return recorded
+
+  const upstream = targets[0]?.upstreamModel
+  if (upstream && alias !== upstream && alias.endsWith('/' + upstream)) {
+    return alias.slice(0, alias.length - upstream.length - 1)
+  }
+
+  const slash = alias.indexOf('/')
+  return slash > 0 ? alias.slice(0, slash) : ''
+}
+
 const prefixGroups = computed(() => {
   const map = new Map<string, { alias: string; targets: ModelRoute[] }[]>()
   for (const g of routeGroups.value) {
-    const slash = g.alias.lastIndexOf('/')
-    const prefix = slash > 0 ? g.alias.slice(0, slash) : ''
+    const prefix = groupKeyOf(g.alias, g.targets)
     const list = map.get(prefix) ?? []
     list.push(g)
     map.set(prefix, list)

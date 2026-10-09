@@ -194,16 +194,18 @@ modelRouteRoutes.post('/batch', requireAdmin, async (c) => {
     aliasSchema.parse(alias)
 
     const row = await one<ModelRouteRow & { inserted: boolean }>(
-      `insert into model_routes (alias, channel_id, upstream_model, priority, weight, note)
-       values ($1,$2,$3,$4,$5,$6)
+      `insert into model_routes
+         (alias, channel_id, upstream_model, priority, weight, note, group_key)
+       values ($1,$2,$3,$4,$5,$6,$7)
        on conflict (alias, channel_id, upstream_model)
-       do update set priority = excluded.priority,
-                     weight   = excluded.weight,
-                     note     = excluded.note,
-                     status   = 'active',
+       do update set priority  = excluded.priority,
+                     weight    = excluded.weight,
+                     note      = excluded.note,
+                     group_key = excluded.group_key,
+                     status    = 'active',
                      updated_at = now()
        returning *, (xmax = 0) as inserted`,
-      [alias, body.channelId, model, body.priority, body.weight, body.note]
+      [alias, body.channelId, model, body.priority, body.weight, body.note, rawPrefix]
     )
     if (row) results.push({ alias, upstreamModel: model, created: row.inserted })
   }

@@ -71,6 +71,8 @@ export interface ModelRouteRow {
   weight: number
   status: 'active' | 'disabled'
   note: string
+  /** 批量映射时用的前缀；空 = 未记录（历史数据/手工创建） */
+  group_key: string
   created_at: string
   updated_at: string
   /** 仅 join 查询带出 */
@@ -125,6 +127,7 @@ export function toModelRouteDto(r: ModelRouteRow) {
     weight: r.weight,
     status: r.status,
     note: r.note,
+    groupKey: r.group_key ?? '',
     createdAt: r.created_at
   }
 }

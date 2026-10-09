@@ -1034,6 +1034,36 @@ async function main() {
       assert.ok(batch.body?.aliases?.includes(expected), JSON.stringify(batch.body?.aliases))
     })
 
+    // 分组键：批量映射必须记下所用的前缀，供 UI 分组（模型 id 自带 / 时尤其重要）
+    const grouped = await apiCall('GET', '/api/model-routes')
+    const groupedRow = (grouped.body?.routes ?? []).find(
+      (r) => r.alias === `smoke-prefix-${RUN}/${MOCK_MODEL}`
+    )
+    check('批量映射记录分组键（渠道 id 头）', () =>
+      assert.equal(groupedRow?.groupKey, `smoke-prefix-${RUN}`)
+    )
+
+    // 模型 id 自带 / 时，分组键仍应是前缀而不是被 / 切碎
+    const slashModel = 'vendor/sub-model'
+    const slashBatch = await apiCall('POST', '/api/model-routes/batch', {
+      channelId,
+      prefix: `smoke-slash-${RUN}`,
+      models: [slashModel]
+    })
+    check('模型 id 自带 / 时批量映射仍可用', () => assert.equal(slashBatch.status, 201))
+    const slashList = await apiCall('GET', '/api/model-routes')
+    const slashRow = (slashList.body?.routes ?? []).find(
+      (r) => r.alias === `smoke-slash-${RUN}/${slashModel}`
+    )
+    check('含 / 的模型 id 分组键仍是完整前缀（不被切碎）', () => {
+      assert.ok(slashRow, '未找到该映射')
+      assert.equal(slashRow.groupKey, `smoke-slash-${RUN}`)
+      assert.equal(slashRow.upstreamModel, slashModel)
+    })
+    await apiCall('POST', '/api/model-routes/purge', {
+      alias: `smoke-slash-${RUN}/${slashModel}`
+    })
+
     const batchAgain = await apiCall('POST', '/api/model-routes/batch', {
       channelId,
       prefix: `smoke-prefix-${RUN}`,

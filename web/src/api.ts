@@ -115,6 +115,7 @@ export interface ModelRoute {
   weight: number
   status: 'active' | 'disabled'
   note: string
+  groupKey: string
   createdAt: string
 }
 

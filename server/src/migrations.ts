@@ -170,5 +170,39 @@ export const migrations: { id: string; sql: string }[] = [
       alter table request_logs add column if not exists source text not null default 'gateway';
       create index if not exists request_logs_source_idx on request_logs (source, ts desc);
     `
+  },
+  {
+    id: '007_model_route_group_key',
+    sql: `
+      -- 批量映射时记录所用的「渠道 id 头」（前缀）。
+      --
+      -- 为什么需要它：别名形如 <前缀>/<上游模型 id>，而上游模型 id 自身可能含 /，
+      -- 例如 commandcode/deepseek/deepseek-v4-flash —— 此时靠字符串反推前缀
+      -- 必然出错（会把 commandcode/deepseek 当成一组，分组碎成一片）。
+      -- 前缀是**创建时就知道的事实**，直接记下来最可靠。
+      --
+      -- 空字符串表示「未记录」（历史数据或手工创建），UI 回退到
+      -- 「第一个 / 之前的部分」。既有数据零改动、零丢失。
+      alter table model_routes add column if not exists group_key text not null default '';
+    `
+  },
+  {
+    id: '008_backfill_model_route_group_key',
+    sql: `
+      -- 回填历史数据的 group_key。
+      --
+      -- 迁移 007 只加了列（已发布，不再修改），历史行为空。
+      -- 但前缀是**可以从行内精确推导**的：别名 = 前缀 + '/' + 上游模型 id，
+      -- 因此 前缀 = 别名去掉末尾的 '/<上游模型 id>'。这是精确等式，不是猜测。
+      --
+      -- 条件里的 alias <> upstream_model 排除「无前缀」的情况（那时别名就等于模型 id，
+      -- 保持空串，UI 会把它归入「未分组」）。
+      -- 幂等：只动 group_key 仍为空的行。
+      update model_routes
+         set group_key = left(alias, length(alias) - length(upstream_model) - 1)
+       where group_key = ''
+         and alias <> upstream_model
+         and alias like '%/' || upstream_model;
+    `
   }
 ]
