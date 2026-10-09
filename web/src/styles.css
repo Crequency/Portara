@@ -727,3 +727,8 @@ textarea::placeholder {
   color: #ffb3b8;
   font-size: 12.5px;
 }
+
+/* 有失败请求的时间桶：用警示色区分 */
+.chart-bar-err {
+  background: linear-gradient(180deg, var(--danger), rgba(244, 85, 95, 0.28));
+}

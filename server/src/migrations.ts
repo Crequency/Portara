@@ -106,5 +106,19 @@ export const migrations: { id: string; sql: string }[] = [
       create index if not exists audit_events_ts_idx on audit_events (ts desc);
       create index if not exists audit_events_action_idx on audit_events (action, ts desc);
     `
+  },
+  {
+    id: '003_channel_protocol_vendor_headers',
+    sql: `
+      -- 协议：首批只实现 OpenAI 兼容，字段先留出以便扩展
+      alter table channels add column if not exists protocol text not null default 'openai';
+
+      -- 厂商兼容：generic（通用 OpenAI 兼容）/ opencode-go（需 x-opencode-session 头）
+      alter table channels add column if not exists vendor text not null default 'generic';
+
+      -- 用户自定义的固定请求头（明文保存 —— 见 DECISIONS D-016：
+      -- 密钥请放在 api_key_cipher，不要放这里）
+      alter table channels add column if not exists extra_headers jsonb not null default '{}'::jsonb;
+    `
   }
 ]

@@ -58,6 +58,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const MOCK_MODEL = 'mock-gpt-4o'
 const MOCK_USAGE = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }
 
+/** 伪上游记录的最近一次 chat 请求头，用于断言厂商兼容头确实发出去了 */
+let lastUpstreamHeaders = {}
+
 function startMockUpstream() {
   const server = createServer((req, res) => {
     const chunks = []
@@ -86,6 +89,7 @@ function startMockUpstream() {
       }
 
       if (url.endsWith('/chat/completions')) {
+        lastUpstreamHeaders = { ...req.headers }
         let body = {}
         try {
           body = JSON.parse(raw)
@@ -313,6 +317,9 @@ async function main() {
       name: `smoke-mock-${RUN}`,
       baseUrl: `${MOCK}/v1`,
       apiKey: UPSTREAM_KEY,
+      protocol: 'openai',
+      vendor: 'opencode-go',
+      extraHeaders: { 'X-Smoke-Header': 'portara-smoke' },
       models: [MOCK_MODEL],
       priority: 10,
       weight: 1,
@@ -322,6 +329,21 @@ async function main() {
     check('创建渠道成功（201）', () => assert.equal(created.status, 201))
     channelId = created.body?.channel?.id ?? null
     check('渠道返回 id', () => assert.ok(channelId))
+    check('协议 / 厂商兼容 / 固定请求头已保存', () => {
+      const ch = created.body.channel
+      assert.equal(ch.protocol, 'openai')
+      assert.equal(ch.vendor, 'opencode-go')
+      assert.equal(ch.extraHeaders['X-Smoke-Header'], 'portara-smoke')
+    })
+    const badHeader = await apiCall('POST', '/api/channels', {
+      name: `smoke-badheader-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      extraHeaders: { authorization: 'Bearer evil' }
+    })
+    check('自定义保留请求头被拒绝（400）', () => {
+      assert.equal(badHeader.status, 400)
+      assert.ok(String(badHeader.body?.error?.message ?? '').includes('固定请求头'))
+    })
     check('接口不回传上游密钥明文', () => {
       assert.ok(!created.text.includes(UPSTREAM_KEY))
       assert.ok(created.body.channel.apiKeyMasked.includes('••••'))
@@ -413,6 +435,17 @@ async function main() {
     check('响应带渠道标识头', () =>
       assert.equal(chat.headers.get('x-portara-channel'), `smoke-mock-${RUN}`)
     )
+    check('网关转发时带上了渠道的上游密钥', () =>
+      assert.equal(lastUpstreamHeaders.authorization, `Bearer ${UPSTREAM_KEY}`)
+    )
+    check('自定义固定请求头已透传到上游', () =>
+      assert.equal(lastUpstreamHeaders['x-smoke-header'], 'portara-smoke')
+    )
+    check('厂商兼容（opencode-go）自动注入 x-opencode-session', () => {
+      const session = lastUpstreamHeaders['x-opencode-session']
+      assert.ok(session, '未注入 x-opencode-session')
+      assert.ok(String(session).startsWith('portara-'))
+    })
 
     // ---------------------------------------------------------- 流式转发
     section('⑥ 流式转发（SSE）')
@@ -464,20 +497,72 @@ async function main() {
       assert.ok(streamLog >= 2)
     })
 
-    const overview = await apiCall('GET', '/api/stats/overview')
-    check('统计接口反映请求数', () => {
+    const overview = await apiCall('GET', '/api/stats/overview?range=today')
+    check('今日统计反映请求数', () => {
       // 此刻已落库的是：1 次非流式 + 1 次流式（401/403 在鉴权层被拒，不计入）
-      assert.ok(overview.body.todayRequests >= 2, `todayRequests=${overview.body.todayRequests}`)
+      assert.equal(overview.body?.range?.preset, 'today')
       assert.ok(
-        overview.body.todayTokens >= MOCK_USAGE.total_tokens * 2,
-        `todayTokens=${overview.body.todayTokens}`
+        overview.body.totals.requests >= 2,
+        `requests=${overview.body.totals.requests}`
       )
+      assert.ok(
+        overview.body.totals.tokens >= MOCK_USAGE.total_tokens * 2,
+        `tokens=${overview.body.totals.tokens}`
+      )
+      assert.ok(overview.body.totals.promptTokens >= MOCK_USAGE.prompt_tokens)
     })
 
-    const series = await apiCall('GET', '/api/stats/series?days=7')
-    check('近 7 天序列返回 7 个点', () =>
+    check('今日统计带出平均值与 P95 延迟', () => {
+      assert.ok(overview.body.totals.avgLatencyMs >= 0)
+      assert.ok(overview.body.totals.p95LatencyMs >= 0)
+    })
+
+    check('统计带出 Top 模型 / 渠道 / 密钥', () => {
+      assert.ok(Array.isArray(overview.body.topModels))
+      assert.ok(overview.body.topModels.some((m) => m.name === MOCK_MODEL))
+      assert.ok(overview.body.topChannels.some((x) => x.name === `smoke-mock-${RUN}`))
+      assert.ok(Array.isArray(overview.body.topKeys))
+    })
+
+    const series = await apiCall('GET', '/api/stats/series?range=7d')
+    check('近 7 天序列按天分桶返回 7 个点', () => {
+      assert.equal(series.body?.granularity, 'day')
       assert.equal(series.body?.series?.length, 7)
+    })
+
+    const todaySeries = await apiCall('GET', '/api/stats/series?range=today')
+    check('今日序列按小时分桶', () => {
+      assert.equal(todaySeries.body?.granularity, 'hour')
+      assert.ok(todaySeries.body.series.length >= 1)
+    })
+
+    const monthOverview = await apiCall('GET', '/api/stats/overview?range=30d')
+    check('近一个月统计可用', () => {
+      assert.equal(monthOverview.body?.range?.preset, '30d')
+      assert.ok(monthOverview.body.totals.requests >= 2)
+    })
+
+    const customFrom = new Date(Date.now() - 3600_000).toISOString()
+    const customTo = new Date(Date.now() + 60_000).toISOString()
+    const customOverview = await apiCall(
+      'GET',
+      `/api/stats/overview?range=custom&from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}`
     )
+    check('自定义范围（近一小时）能统计到刚才的请求', () =>
+      assert.ok(customOverview.body.totals.requests >= 2)
+    )
+
+    const pastOverview = await apiCall(
+      'GET',
+      `/api/stats/overview?range=custom&from=${encodeURIComponent('2020-01-01T00:00:00.000Z')}&to=${encodeURIComponent('2020-01-02T00:00:00.000Z')}`
+    )
+    check('自定义范围（历史区间）统计为 0', () => {
+      assert.equal(pastOverview.body.totals.requests, 0)
+      assert.equal(pastOverview.body.totals.tokens, 0)
+    })
+
+    const badRange = await apiCall('GET', '/api/stats/overview?range=custom')
+    check('自定义范围缺参数被拒（400）', () => assert.equal(badRange.status, 400))
 
     // ---------------------------------------------------------- 限流
     section('⑧ 速率限制')
@@ -640,8 +725,130 @@ async function main() {
       assert.ok(chatModelsJson.data.length > 0)
     )
 
+    // ---------------------------------------------------------- 直连渠道测试
+    section('⑬ 对话测试：直连上游渠道（绕过网关治理）')
+
+    const directChat = await apiCall('POST', `/api/channels/${channelId}/chat`, {
+      model: MOCK_MODEL,
+      messages: [{ role: 'user', content: '直连测试' }]
+    })
+    check('管理员可用渠道自身密钥直连上游', () => {
+      assert.equal(directChat.status, 200)
+      assert.equal(directChat.body?.choices?.[0]?.message?.content, '你好，世界')
+    })
+    check('直连时同样应用固定请求头与厂商兼容头', () => {
+      assert.equal(lastUpstreamHeaders['x-smoke-header'], 'portara-smoke')
+      assert.ok(lastUpstreamHeaders['x-opencode-session'])
+    })
+    check('直连响应与网关响应同源（内容一致）', () =>
+      assert.equal(directChat.body.choices[0].message.content, chat.body.choices[0].message.content)
+    )
+
+    const operatorDirect = await apiCall(
+      'POST',
+      `/api/channels/${channelId}/chat`,
+      { model: MOCK_MODEL, messages: [] },
+      { cookie: operatorCookie }
+    )
+    check('操作员不可用直连渠道测试（403）', () =>
+      assert.equal(operatorDirect.status, 403)
+    )
+
+    const logsAfterDirect = await apiCall('GET', '/api/logs?limit=100')
+    const directRows = (logsAfterDirect.body?.logs ?? []).filter((l) =>
+      String(l.error).includes('直连')
+    )
+    check('直连请求未进入 request_logs', () => assert.equal(directRows.length, 0))
+
+    // ---------------------------------------------------------- Key 归属
+    section('⑭ 密钥归属：非管理员只见自己的')
+
+    const userList = await apiCall('GET', '/api/users')
+    const operatorUser = (userList.body?.users ?? []).find((u) => u.username === OPERATOR_USER)
+    check('可查到操作员账号', () => assert.ok(operatorUser))
+
+    const operatorOwnKey = await apiCall(
+      'POST',
+      '/api/keys',
+      { name: `smoke-op-key-${RUN}`, channelId, rpmLimit: 0, quotaTokens: 0 },
+      { cookie: operatorCookie }
+    )
+    check('操作员可为自己签发密钥', () => assert.equal(operatorOwnKey.status, 201))
+    createdKeyIds.push(operatorOwnKey.body.apiKey.id)
+    check('操作员签发的密钥归属自己（无法替他人签发）', () =>
+      assert.equal(operatorOwnKey.body.apiKey.userId, operatorUser.id)
+    )
+
+    const adminKeyOwnedByOperator = await apiCall('POST', '/api/keys', {
+      name: `smoke-admin-issued-${RUN}`,
+      userId: operatorUser.id,
+      channelId,
+      rpmLimit: 0,
+      quotaTokens: 0
+    })
+    check('管理员可替指定用户签发密钥', () => {
+      assert.equal(adminKeyOwnedByOperator.status, 201)
+      assert.equal(adminKeyOwnedByOperator.body.apiKey.userId, operatorUser.id)
+    })
+    createdKeyIds.push(adminKeyOwnedByOperator.body.apiKey.id)
+    check('密钥 DTO 带出所有者用户名', () =>
+      assert.equal(adminKeyOwnedByOperator.body.apiKey.ownerName, OPERATOR_USER)
+    )
+
+    const operatorKeyList = await apiCall('GET', '/api/keys', undefined, {
+      cookie: operatorCookie
+    })
+    check('操作员的密钥列表只含自己名下的', () => {
+      const owners = new Set((operatorKeyList.body?.keys ?? []).map((k) => k.userId))
+      assert.equal(owners.size, 1, `看到 ${owners.size} 个归属`)
+      assert.ok(owners.has(operatorUser.id))
+    })
+    check('操作员看不到管理员的密钥', () => {
+      const names = (operatorKeyList.body?.keys ?? []).map((k) => k.name)
+      assert.ok(!names.includes(`smoke-key-${RUN}`), '看到了管理员的密钥')
+    })
+
+    const adminKeyList = await apiCall('GET', '/api/keys')
+    check('管理员能看到所有人的密钥', () => {
+      const names = (adminKeyList.body?.keys ?? []).map((k) => k.name)
+      assert.ok(names.includes(`smoke-key-${RUN}`))
+      assert.ok(names.includes(`smoke-op-key-${RUN}`))
+    })
+    check('管理员视图中外人的密钥带所有者名字', () => {
+      const foreign = (adminKeyList.body?.keys ?? []).find(
+        (k) => k.name === `smoke-op-key-${RUN}`
+      )
+      assert.equal(foreign.ownerName, OPERATOR_USER)
+    })
+
+    const operatorDeleteForeign = await apiCall(
+      'DELETE',
+      `/api/keys/${keyRes.body.apiKey.id}`,
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('操作员不能删除他人的密钥（403）', () =>
+      assert.equal(operatorDeleteForeign.status, 403)
+    )
+    const operatorPatchForeign = await apiCall(
+      'PATCH',
+      `/api/keys/${keyRes.body.apiKey.id}`,
+      { name: 'hijacked' },
+      { cookie: operatorCookie }
+    )
+    check('操作员不能改他人的密钥（403）', () =>
+      assert.equal(operatorPatchForeign.status, 403)
+    )
+    const operatorRevealOwn = await apiCall(
+      'GET',
+      `/api/keys/${operatorOwnKey.body.apiKey.id}/reveal`,
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('操作员可查看自己名下的密钥', () => assert.equal(operatorRevealOwn.status, 200))
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('⑬ 密钥不泄漏到日志')
+    section('⑮ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -653,7 +860,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('⑭ 清理测试数据')
+    section('⑯ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

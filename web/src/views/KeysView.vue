@@ -11,6 +11,7 @@ const isAdmin = (): boolean => props.user?.role === 'admin'
 
 const keys = ref<ApiKey[]>([])
 const channels = ref<Channel[]>([])
+const users = ref<User[]>([])
 const loading = ref(true)
 const showForm = ref(false)
 const saving = ref(false)
@@ -26,6 +27,7 @@ const revealing = ref(false)
 
 const form = reactive({
   name: '',
+  userId: '',
   channelId: '',
   modelAllowText: '',
   rpmLimit: 60,
@@ -47,6 +49,16 @@ async function load(): Promise<void> {
     ])
     keys.value = k.keys
     channels.value = c.channels
+
+    // 只有管理员需要用户列表（用于把 Key 签发给指定的人）
+    if (isAdmin()) {
+      try {
+        const u = await api.get<{ users: User[] }>('/api/users')
+        users.value = u.users
+      } catch {
+        users.value = []
+      }
+    }
   } catch {
     toast.error('加载密钥失败')
   } finally {
@@ -57,6 +69,7 @@ async function load(): Promise<void> {
 function openCreate(): void {
   Object.assign(form, {
     name: '',
+    userId: props.user?.id ?? '',
     channelId: '',
     modelAllowText: '',
     rpmLimit: 60,
@@ -72,6 +85,7 @@ async function submit(): Promise<void> {
   try {
     const res = await api.post<{ apiKey: ApiKey; key: string }>('/api/keys', {
       name: form.name.trim(),
+      userId: isAdmin() ? form.userId || null : null,
       channelId: form.channelId || null,
       modelAllow: parseList(form.modelAllowText),
       rpmLimit: Number(form.rpmLimit),
@@ -157,6 +171,11 @@ async function copy(text: string): Promise<void> {
   }
 }
 
+/** 是否能操作该密钥：管理员全部，普通用户仅自己名下 */
+function canManage(k: ApiKey): boolean {
+  return isAdmin() || k.userId === props.user?.id
+}
+
 function quotaPercent(k: ApiKey): number {
   if (k.quotaTokens <= 0) return 0
   return Math.min(100, Math.round((k.usedTokens / k.quotaTokens) * 100))
@@ -171,6 +190,7 @@ onMounted(load)
       <div>
         <div class="card-title">API 密钥</div>
         <div class="dim" style="font-size: 12px">
+          {{ isAdmin() ? '管理员可见全部密钥' : '仅显示你名下的密钥' }} ·
           调用方用 <span class="mono">Authorization: Bearer &lt;key&gt;</span> 访问
           <span class="mono">/v1</span>
         </div>
@@ -190,6 +210,7 @@ onMounted(load)
         <thead>
           <tr>
             <th>名称</th>
+            <th>所有者</th>
             <th>密钥前缀</th>
             <th>绑定渠道</th>
             <th>限速</th>
@@ -209,6 +230,11 @@ onMounted(load)
                   +{{ k.modelAllow.length - 2 }}
                 </span>
               </div>
+            </td>
+            <td>
+              <span v-if="k.ownerName">{{ k.ownerName }}</span>
+              <span v-else class="dim">未归属</span>
+              <span v-if="k.userId === user?.id" class="tag" style="margin-left: 5px">我</span>
             </td>
             <td class="mono">{{ k.keyPrefix }}…</td>
             <td>{{ channelName(k.channelId) }}</td>
@@ -248,7 +274,7 @@ onMounted(load)
             <td>
               <div class="row">
                 <button
-                  v-if="isAdmin()"
+                  v-if="canManage(k)"
                   class="btn btn-sm"
                   :disabled="!k.revealable"
                   :title="k.revealable ? '查看完整密钥（会记入审计日志）' : '该密钥创建于启用可查看之前，无法找回'"
@@ -256,11 +282,19 @@ onMounted(load)
                 >
                   查看
                 </button>
-                <button class="btn btn-sm" @click="rotate(k)">轮换</button>
-                <button class="btn btn-sm" @click="toggle(k)">
+                <button class="btn btn-sm" :disabled="!canManage(k)" @click="rotate(k)">
+                  轮换
+                </button>
+                <button class="btn btn-sm" :disabled="!canManage(k)" @click="toggle(k)">
                   {{ k.status === 'active' ? '停用' : '启用' }}
                 </button>
-                <button class="btn btn-sm btn-danger" @click="remove(k)">删除</button>
+                <button
+                  class="btn btn-sm btn-danger"
+                  :disabled="!canManage(k)"
+                  @click="remove(k)"
+                >
+                  删除
+                </button>
               </div>
             </td>
           </tr>
@@ -322,6 +356,17 @@ onMounted(load)
         <div class="field">
           <label>名称</label>
           <input v-model="form.name" placeholder="生产环境-订单服务" />
+        </div>
+
+        <div v-if="isAdmin()" class="field">
+          <label>所有者</label>
+          <select v-model="form.userId">
+            <option value="">不归属任何人</option>
+            <option v-for="u in users" :key="u.id" :value="u.id">
+              {{ u.displayName || u.username }}（{{ u.username }}）
+            </option>
+          </select>
+          <span class="hint">密钥归属于谁，谁就能在列表里看到并管理它。</span>
         </div>
 
         <div class="field">

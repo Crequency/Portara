@@ -41,7 +41,10 @@ var client = new OpenAIClient(
 | 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试 + 延迟展示） | ✅ |
 | API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |
 | 查看完整 Key（仅管理员 + 风险提示 + 审计留痕，见 D-013） | ✅ |
-| 对话测试页（仅管理员，用真实 Key 走一遍网关链路） | ✅ |
+| 对话测试页（仅管理员；可选「网关自身测试」或「上游渠道直连测试」） | ✅ |
+| 渠道协议与厂商兼容（OpenAI 兼容 / OpenCode）+ 自定义固定请求头 | ✅ |
+| 密钥归属（非管理员只见自己的，管理员可见全部并显示所有者） | ✅ |
+| 概览统计粒度（今日 / 近 7 天 / 近一个月 / 自定义） | ✅ |
 | 请求代理转发（`/v1/chat/completions` 非流式 + SSE 流式透传） | ✅ |
 | 速率限制（RPM，Redis 原子计数） | ✅ |
 | Token 配额（用尽返回 402） | ✅ |
@@ -105,6 +108,9 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 6. **请求日志** 里查看 token、耗时与状态
 7. **对话测试**（管理员）里选一把 Key 直接聊两句 —— 走的是真实 `/v1` 链路
 8. **上游渠道** 点「测试」即刷新该行的延迟显示
+9. **概览** 顶部可切换 今日 / 近 7 天 / 近一个月 / 自定义
+10. 渠道若要求特殊请求头（如 OpenCode 的 `x-opencode-session`），
+    在渠道弹窗里选「厂商兼容」或在「固定请求头」里自行填写
 
 ## 对外端点
 
@@ -126,11 +132,14 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `POST /api/auth/login` `logout` `GET /api/auth/me` | 会话 |
 | `GET/POST/PATCH/DELETE /api/users[/:id]` | 用户管理（写操作需管理员） |
 | `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理 |
-| `POST /api/channels/:id/test` | 上游连通性测试 |
+| `POST /api/channels/:id/test` | 上游连通性测试（并记录延迟） |
+| `POST /api/channels/:id/chat` | **直连上游**的对话测试（仅管理员，绕过网关治理） |
 | `GET/POST/PATCH/DELETE /api/keys[/:id]`、`POST /api/keys/:id/rotate` | 密钥 |
 | `GET /api/keys/:id/reveal` | 查看完整密钥（**仅管理员**，必写审计） |
 | `GET /api/audit` | 审计日志查询（仅管理员） |
-| `GET /api/logs`、`GET /api/stats/overview`、`GET /api/stats/series` | 日志与统计 |
+| `GET /api/logs` | 请求日志 |
+| `GET /api/stats/overview?range=today\|7d\|30d\|custom[&from=&to=]` | 区间统计 + Top 排行 |
+| `GET /api/stats/series?range=…` | 趋势序列（≤48 小时按小时，否则按天） |
 | `GET /healthz` `GET /readyz` | 存活 / 就绪（就绪会检查 PG 与 Redis） |
 
 ## 架构

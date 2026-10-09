@@ -209,7 +209,12 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       method: c.req.method,
       headers: buildUpstreamHeaders(
         upstreamKey,
-        c.req.header('content-type') ?? 'application/json'
+        c.req.header('content-type') ?? 'application/json',
+        {
+          // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
+          extraHeaders: channel.extra_headers ?? {},
+          vendor: channel.vendor ?? 'generic'
+        }
       ),
       body: bodyText,
       signal

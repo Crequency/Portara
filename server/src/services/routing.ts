@@ -18,6 +18,10 @@ export interface ChannelCandidate {
   weight: number
   timeout_ms: number
   status: string
+  /** 厂商兼容档位；缺省按 generic 处理 */
+  vendor?: string
+  /** 渠道自定义固定请求头 */
+  extra_headers?: Record<string, string>
 }
 
 export function normalizeWeight(w: number): number {

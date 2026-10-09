@@ -16,8 +16,14 @@ export interface ChannelRow {
   id: string
   name: string
   provider: string
+  /** 协议：首批仅 'openai' */
+  protocol: string
+  /** 厂商兼容档位：'generic' | 'opencode-go' */
+  vendor: string
   base_url: string
   api_key_cipher: string
+  /** 用户自定义固定请求头（明文保存，见 D-016） */
+  extra_headers: Record<string, string>
   models: string[]
   priority: number
   weight: number
@@ -48,6 +54,8 @@ export interface ApiKeyRow {
   expires_at: string | null
   last_used_at: string | null
   created_at: string
+  /** 仅 list 查询带出（join users） */
+  owner_name?: string | null
 }
 
 export interface AuditEventRow {
@@ -101,6 +109,9 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     id: ch.id,
     name: ch.name,
     provider: ch.provider,
+    protocol: ch.protocol,
+    vendor: ch.vendor,
+    extraHeaders: ch.extra_headers ?? {},
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     hasApiKey: Boolean(ch.api_key_cipher),
@@ -128,6 +139,7 @@ export function toApiKeyDto(k: ApiKeyRow) {
     keyPrefix: k.key_prefix,
     revealable: Boolean(k.key_cipher),
     userId: k.user_id,
+    ownerName: k.owner_name ?? null,
     channelId: k.channel_id,
     modelAllow: k.model_allow,
     rpmLimit: k.rpm_limit,

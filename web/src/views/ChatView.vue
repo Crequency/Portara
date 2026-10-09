@@ -7,7 +7,7 @@
  * 不是模拟。页面不做会话管理：每次进入即一个新会话，刷新即清空。
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { api, ApiError, type ApiKey, type User } from '../api'
+import { api, ApiError, type ApiKey, type Channel, type User } from '../api'
 import { formatCompact, formatLatency } from '../format'
 import { toast } from '../toast'
 
@@ -33,8 +33,14 @@ interface ChatMessage {
   meta?: ChatMeta
 }
 
+/** 测试对象：gateway = 从网关入口走整条链路；channel = 直连上游渠道（绕过网关治理） */
+type TestTarget = 'gateway' | 'channel'
+
+const testTarget = ref<TestTarget>('gateway')
 const keys = ref<ApiKey[]>([])
 const keyId = ref('')
+const channels = ref<Channel[]>([])
+const channelId = ref('')
 const models = ref<string[]>([])
 const model = ref('')
 const messages = ref<ChatMessage[]>([])
@@ -52,9 +58,20 @@ let plainKey = ''
 let plainKeyFor = ''
 
 const selectedKey = computed(() => keys.value.find((k) => k.id === keyId.value) ?? null)
+const selectedChannel = computed(
+  () => channels.value.find((ch) => ch.id === channelId.value) ?? null
+)
+
+const targetReady = computed(() =>
+  testTarget.value === 'gateway' ? !!keyId.value : !!channelId.value
+)
 
 const canSend = computed(
-  () => !sending.value && input.value.trim().length > 0 && !!keyId.value && model.value.trim().length > 0
+  () =>
+    !sending.value &&
+    input.value.trim().length > 0 &&
+    targetReady.value &&
+    model.value.trim().length > 0
 )
 
 async function loadKeys(): Promise<void> {
@@ -63,6 +80,15 @@ async function loadKeys(): Promise<void> {
     keys.value = res.keys
   } catch {
     toast.error('加载密钥列表失败')
+  }
+}
+
+async function loadChannels(): Promise<void> {
+  try {
+    const res = await api.get<{ channels: Channel[] }>('/api/channels')
+    channels.value = res.channels
+  } catch {
+    toast.error('加载渠道列表失败')
   }
 }
 
@@ -80,6 +106,17 @@ async function ensurePlainKey(): Promise<string> {
 async function loadModels(): Promise<void> {
   models.value = []
   keyError.value = ''
+
+  // 直连渠道：模型就是该渠道声明的模型，不需要经过网关
+  if (testTarget.value === 'channel') {
+    if (!channelId.value) return
+    models.value = selectedChannel.value?.models ?? []
+    if (models.value.length > 0 && !models.value.includes(model.value)) {
+      model.value = models.value[0]!
+    }
+    return
+  }
+
   if (!keyId.value) return
 
   loadingModels.value = true
@@ -104,7 +141,7 @@ async function loadModels(): Promise<void> {
   }
 }
 
-watch(keyId, () => {
+watch([keyId, channelId, testTarget], () => {
   void loadModels()
 })
 
@@ -148,31 +185,46 @@ async function send(): Promise<void> {
   }
 
   try {
-    const token = await ensurePlainKey()
-
     const history = messages.value
       .filter((m) => !m.pending && m.content)
       .map((m) => ({ role: m.role, content: m.content }))
 
-    const res = await fetch('/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        model: model.value.trim(),
-        messages: history,
-        stream: useStream.value,
-        ...(useStream.value ? { stream_options: { include_usage: true } } : {})
+    const payload = {
+      model: model.value.trim(),
+      messages: history,
+      stream: useStream.value,
+      ...(useStream.value ? { stream_options: { include_usage: true } } : {})
+    }
+
+    // 两条路径：
+    //  gateway —— 带 Bearer Key 打 /v1，鉴权/限流/配额/选路/计量全部生效
+    //  channel —— 带会话 Cookie 打 /api/channels/:id/chat，服务端用渠道自己的
+    //             Key 与固定请求头直连上游，绕过网关治理（诊断用途）
+    let res: Response
+    if (testTarget.value === 'channel') {
+      res = await fetch(`/api/channels/${channelId.value}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
       })
-    })
+    } else {
+      const token = await ensurePlainKey()
+      res = await fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      })
+    }
 
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as
         | { error?: { message?: string } }
         | null
-      throw new Error(body?.error?.message ?? `网关返回 HTTP ${res.status}`)
+      const who = testTarget.value === 'channel' ? '上游渠道' : '网关'
+      throw new Error(body?.error?.message ?? `${who}返回 HTTP ${res.status}`)
     }
 
     if (!useStream.value) {
@@ -267,9 +319,11 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 onMounted(async () => {
-  await loadKeys()
+  await Promise.all([loadKeys(), loadChannels()])
   const first = keys.value.find((k) => k.status === 'active' && k.revealable) ?? keys.value[0]
   if (first) keyId.value = first.id
+  const firstChannel = channels.value.find((ch) => ch.status === 'active') ?? channels.value[0]
+  if (firstChannel) channelId.value = firstChannel.id
 })
 </script>
 
@@ -286,8 +340,14 @@ onMounted(async () => {
         <div>
           <div class="card-title">对话测试</div>
           <div class="dim" style="font-size: 12px">
-            请求直接打到本站 <span class="mono">POST /v1/chat/completions</span>，
-            鉴权 / 限流 / 配额 / 白名单 / 选路 / 计量全部真实生效
+            <template v-if="testTarget === 'gateway'">
+              从网关入口发起 <span class="mono">POST /v1/chat/completions</span>，
+              鉴权 / 限流 / 配额 / 白名单 / 选路 / 计量<b>全部真实生效</b>
+            </template>
+            <template v-else>
+              直连上游 <span class="mono">{{ selectedChannel?.baseUrl ?? '—' }}</span>，
+              使用该渠道自己的 Key 与固定请求头，<b>绕过网关治理</b>（用于区分「渠道不通」与「网关不通」）
+            </template>
           </div>
         </div>
         <div class="row">
@@ -296,8 +356,26 @@ onMounted(async () => {
         </div>
       </div>
 
+      <div class="row row-wrap" style="margin-bottom: 14px">
+        <span class="dim" style="font-size: 12.5px">测试对象：</span>
+        <button
+          class="btn btn-sm"
+          :class="{ 'btn-primary': testTarget === 'gateway' }"
+          @click="testTarget = 'gateway'"
+        >
+          网关自身测试
+        </button>
+        <button
+          class="btn btn-sm"
+          :class="{ 'btn-primary': testTarget === 'channel' }"
+          @click="testTarget = 'channel'"
+        >
+          上游渠道测试
+        </button>
+      </div>
+
       <div class="form-row">
-        <div class="field">
+        <div v-if="testTarget === 'gateway'" class="field">
           <label>使用哪把密钥</label>
           <select v-model="keyId">
             <option value="">请选择…</option>
@@ -306,6 +384,20 @@ onMounted(async () => {
               }}{{ k.revealable ? '' : '（不可查看，需轮换）' }}
             </option>
           </select>
+          <span class="hint">走网关会消耗该 Key 的配额与限速。</span>
+        </div>
+
+        <div v-else class="field">
+          <label>测试哪个渠道</label>
+          <select v-model="channelId">
+            <option value="">请选择…</option>
+            <option v-for="ch in channels" :key="ch.id" :value="ch.id">
+              {{ ch.name }} · {{ ch.baseUrl }}{{ ch.status === 'active' ? '' : '（已停用）' }}
+            </option>
+          </select>
+          <span class="hint">
+            直接用渠道的上游 Key 请求，不经过限流与配额 —— 会消耗上游额度。
+          </span>
         </div>
         <div class="field">
           <label>模型 {{ loadingModels ? '（加载中…）' : '' }}</label>
@@ -325,7 +417,12 @@ onMounted(async () => {
           流式输出（SSE）
         </label>
         <span class="spacer" />
-        <span v-if="selectedKey" class="dim" style="font-size: 12px">
+        <span v-if="testTarget === 'channel' && selectedChannel" class="dim" style="font-size: 12px">
+          {{ selectedChannel.protocol === 'openai' ? 'OpenAI 兼容' : selectedChannel.protocol }} ·
+          厂商 {{ selectedChannel.vendor }} ·
+          固定头 {{ Object.keys(selectedChannel.extraHeaders ?? {}).length }} 个
+        </span>
+        <span v-else-if="selectedKey" class="dim" style="font-size: 12px">
           限速 {{ selectedKey.rpmLimit === 0 ? '不限' : `${selectedKey.rpmLimit}/min` }} ·
           配额 {{ selectedKey.quotaTokens === 0 ? '不限' : formatCompact(selectedKey.quotaTokens) }}
           · 已用 {{ formatCompact(selectedKey.usedTokens) }}

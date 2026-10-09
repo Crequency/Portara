@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { api, ApiError, type Channel, type ChannelTestResult, type User } from '../api'
 import Modal from '../components/Modal.vue'
-import { formatTime, parseList } from '../format'
+import { formatTime, headerLines, parseHeaderLines, parseList } from '../format'
 import { toast } from '../toast'
 
 const props = defineProps<{ user?: User }>()
@@ -18,6 +18,9 @@ const form = reactive({
   name: '',
   baseUrl: '',
   apiKey: '',
+  protocol: 'openai',
+  vendor: 'generic',
+  headersText: '',
   modelsText: '',
   priority: 100,
   weight: 1,
@@ -25,6 +28,11 @@ const form = reactive({
   status: 'active' as 'active' | 'disabled',
   note: ''
 })
+
+const VENDORS = [
+  { id: 'generic', label: '通用（标准 OpenAI 兼容）' },
+  { id: 'opencode-go', label: 'OpenCode（需 x-opencode-session 头）' }
+]
 
 const isAdmin = () => props.user?.role === 'admin'
 
@@ -46,6 +54,9 @@ function openCreate(): void {
     name: '',
     baseUrl: '',
     apiKey: '',
+    protocol: 'openai',
+    vendor: 'generic',
+    headersText: '',
     modelsText: '',
     priority: 100,
     weight: 1,
@@ -62,6 +73,9 @@ function openEdit(ch: Channel): void {
     name: ch.name,
     baseUrl: ch.baseUrl,
     apiKey: '',
+    protocol: ch.protocol,
+    vendor: ch.vendor,
+    headersText: headerLines(ch.extraHeaders ?? {}),
     modelsText: ch.models.join('\n'),
     priority: ch.priority,
     weight: ch.weight,
@@ -75,9 +89,18 @@ function openEdit(ch: Channel): void {
 async function submit(): Promise<void> {
   saving.value = true
   try {
+    const parsedHeaders = parseHeaderLines(form.headersText)
+    if (parsedHeaders.errors.length > 0) {
+      toast.error(`固定请求头格式有问题：${parsedHeaders.errors[0]}`)
+      return
+    }
+
     const body = {
       name: form.name.trim(),
       baseUrl: form.baseUrl.trim(),
+      protocol: form.protocol,
+      vendor: form.vendor,
+      extraHeaders: parsedHeaders.headers,
       models: parseList(form.modelsText),
       priority: Number(form.priority),
       weight: Number(form.weight),
@@ -201,7 +224,22 @@ onMounted(load)
           <tr v-for="ch in channels" :key="ch.id">
             <td>
               <div>{{ ch.name }}</div>
-              <div v-if="ch.note" class="dim" style="font-size: 11.5px">{{ ch.note }}</div>
+              <div class="tag-list" style="margin-top: 3px">
+                <span class="tag">{{ ch.protocol === 'openai' ? 'OpenAI 兼容' : ch.protocol }}</span>
+                <span v-if="ch.vendor !== 'generic'" class="tag" style="color: #9db9ff">
+                  {{ ch.vendor }}
+                </span>
+                <span
+                  v-if="Object.keys(ch.extraHeaders ?? {}).length > 0"
+                  class="tag"
+                  :title="Object.keys(ch.extraHeaders).join(', ')"
+                >
+                  +{{ Object.keys(ch.extraHeaders).length }} 头
+                </span>
+              </div>
+              <div v-if="ch.note" class="dim" style="font-size: 11.5px; margin-top: 3px">
+                {{ ch.note }}
+              </div>
             </td>
             <td class="mono" style="max-width: 240px; word-break: break-all">
               {{ ch.baseUrl }}
@@ -280,6 +318,26 @@ onMounted(load)
         </div>
       </div>
 
+      <div class="form-row">
+        <div class="field">
+          <label>协议</label>
+          <select v-model="form.protocol">
+            <option value="openai">OpenAI 兼容</option>
+          </select>
+          <span class="hint">首批仅提供 OpenAI 兼容协议。</span>
+        </div>
+        <div class="field">
+          <label>厂商兼容</label>
+          <select v-model="form.vendor">
+            <option v-for="v in VENDORS" :key="v.id" :value="v.id">{{ v.label }}</option>
+          </select>
+          <span v-if="form.vendor === 'opencode-go'" class="hint">
+            会自动补 <span class="mono">x-opencode-session</span>（值随机）；
+            若你在下面自行指定该头，则以你填的为准。
+          </span>
+        </div>
+      </div>
+
       <div class="field">
         <label>Base URL</label>
         <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" />
@@ -294,6 +352,20 @@ onMounted(load)
           :placeholder="editingId ? '留空表示不修改' : 'sk-…'"
         />
         <span class="hint">使用 AES-256-GCM 加密存储，页面上只显示掩码。</span>
+      </div>
+
+      <div class="field">
+        <label>固定请求头</label>
+        <textarea
+          v-model="form.headersText"
+          rows="3"
+          placeholder="X-Custom-Header: value&#10;# 每行一条，可留空"
+        />
+        <span class="hint">
+          每行一条 <span class="mono">名称: 值</span>，会附加到发往该上游的每个请求。
+          <b>此处为明文保存</b> —— 密钥请填上面的「上游 API Key」（加密存储）；
+          <span class="mono">authorization</span> 等由 Portara 管理的头不允许自定义。
+        </span>
       </div>
 
       <div class="field">

@@ -3,9 +3,16 @@ import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret, encryptSecret, maskSecret } from '../lib/crypto.js'
-import { badRequest, notFound, parseJson } from '../lib/http.js'
+import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
-import { buildUpstreamUrl } from '../services/proxy.js'
+import {
+  buildUpstreamHeaders,
+  buildUpstreamUrl,
+  parseJsonSafe,
+  isVendorPreset,
+  sanitizeExtraHeaders,
+  withStreamUsage
+} from '../services/proxy.js'
 import { toChannelDto, type ChannelRow } from '../types.js'
 
 export const channelRoutes = new Hono()
@@ -24,6 +31,9 @@ const httpUrl = z
 const createSchema = z.object({
   name: z.string().min(1, '名称不能为空').max(64),
   baseUrl: httpUrl,
+  protocol: z.enum(['openai']).default('openai'),
+  vendor: z.string().default('generic'),
+  extraHeaders: z.record(z.string(), z.string()).default({}),
   apiKey: z.string().default(''),
   models: z.array(z.string().min(1)).default([]),
   priority: z.coerce.number().int().min(1).max(9999).default(100),
@@ -36,6 +46,17 @@ const createSchema = z.object({
 const updateSchema = createSchema.partial().extend({
   clearApiKey: z.boolean().optional()
 })
+
+/** 校验厂商标识与固定请求头；非法项直接 400，不静默丢弃 */
+function validateChannelInput(input: { vendor?: string; extraHeaders?: Record<string, string> }) {
+  if (input.vendor !== undefined && !isVendorPreset(input.vendor)) {
+    throw badRequest(`不支持的厂商兼容选项：${input.vendor}`)
+  }
+  if (input.extraHeaders !== undefined) {
+    const { errors } = sanitizeExtraHeaders(input.extraHeaders)
+    if (errors.length > 0) throw badRequest('固定请求头有问题', { issues: errors })
+  }
+}
 
 function maskOf(ch: ChannelRow): string {
   if (!ch.api_key_cipher) return ''
@@ -55,6 +76,7 @@ channelRoutes.get('/', async (c) => {
 
 channelRoutes.post('/', requireAdmin, async (c) => {
   const body = await parseJson(c, createSchema)
+  validateChannelInput(body)
 
   const exists = await one('select id from channels where name = $1', [body.name])
   if (exists) throw badRequest('渠道名称已存在')
@@ -62,13 +84,18 @@ channelRoutes.post('/', requireAdmin, async (c) => {
   const cipher = body.apiKey
     ? encryptSecret(body.apiKey, env.masterKey)
     : ''
+  const { headers: extraHeaders } = sanitizeExtraHeaders(body.extraHeaders)
 
   const row = await one<ChannelRow>(
-    `insert into channels (name, base_url, api_key_cipher, models, priority, weight, timeout_ms, status, note)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+    `insert into channels
+       (name, base_url, protocol, vendor, extra_headers, api_key_cipher, models, priority, weight, timeout_ms, status, note)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
     [
       body.name,
       body.baseUrl,
+      body.protocol,
+      body.vendor,
+      JSON.stringify(extraHeaders),
       cipher,
       body.models,
       body.priority,
@@ -84,6 +111,7 @@ channelRoutes.post('/', requireAdmin, async (c) => {
 channelRoutes.patch('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const body = await parseJson(c, updateSchema)
+  validateChannelInput(body)
 
   const current = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!current) throw notFound('渠道不存在')
@@ -100,17 +128,25 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
   if (body.clearApiKey) cipher = ''
   else if (body.apiKey) cipher = encryptSecret(body.apiKey, env.masterKey)
 
+  const extraHeaders =
+    body.extraHeaders === undefined
+      ? current.extra_headers
+      : sanitizeExtraHeaders(body.extraHeaders).headers
+
   const row = await one<ChannelRow>(
     `update channels set
        name           = coalesce($2, name),
        base_url       = coalesce($3, base_url),
-       api_key_cipher = $4,
-       models         = coalesce($5, models),
-       priority       = coalesce($6, priority),
-       weight         = coalesce($7, weight),
-       timeout_ms     = coalesce($8, timeout_ms),
-       status         = coalesce($9, status),
-       note           = coalesce($10, note),
+       protocol       = coalesce($4, protocol),
+       vendor         = coalesce($5, vendor),
+       extra_headers  = $6,
+       api_key_cipher = $7,
+       models         = coalesce($8, models),
+       priority       = coalesce($9, priority),
+       weight         = coalesce($10, weight),
+       timeout_ms     = coalesce($11, timeout_ms),
+       status         = coalesce($12, status),
+       note           = coalesce($13, note),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -118,6 +154,9 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       id,
       body.name ?? null,
       body.baseUrl ?? null,
+      body.protocol ?? null,
+      body.vendor ?? null,
+      JSON.stringify(extraHeaders),
       cipher,
       body.models ?? null,
       body.priority ?? null,
@@ -167,10 +206,10 @@ channelRoutes.post('/:id/test', async (c) => {
 
   try {
     const res = await fetch(url, {
-      headers: {
-        accept: 'application/json',
-        ...(upstreamKey ? { authorization: `Bearer ${upstreamKey}` } : {})
-      },
+      headers: buildUpstreamHeaders(upstreamKey, 'application/json', {
+        extraHeaders: ch.extra_headers ?? {},
+        vendor: ch.vendor
+      }),
       signal: AbortSignal.timeout(Math.min(ch.timeout_ms, 15_000))
     })
     const latencyMs = Date.now() - started
@@ -211,4 +250,85 @@ channelRoutes.post('/:id/test', async (c) => {
       message: `连接失败：${err instanceof Error ? err.message : String(err)}`
     })
   }
+})
+
+/**
+ * 直连上游的对话测试。
+ *
+ * 与 /v1 的区别（这正是它的用途）：
+ *   - **绕过网关治理**：不走限流、配额、模型白名单、密钥计量
+ *   - 直接用**该渠道自己的 Key 与固定请求头**打上游
+ * 于是可以把「渠道本身通不通」与「网关整条链路通不通」分开判断。
+ *
+ * 仅管理员可用：它会消耗渠道的上游额度。诊断用途，不写 request_logs。
+ */
+channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
+  if (!ch) throw notFound('渠道不存在')
+
+  const raw = await c.req.text()
+  const payload = parseJsonSafe(raw) as Record<string, unknown> | null
+  if (!payload || typeof payload !== 'object') {
+    throw badRequest('请求体不是合法 JSON')
+  }
+
+  let bodyText = raw
+  if (payload.stream === true) {
+    const patched = withStreamUsage(payload)
+    if (patched.injected) bodyText = JSON.stringify(patched.payload)
+  }
+
+  let upstreamKey = ''
+  if (ch.api_key_cipher) {
+    try {
+      upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
+    } catch {
+      throw badRequest('该渠道的密钥无法解密，请重新填写')
+    }
+  }
+
+  const url = buildUpstreamUrl(ch.base_url, '/chat/completions')
+  const signal = AbortSignal.any([
+    c.req.raw.signal,
+    AbortSignal.timeout(ch.timeout_ms)
+  ])
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: buildUpstreamHeaders(upstreamKey, 'application/json', {
+        extraHeaders: ch.extra_headers ?? {},
+        vendor: ch.vendor
+      }),
+      body: bodyText,
+      signal
+    })
+  } catch (err) {
+    const message = signal.aborted
+      ? `上游响应超时（${ch.timeout_ms}ms）`
+      : `连接上游失败：${err instanceof Error ? err.message : String(err)}`
+    throw new ApiError(502, 'upstream_unreachable', message)
+  }
+
+  const contentType = res.headers.get('content-type') ?? 'application/json'
+
+  if (contentType.includes('text/event-stream') && res.body) {
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        'content-type': contentType,
+        'cache-control': 'no-cache',
+        'x-accel-buffering': 'no',
+        'x-portara-direct': ch.name
+      }
+    })
+  }
+
+  const text = await res.text()
+  return new Response(text, {
+    status: res.status,
+    headers: { 'content-type': contentType, 'x-portara-direct': ch.name }
+  })
 })

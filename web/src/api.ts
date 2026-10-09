@@ -62,6 +62,9 @@ export interface Channel {
   id: string
   name: string
   provider: string
+  protocol: string
+  vendor: string
+  extraHeaders: Record<string, string>
   baseUrl: string
   apiKeyMasked: string
   hasApiKey: boolean
@@ -83,6 +86,7 @@ export interface ApiKey {
   keyPrefix: string
   revealable: boolean
   userId: string | null
+  ownerName: string | null
   channelId: string | null
   modelAllow: string[]
   rpmLimit: number
@@ -112,15 +116,46 @@ export interface RequestLog {
   error: string
 }
 
-export interface Overview {
+export type RangePreset = 'today' | '7d' | '30d' | 'custom'
+
+export interface StatsRange {
+  preset: RangePreset
+  from: string
+  to: string
+}
+
+export interface StatsTotals {
+  requests: number
+  errors: number
+  errorRate: number
+  tokens: number
+  promptTokens: number
+  completionTokens: number
+  estimated: number
+  avgLatencyMs: number
+  p95LatencyMs: number
+}
+
+export interface StatsResources {
   users: number
   channels: number
   activeChannels: number
   keys: number
-  todayRequests: number
-  todayTokens: number
-  todayErrors: number
-  totalRequests: number
+}
+
+export interface TopEntry {
+  name: string
+  requests: number
+  tokens: number
+}
+
+export interface StatsOverview {
+  range: StatsRange
+  totals: StatsTotals
+  resources: StatsResources
+  topModels: TopEntry[]
+  topChannels: TopEntry[]
+  topKeys: TopEntry[]
 }
 
 export interface SeriesPoint {
@@ -128,6 +163,12 @@ export interface SeriesPoint {
   requests: number
   tokens: number
   errors: number
+}
+
+export interface StatsSeries {
+  granularity: 'hour' | 'day'
+  range: StatsRange
+  series: SeriesPoint[]
 }
 
 export interface ChannelTestResult {

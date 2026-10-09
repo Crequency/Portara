@@ -1,9 +1,10 @@
+import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret, encryptSecret, generateApiKey } from '../lib/crypto.js'
-import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
+import { ApiError, badRequest, forbidden, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { toApiKeyDto, type ApiKeyRow } from '../types.js'
@@ -36,6 +37,27 @@ const updateSchema = z.object({
   expiresAt: z.string().optional().nullable()
 })
 
+/**
+ * 归属校验：管理员可管全部；非管理员只能操作**自己名下**的密钥。
+ * 列表过滤只是体验，这里才是权限边界 —— 否则改个 id 就能动别人的 Key。
+ */
+function assertCanManage(c: Context, key: ApiKeyRow): void {
+  const user = c.get('user')
+  if (user.role === 'admin') return
+  if (key.user_id && key.user_id === user.id) return
+  throw forbidden('只能操作自己名下的密钥')
+}
+
+/** 写操作后重新读取（带所有者 join），保证响应形状与列表接口一致 */
+async function loadKeyWithOwner(id: string): Promise<ApiKeyRow | null> {
+  return one<ApiKeyRow>(
+    `select k.*, u.username as owner_name
+       from api_keys k left join users u on u.id = k.user_id
+      where k.id = $1`,
+    [id]
+  )
+}
+
 async function assertRefs(userId?: string | null, channelId?: string | null) {
   if (userId) {
     const u = await one('select id from users where id = $1', [userId])
@@ -48,14 +70,29 @@ async function assertRefs(userId?: string | null, channelId?: string | null) {
 }
 
 keyRoutes.get('/', async (c) => {
-  const rows = await query<ApiKeyRow>('select * from api_keys order by created_at desc')
+  const user = c.get('user')
+  const base = `select k.*, u.username as owner_name
+                  from api_keys k left join users u on u.id = k.user_id`
+
+  // 普通用户只看得到自己名下的密钥；管理员看全部并显示所有者
+  const rows =
+    user.role === 'admin'
+      ? await query<ApiKeyRow>(`${base} order by k.created_at desc`)
+      : await query<ApiKeyRow>(
+          `${base} where k.user_id = $1 order by k.created_at desc`,
+          [user.id]
+        )
+
   return c.json({ keys: rows.map(toApiKeyDto) })
 })
 
 /** 创建密钥：明文只在本次响应中出现，之后无法再取回 */
 keyRoutes.post('/', async (c) => {
   const body = await parseJson(c, createSchema)
-  await assertRefs(body.userId, body.channelId)
+  const actor = c.get('user')
+  // 非管理员强制归属自己 —— 不允许替别人签发
+  const ownerId = actor.role === 'admin' ? body.userId || actor.id : actor.id
+  await assertRefs(ownerId, body.channelId)
 
   const { key, prefix, hash } = generateApiKey()
 
@@ -69,7 +106,7 @@ keyRoutes.post('/', async (c) => {
       hash,
       // 可解密副本，供管理员在面板上查看与复制（见 DECISIONS D-013）
       encryptSecret(key, env.masterKey),
-      body.userId || null,
+      ownerId,
       body.channelId || null,
       body.modelAllow,
       body.rpmLimit,
@@ -78,12 +115,14 @@ keyRoutes.post('/', async (c) => {
     ]
   )
 
+  const created = await loadKeyWithOwner(row!.id)
+
   await recordAudit(c, 'key.create', { type: 'api_key', id: row!.id }, {
     name: row!.name,
     prefix: row!.key_prefix
   })
 
-  return c.json({ apiKey: toApiKeyDto(row!), key }, 201)
+  return c.json({ apiKey: toApiKeyDto(created ?? row!), key }, 201)
 })
 
 keyRoutes.patch('/:id', async (c) => {
@@ -92,6 +131,7 @@ keyRoutes.patch('/:id', async (c) => {
 
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!current) throw notFound('密钥不存在')
+  assertCanManage(c, current)
   await assertRefs(null, body.channelId)
 
   const row = await one<ApiKeyRow>(
@@ -120,14 +160,17 @@ keyRoutes.patch('/:id', async (c) => {
           : null
     ]
   )
-  return c.json({ apiKey: toApiKeyDto(row!) })
+  return c.json({ apiKey: toApiKeyDto((await loadKeyWithOwner(id)) ?? row!) })
 })
 
-/** 查看明文密钥：仅管理员，且**必然留审计**（见 DECISIONS D-013） */
-keyRoutes.get('/:id/reveal', requireAdmin, async (c) => {
+/**
+ * 查看明文密钥：管理员可看全部，普通用户可看**自己名下**的；必然留审计（见 D-013）。
+ */
+keyRoutes.get('/:id/reveal', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const row = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!row) throw notFound('密钥不存在')
+  assertCanManage(c, row)
 
   if (!row.key_cipher) {
     // 旧数据没有可解密副本 —— 诚实告知，而不是假装能恢复
@@ -163,6 +206,7 @@ keyRoutes.post('/:id/rotate', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!current) throw notFound('密钥不存在')
+  assertCanManage(c, current)
 
   const { key, prefix, hash } = generateApiKey()
   const row = await one<ApiKeyRow>(
@@ -177,13 +221,14 @@ keyRoutes.post('/:id/rotate', async (c) => {
     newPrefix: prefix
   })
 
-  return c.json({ apiKey: toApiKeyDto(row!), key })
+  return c.json({ apiKey: toApiKeyDto((await loadKeyWithOwner(id)) ?? row!), key })
 })
 
 keyRoutes.delete('/:id', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!current) throw notFound('密钥不存在')
+  assertCanManage(c, current)
   await query('delete from api_keys where id = $1', [id])
   await recordAudit(c, 'key.delete', { type: 'api_key', id }, {
     name: current.name,
