@@ -260,6 +260,8 @@ async function main() {
   let channelId = null
   let keyFull = ''
   let quotaKey = ''
+  // 记录所有本轮创建的密钥，结束前逐个删除，避免测试残留污染面板
+  const createdKeyIds = []
 
   try {
     await waitReady()
@@ -335,6 +337,7 @@ async function main() {
     })
     check('创建密钥成功（201）', () => assert.equal(keyRes.status, 201))
     keyFull = keyRes.body?.key ?? ''
+    createdKeyIds.push(keyRes.body?.apiKey?.id)
     check('返回的明文密钥格式正确', () =>
       assert.ok(keyFull.startsWith('sk-portara-'))
     )
@@ -462,6 +465,7 @@ async function main() {
       quotaTokens: 0
     })
     const rlToken = rlKey.body.key
+    createdKeyIds.push(rlKey.body.apiKey.id)
     const results = []
     for (let i = 0; i < 4; i++) {
       const r = await proxyCall(
@@ -484,6 +488,7 @@ async function main() {
       quotaTokens: 5
     })
     quotaKey = quotaRes.body.key
+    createdKeyIds.push(quotaRes.body.apiKey.id)
 
     const first = await proxyCall(
       '/v1/chat/completions',
@@ -509,6 +514,7 @@ async function main() {
       rpmLimit: 0,
       quotaTokens: 0
     })
+    createdKeyIds.push(allowRes.body.apiKey.id)
     const denied = await proxyCall(
       '/v1/chat/completions',
       { model: MOCK_MODEL, messages: [{ role: 'user', content: 'x' }] },
@@ -531,8 +537,14 @@ async function main() {
     // ---------------------------------------------------------- 清理
     section('⑫ 清理测试数据')
 
-    const delKey = await apiCall('DELETE', `/api/keys/${keyRes.body.apiKey.id}`)
-    check('删除密钥成功', () => assert.equal(delKey.status, 200))
+    let deleted = 0
+    for (const id of createdKeyIds.filter(Boolean)) {
+      const res = await apiCall('DELETE', `/api/keys/${id}`)
+      if (res.status === 200) deleted++
+    }
+    check('清理本轮创建的全部密钥', () =>
+      assert.equal(deleted, createdKeyIds.filter(Boolean).length)
+    )
     const delChannel = await apiCall('DELETE', `/api/channels/${channelId}`)
     check('删除渠道成功', () => assert.equal(delChannel.status, 200))
   } finally {
