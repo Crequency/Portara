@@ -894,3 +894,12 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   background: var(--accent);
   border-color: var(--accent);
 }
+
+/* 可点击进入详情的表格行 */
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-clickable:hover td {
+  background: var(--accent-soft);
+}

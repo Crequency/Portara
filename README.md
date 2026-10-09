@@ -40,6 +40,7 @@ var client = new OpenAIClient(
 | 用户管理（管理员 / 操作员、启用禁用、改密） | ✅ |
 | 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试 + 延迟展示） | ✅ |
 | 模型列表 API 路径可配置 + **从 API 自动获取模型与上下文长度** | ✅ |
+| **渠道详情子页面**（单击渠道进入：配置 / 用量 / 模型明细 / 映射 / 最近请求） | ✅ |
 | `/v1/models` **透传上下文长度等元信息**（含别名条目） | ✅ |
 | 对话测试**直连模式同样记账**，并在概览中与网关流量区分 | ✅ |
 | API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |
@@ -147,7 +148,7 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | --- | --- |
 | `POST /api/auth/login` `logout` `GET /api/auth/me` | 会话 |
 | `GET/POST/PATCH/DELETE /api/users[/:id]` | 用户管理（写操作需管理员） |
-| `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理 |
+| `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理（`GET /:id` 为单渠道详情） |
 | `POST /api/channels/:id/test` | 上游连通性测试（按渠道配置的模型列表路径，并记录延迟） |
 | `POST /api/channels/fetch-models` | 用临时配置拉取模型列表（新建时） |
 | `POST /api/channels/:id/fetch-models` | 用已存密钥拉取模型列表（编辑时） |
@@ -161,7 +162,7 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `POST /api/model-routes/purge` | 按别名整组删除 |
 | `POST /api/model-routes/import` | 以 JSON 整体编辑（`replace` 全量替换 / `merge` 仅合并） |
 | `GET /api/logs` | 请求日志 |
-| `GET /api/stats/overview?range=today\|7d\|30d\|custom[&from=&to=]` | 区间统计 + Top 排行 |
+| `GET /api/stats/overview?range=today\|7d\|30d\|custom[&from=&to=][&channelId=]` | 区间统计 + Top 排行（可按渠道过滤） |
 | `GET /api/stats/series?range=…` | 趋势序列（≤48 小时按小时，否则按天） |
 | `GET /healthz` `GET /readyz` | 存活 / 就绪（就绪会检查 PG 与 Redis） |
 

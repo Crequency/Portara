@@ -293,6 +293,10 @@ const batchPreview = computed(() => {
   return models.map((m) => (prefix ? prefix + '/' + m : m))
 })
 
+function openDetail(ch: Channel): void {
+  location.hash = '#/channels/' + ch.id
+}
+
 async function loadRoutes(): Promise<void> {
   try {
     const res = await api.get<{ routes: ModelRoute[] }>('/api/model-routes')
@@ -670,7 +674,13 @@ onMounted(async () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="ch in channels" :key="ch.id">
+            <tr
+              v-for="ch in channels"
+              :key="ch.id"
+              class="row-clickable"
+              :title="t('channelDetail.title')"
+              @click="openDetail(ch)"
+            >
               <td>
                 <div>{{ ch.name }}</div>
                 <div class="tag-list" style="margin-top: 3px">
@@ -693,7 +703,7 @@ onMounted(async () => {
                 </div>
               </td>
               <td class="mono" style="max-width: 240px; word-break: break-all">{{ ch.baseUrl }}</td>
-              <td class="mono dim">
+              <td class="mono dim" @click.stop>
                 <span class="row" style="gap: 7px">
                   <span>{{ ch.apiKeyMasked || '—' }}</span>
                   <button
@@ -738,7 +748,7 @@ onMounted(async () => {
                 </template>
                 <span v-else class="dim">{{ t('channels.untested') }}</span>
               </td>
-              <td>
+              <td @click.stop>
                 <div class="row">
                   <button
                     class="btn btn-sm"

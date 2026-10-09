@@ -216,6 +216,14 @@ channelRoutes.get('/', async (c) => {
   return c.json({ channels: rows.map((ch) => toChannelDto(ch, maskOf(ch))) })
 })
 
+/** 单个渠道详情（供渠道详情子页面使用） */
+channelRoutes.get('/:id', async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
+  if (!ch) throw notFound('渠道不存在')
+  return c.json({ channel: toChannelDto(ch, maskOf(ch)) })
+})
+
 channelRoutes.post('/', requireAdmin, async (c) => {
   const body = await parseJson(c, createSchema)
   validateChannelInput(body)

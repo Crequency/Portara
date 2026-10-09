@@ -36,6 +36,8 @@ const aliasSchema = z
 
 const upstreamModelSchema = z.string().min(1, '上游模型 id 不能为空').max(128)
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 const LIST_SQL = `
   select r.*, c.name as channel_name, c.status as channel_status
     from model_routes r
@@ -55,6 +57,17 @@ async function assertChannel(channelId: string): Promise<void> {
 // ---------------------------------------------------------------- 查询
 
 modelRouteRoutes.get('/', async (c) => {
+  const channelId = c.req.query('channelId')
+  if (channelId && UUID_RE.test(channelId)) {
+    const rows = await query<ModelRouteRow>(
+      `select r.*, c.name as channel_name, c.status as channel_status
+         from model_routes r left join channels c on c.id = r.channel_id
+        where r.channel_id = $1
+        order by r.alias asc, r.priority asc, r.id asc`,
+      [channelId]
+    )
+    return c.json({ routes: rows.map(toModelRouteDto) })
+  }
   const rows = await query<ModelRouteRow>(LIST_SQL)
   return c.json({ routes: rows.map(toModelRouteDto) })
 })

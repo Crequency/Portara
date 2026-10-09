@@ -5,6 +5,7 @@ import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
 import { LOCALES, locale, setLocale, useI18n } from './i18n'
 import { THEME_MODES, setThemeMode, themeMode } from './theme'
+import ChannelDetailView from './views/ChannelDetailView.vue'
 import ChannelsView from './views/ChannelsView.vue'
 import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
@@ -17,7 +18,26 @@ const { t } = useI18n()
 
 const user = ref<User | null>(null)
 const ready = ref(false)
-const route = ref(currentRoute())
+
+/**
+ * 极简路由：`#/<name>[/<param>]`
+ * 例如 `#/channels` 与 `#/channels/<id>`（渠道详情子页面）
+ */
+interface Route {
+  name: string
+  param: string
+}
+
+function parseRoute(): Route {
+  const raw = location.hash.replace(/^#\/?/, '')
+  const [name = '', param = ''] = raw.split('/')
+  return { name: name || 'overview', param }
+}
+
+const route = ref<Route>(parseRoute())
+const isChannelDetail = computed(
+  () => route.value.name === 'channels' && route.value.param.length > 0
+)
 
 const NAV = [
   { id: 'overview', icon: 'M3 12h4l3 8 4-16 3 8h4', adminOnly: false },
@@ -36,7 +56,7 @@ const navItems = computed(() =>
 )
 
 const currentView = computed(() => {
-  switch (route.value) {
+  switch (route.value.name) {
     case 'channels':
       return ChannelsView
     case 'keys':
@@ -52,8 +72,12 @@ const currentView = computed(() => {
   }
 })
 
-const pageTitle = computed(() => t('nav.' + route.value))
-const pageSub = computed(() => t(route.value + '.sub'))
+const pageTitle = computed(() =>
+  isChannelDetail.value ? t('channelDetail.title') : t('nav.' + route.value.name)
+)
+const pageSub = computed(() =>
+  isChannelDetail.value ? t('channelDetail.sub') : t(route.value.name + '.sub')
+)
 
 const languageOptions = computed(() =>
   LOCALES.map((l) => ({ value: l.value, label: l.label, hint: l.short }))
@@ -62,13 +86,8 @@ const themeOptions = computed(() =>
   THEME_MODES.map((m) => ({ value: m.value, label: t(m.labelKey) }))
 )
 
-function currentRoute(): string {
-  const raw = location.hash.replace(/^#\/?/, '')
-  return raw || 'overview'
-}
-
 function onHash(): void {
-  route.value = currentRoute()
+  route.value = parseRoute()
 }
 
 window.addEventListener('hashchange', onHash)
@@ -131,7 +150,7 @@ function go(id: string): void {
         v-for="item in navItems"
         :key="item.id"
         class="nav-item"
-        :class="{ active: route === item.id }"
+        :class="{ active: route.name === item.id }"
         @click="go(item.id)"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -191,7 +210,12 @@ function go(id: string): void {
       </div>
 
       <div class="content">
-        <component :is="currentView" :user="user" />
+        <ChannelDetailView
+          v-if="isChannelDetail"
+          :user="user"
+          :channel-id="route.param"
+        />
+        <component :is="currentView" v-else :user="user" />
       </div>
     </main>
   </div>

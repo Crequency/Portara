@@ -1428,8 +1428,80 @@ async function main() {
 
     await apiCall('DELETE', `/api/channels/${customPathChannel.body.channel.id}`)
 
+    // ---------------------------------------------------------- 渠道详情子页面
+    section('㉒ 渠道详情子页面所需的数据')
+
+    const detail = await apiCall('GET', `/api/channels/${channelId}`)
+    check('可按 id 取单个渠道详情', () => {
+      assert.equal(detail.status, 200)
+      assert.equal(detail.body.channel.id, channelId)
+    })
+    check('详情不返回上游密钥明文', () => {
+      assert.ok(!detail.text.includes(UPSTREAM_KEY))
+      assert.ok(detail.body.channel.apiKeyMasked.includes('••••'))
+    })
+
+    const notFoundDetail = await apiCall(
+      'GET',
+      '/api/channels/00000000-0000-0000-0000-000000000000'
+    )
+    check('不存在的渠道返回 404', () => assert.equal(notFoundDetail.status, 404))
+
+    const chStats = await apiCall(
+      'GET',
+      `/api/stats/overview?range=today&channelId=${channelId}`
+    )
+    check('统计可按渠道过滤', () => {
+      assert.equal(chStats.status, 200)
+      assert.ok(chStats.body.totals.requests >= 1)
+    })
+    const otherChStats = await apiCall(
+      'GET',
+      '/api/stats/overview?range=today&channelId=00000000-0000-0000-0000-000000000000'
+    )
+    check('过滤到无关渠道时统计为 0', () =>
+      assert.equal(otherChStats.body.totals.requests, 0)
+    )
+
+    const chSeries = await apiCall(
+      'GET',
+      `/api/stats/series?range=7d&channelId=${channelId}`
+    )
+    check('趋势序列也可按渠道过滤', () =>
+      assert.equal(chSeries.body.series.length, 7)
+    )
+
+    // 先前的映射已被清理，这里重新建一条再验证按渠道过滤
+    const detailAlias = `detail-alias-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: detailAlias,
+      targets: [{ channelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }]
+    })
+    const chRoutes = await apiCall('GET', `/api/model-routes?channelId=${channelId}`)
+    check('映射列表可按渠道过滤', () => {
+      assert.equal(chRoutes.status, 200)
+      assert.ok(chRoutes.body.routes.length > 0)
+      assert.ok(chRoutes.body.routes.every((r) => r.channelId === channelId))
+      assert.ok(chRoutes.body.routes.some((r) => r.alias === detailAlias))
+    })
+    await apiCall('POST', '/api/model-routes/purge', { alias: detailAlias })
+
+    const chLogs = await apiCall('GET', `/api/logs?channelId=${channelId}&limit=10`)
+    check('请求日志可按渠道过滤', () => {
+      assert.equal(chLogs.status, 200)
+      assert.ok(chLogs.body.logs.length > 0, '未取到该渠道的日志')
+      // 注意：日志里的 channel_name 是**请求发生当时**的名字 ——
+      // 渠道改名后，旧日志仍保留旧名（这是正确的历史记录），
+      // 因此这里只校验过滤生效，不假定名字与当前一致
+      const names = new Set(chLogs.body.logs.map((l) => l.channelName))
+      assert.ok(
+        [...names].every((n) => n.startsWith('smoke-mock')),
+        `意外的渠道名：${[...names].join(', ')}`
+      )
+    })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉒ 密钥不泄漏到日志')
+    section('㉓ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -1441,7 +1513,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉓ 清理测试数据')
+    section('㉔ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

@@ -85,8 +85,12 @@ logRoutes.get('/logs', async (c) => {
 const rangeQuery = z.object({
   range: z.enum(['today', '7d', '30d', 'custom']).default('today'),
   from: z.string().optional(),
-  to: z.string().optional()
+  to: z.string().optional(),
+  /** 可选：只看某个渠道的流量（渠道详情页用） */
+  channelId: z.string().optional()
 })
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 interface Bounds {
   from: string
@@ -131,7 +135,8 @@ const num = (v: unknown): number => {
 logRoutes.get('/stats/overview', async (c) => {
   const q = parseQuery(c, rangeQuery)
   const { from, to } = await resolveBounds(q.range, q.from, q.to)
-  const params = [from, to]
+  const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
+  const params = [from, to, channelFilter]
 
   const totalsRows = await query<Record<string, string>>(
     `select
@@ -145,7 +150,8 @@ logRoutes.get('/stats/overview', async (c) => {
        coalesce(avg(latency_ms), 0)::text                                    as avg_latency,
        coalesce(percentile_cont(0.95) within group (order by latency_ms), 0)::text as p95_latency
      from request_logs
-     where ts >= $1 and ts <= $2`,
+     where ts >= $1 and ts <= $2
+       and ($3::uuid is null or channel_id = $3)`,
     params
   )
   const t = totalsRows[0] ?? {}
@@ -169,11 +175,14 @@ logRoutes.get('/stats/overview', async (c) => {
   }>(
     `select kind, name, count(*)::text as requests, coalesce(sum(total_tokens),0)::text as tokens
        from (
-         select 'model'   as kind, model          as name, total_tokens from request_logs where ts >= $1 and ts <= $2 and model <> ''
+         select 'model'   as kind, model          as name, total_tokens from request_logs
+          where ts >= $1 and ts <= $2 and model <> '' and ($3::uuid is null or channel_id = $3)
          union all
-         select 'channel' as kind, channel_name   as name, total_tokens from request_logs where ts >= $1 and ts <= $2 and channel_name <> ''
+         select 'channel' as kind, channel_name   as name, total_tokens from request_logs
+          where ts >= $1 and ts <= $2 and channel_name <> '' and ($3::uuid is null or channel_id = $3)
          union all
-         select 'key'     as kind, api_key_name   as name, total_tokens from request_logs where ts >= $1 and ts <= $2 and api_key_name <> ''
+         select 'key'     as kind, api_key_name   as name, total_tokens from request_logs
+          where ts >= $1 and ts <= $2 and api_key_name <> '' and ($3::uuid is null or channel_id = $3)
        ) x
       group by kind, name
       order by count(*) desc
@@ -221,6 +230,7 @@ logRoutes.get('/stats/overview', async (c) => {
 logRoutes.get('/stats/series', async (c) => {
   const q = parseQuery(c, rangeQuery)
   const { from, to } = await resolveBounds(q.range, q.from, q.to)
+  const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
   // 跨度 ≤ 48 小时按小时分桶，否则按天 —— 否则今日范围只会有一个点
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
@@ -237,10 +247,11 @@ logRoutes.get('/stats/series', async (c) => {
       from generate_series($1::timestamptz, $2::timestamptz, $3::interval) as bucket
       left join request_logs l
              on l.ts >= bucket and l.ts < bucket + $3::interval
+            and ($5::uuid is null or l.channel_id = $5)
      group by bucket
      order by bucket asc
     `,
-    [from, to, interval, labelFormat]
+    [from, to, interval, labelFormat, channelFilter]
   )
 
   return c.json({
