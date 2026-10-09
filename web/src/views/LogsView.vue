@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, type RequestLog, type User } from '../api'
+import PSelect from '../components/PSelect.vue'
 import { formatLatency, formatNumber, formatTime } from '../format'
+import { useI18n } from '../i18n'
 import { toast } from '../toast'
 
 defineProps<{ user?: User }>()
+
+const { t } = useI18n()
 
 const logs = ref<RequestLog[]>([])
 const loading = ref(true)
@@ -13,6 +17,12 @@ const limit = ref(25)
 const offset = ref(0)
 const status = ref<'all' | 'ok' | 'error'>('all')
 const model = ref('')
+
+const statusOptions = computed(() => [
+  { value: 'all', label: t('logs.allStatus') },
+  { value: 'ok', label: t('logs.okStatus') },
+  { value: 'error', label: t('logs.errStatus') }
+])
 
 async function load(): Promise<void> {
   loading.value = true
@@ -25,12 +35,12 @@ async function load(): Promise<void> {
     if (model.value.trim()) params.set('model', model.value.trim())
 
     const res = await api.get<{ logs: RequestLog[]; total: number }>(
-      `/api/logs?${params.toString()}`
+      '/api/logs?' + params.toString()
     )
     logs.value = res.logs
     total.value = res.total
   } catch {
-    toast.error('加载日志失败')
+    toast.error(t('logs.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -58,89 +68,88 @@ onMounted(load)
 <template>
   <div class="card">
     <div class="card-head">
-      <div class="card-title">请求日志（{{ formatNumber(total) }} 条）</div>
-      <button class="btn btn-sm" @click="load">刷新</button>
+      <div class="card-title">
+        {{ t('logs.title') }} · {{ t('logs.count', { n: formatNumber(total) }) }}
+      </div>
+      <button class="btn btn-sm" @click="load">{{ t('common.refresh') }}</button>
     </div>
 
     <div class="row row-wrap" style="margin-bottom: 14px">
-      <div class="field" style="width: 150px">
-        <select v-model="status" @change="applyFilter">
-          <option value="all">全部状态</option>
-          <option value="ok">成功（&lt;400）</option>
-          <option value="error">失败（≥400）</option>
-        </select>
+      <div style="width: 160px">
+        <PSelect v-model="status" :options="statusOptions" @update:model-value="applyFilter" />
       </div>
-      <div class="field" style="width: 220px">
-        <input
-          v-model="model"
-          placeholder="按模型过滤…"
-          @keyup.enter="applyFilter"
-        />
+      <div style="width: 220px">
+        <input v-model="model" :placeholder="t('logs.modelFilter')" @keyup.enter="applyFilter" />
       </div>
-      <button class="btn btn-sm" @click="applyFilter">查询</button>
+      <button class="btn btn-sm" @click="applyFilter">{{ t('logs.query') }}</button>
     </div>
 
-    <div v-if="loading" class="loading">加载中…</div>
-    <div v-else-if="logs.length === 0" class="empty">没有匹配的请求记录。</div>
+    <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
+    <div v-else-if="logs.length === 0" class="empty">{{ t('logs.empty') }}</div>
     <div v-else class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>时间</th>
-            <th>密钥</th>
-            <th>渠道</th>
-            <th>路径</th>
-            <th>模型</th>
-            <th>状态</th>
-            <th>Token（入/出）</th>
-            <th>首字节 / 总耗时</th>
-            <th>来源 IP</th>
+            <th>{{ t('logs.time') }}</th>
+            <th>{{ t('logs.key') }}</th>
+            <th>{{ t('logs.channel') }}</th>
+            <th>{{ t('logs.path') }}</th>
+            <th>{{ t('logs.model') }}</th>
+            <th>{{ t('logs.status') }}</th>
+            <th>{{ t('logs.tokens') }}</th>
+            <th>{{ t('logs.timing') }}</th>
+            <th>{{ t('logs.ip') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="log in logs" :key="log.id">
-            <td class="nowrap dim">{{ formatTime(log.ts) }}</td>
-            <td>{{ log.apiKeyName || '—' }}</td>
-            <td>{{ log.channelName || '—' }}</td>
-            <td class="mono dim">{{ log.path }}</td>
-            <td class="mono">{{ log.model || '—' }}</td>
-            <td>
-              <span class="badge" :class="log.statusCode < 400 ? 'badge-ok' : 'badge-err'">
-                {{ log.statusCode }}
-              </span>
-            </td>
-            <td class="nowrap">
-              {{ formatNumber(log.promptTokens) }} / {{ formatNumber(log.completionTokens) }}
-              <span v-if="log.estimated" class="badge badge-warn" title="上游未返回 usage，按字节量估算">估</span>
-            </td>
-            <td class="nowrap">
-              {{ log.ttftMs === null ? '—' : formatLatency(log.ttftMs) }} /
-              {{ formatLatency(log.latencyMs) }}
-            </td>
-            <td class="mono dim">{{ log.clientIp }}</td>
-          </tr>
-          <tr v-for="log in logs.filter((l) => l.error)" :key="`e-${log.id}`">
-            <td colspan="9" class="err-text" style="padding-top: 0">
-              ↳ {{ log.error }}
-            </td>
-          </tr>
+          <template v-for="log in logs" :key="log.id">
+            <tr>
+              <td class="nowrap dim">{{ formatTime(log.ts) }}</td>
+              <td>{{ log.apiKeyName || '—' }}</td>
+              <td>{{ log.channelName || '—' }}</td>
+              <td class="mono dim">{{ log.path }}</td>
+              <td class="mono">{{ log.model || '—' }}</td>
+              <td>
+                <span class="badge" :class="log.statusCode < 400 ? 'badge-ok' : 'badge-err'">
+                  {{ log.statusCode }}
+                </span>
+              </td>
+              <td class="nowrap">
+                {{ formatNumber(log.promptTokens) }} / {{ formatNumber(log.completionTokens) }}
+                <span v-if="log.estimated" class="badge badge-warn" :title="t('logs.estimatedHint')">
+                  {{ t('logs.estimated') }}
+                </span>
+              </td>
+              <td class="nowrap">
+                {{ log.ttftMs === null ? '—' : formatLatency(log.ttftMs) }} /
+                {{ formatLatency(log.latencyMs) }}
+              </td>
+              <td class="mono dim">{{ log.clientIp }}</td>
+            </tr>
+            <tr v-if="log.error">
+              <td colspan="9" class="err-text" style="padding-top: 0">↳ {{ log.error }}</td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>
 
     <div class="pager">
       <span>
-        第 {{ offset + 1 }} – {{ Math.min(offset + limit, total) }} 条，共
-        {{ formatNumber(total) }} 条
+        {{
+          t('logs.pageInfo', {
+            from: offset + 1,
+            to: Math.min(offset + limit, total),
+            total: formatNumber(total)
+          })
+        }}
       </span>
       <span class="row">
-        <button class="btn btn-sm" :disabled="offset === 0" @click="prev">上一页</button>
-        <button
-          class="btn btn-sm"
-          :disabled="offset + limit >= total"
-          @click="next"
-        >
-          下一页
+        <button class="btn btn-sm" :disabled="offset === 0" @click="prev">
+          {{ t('logs.prev') }}
+        </button>
+        <button class="btn btn-sm" :disabled="offset + limit >= total" @click="next">
+          {{ t('logs.next') }}
         </button>
       </span>
     </div>

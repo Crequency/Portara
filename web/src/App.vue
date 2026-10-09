@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, type User } from './api'
+import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
+import { LOCALES, locale, setLocale, useI18n } from './i18n'
+import { THEME_MODES, setThemeMode, themeMode } from './theme'
 import ChannelsView from './views/ChannelsView.vue'
 import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
@@ -10,32 +13,27 @@ import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
 import UsersView from './views/UsersView.vue'
 
+const { t } = useI18n()
+
 const user = ref<User | null>(null)
 const ready = ref(false)
 const route = ref(currentRoute())
 
 const NAV = [
-  { id: 'overview', label: '概览', icon: 'M3 12h4l3 8 4-16 3 8h4', adminOnly: false },
-  { id: 'channels', label: '上游渠道', icon: 'M4 7h16M4 12h16M4 17h10', adminOnly: false },
-  { id: 'keys', label: 'API 密钥', icon: 'M14 7a4 4 0 1 0-3.5 4L4 17v3h3v-2h2v-2h2l1.5-1.5', adminOnly: false },
-  { id: 'chat', label: '对话测试', icon: 'M4 5h16v11H8l-4 4z', adminOnly: true },
-  { id: 'users', label: '用户', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
-  { id: 'logs', label: '请求日志', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false }
+  { id: 'overview', icon: 'M3 12h4l3 8 4-16 3 8h4', adminOnly: false },
+  { id: 'channels', icon: 'M4 7h16M4 12h16M4 17h10', adminOnly: false },
+  { id: 'keys', icon: 'M14 7a4 4 0 1 0-3.5 4L4 17v3h3v-2h2v-2h2l1.5-1.5', adminOnly: false },
+  { id: 'chat', icon: 'M4 5h16v11H8l-4 4z', adminOnly: true },
+  { id: 'users', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
+  { id: 'logs', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false }
 ] as const
 
 /** 对话测试需要读取密钥明文，仅管理员可见 */
 const navItems = computed(() =>
-  NAV.filter((item) => !item.adminOnly || user.value?.role === 'admin')
+  NAV.map((item) => ({ ...item, label: t('nav.' + item.id) })).filter(
+    (item) => !item.adminOnly || user.value?.role === 'admin'
+  )
 )
-
-const PAGE_META: Record<string, { title: string; sub: string }> = {
-  overview: { title: '概览', sub: '网关运行状态与今日用量' },
-  channels: { title: '上游渠道', sub: '配置 OpenAI 兼容的上游服务' },
-  keys: { title: 'API 密钥', sub: '签发、查看与吊销调用方密钥' },
-  chat: { title: '对话测试', sub: '用真实 Key 走一遍网关链路（仅管理员）' },
-  users: { title: '用户', sub: '管理控制台账号与权限' },
-  logs: { title: '请求日志', sub: '每一次转发的元数据（不含正文）' }
-}
 
 const currentView = computed(() => {
   switch (route.value) {
@@ -53,6 +51,16 @@ const currentView = computed(() => {
       return OverviewView
   }
 })
+
+const pageTitle = computed(() => t('nav.' + route.value))
+const pageSub = computed(() => t(route.value + '.sub'))
+
+const languageOptions = computed(() =>
+  LOCALES.map((l) => ({ value: l.value, label: l.label, hint: l.short }))
+)
+const themeOptions = computed(() =>
+  THEME_MODES.map((m) => ({ value: m.value, label: t(m.labelKey) }))
+)
 
 function currentRoute(): string {
   const raw = location.hash.replace(/^#\/?/, '')
@@ -91,12 +99,12 @@ async function logout(): Promise<void> {
 }
 
 function go(id: string): void {
-  location.hash = `#/${id}`
+  location.hash = '#/' + id
 }
 </script>
 
 <template>
-  <div v-if="!ready" class="loading">正在加载…</div>
+  <div v-if="!ready" class="loading">{{ t('common.loading') }}</div>
 
   <LoginView v-else-if="!user" @logged-in="onLoggedIn" />
 
@@ -114,8 +122,8 @@ function go(id: string): void {
           </svg>
         </div>
         <div>
-          <div class="brand-name">Portara</div>
-          <div class="brand-sub">AI 网关控制台</div>
+          <div class="brand-name">{{ t('nav.appName') }}</div>
+          <div class="brand-sub">{{ t('nav.appSub') }}</div>
         </div>
       </div>
 
@@ -141,25 +149,45 @@ function go(id: string): void {
       <div class="nav-spacer" />
 
       <div class="nav-foot">
-        <div class="row-between">
-          <span>{{ user.displayName || user.username }}</span>
-          <span class="badge" :class="user.role === 'admin' ? 'badge-info' : 'badge-off'">
-            {{ user.role === 'admin' ? '管理员' : '操作员' }}
-          </span>
-        </div>
-        <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
+        <span>Portara v0.1.0</span>
+        <span>AGPL-3.0</span>
       </div>
     </aside>
 
     <main class="main">
       <div class="topbar">
         <div>
-          <div class="page-title">{{ PAGE_META[route]?.title ?? '概览' }}</div>
-          <div class="page-sub">{{ PAGE_META[route]?.sub ?? '' }}</div>
+          <div class="page-title">{{ pageTitle }}</div>
+          <div class="page-sub">{{ pageSub }}</div>
         </div>
-        <a class="btn btn-sm" href="/v1/models" target="_blank" rel="noreferrer">
-          /v1 端点
-        </a>
+
+        <div class="topbar-tools">
+          <div style="width: 136px">
+            <PSelect
+              :model-value="locale"
+              :options="languageOptions"
+              size="sm"
+              align="end"
+              @update:model-value="(v) => setLocale(v as 'zh' | 'en')"
+            />
+          </div>
+          <div style="width: 132px">
+            <PSelect
+              :model-value="themeMode"
+              :options="themeOptions"
+              size="sm"
+              align="end"
+              @update:model-value="(v) => setThemeMode(v as 'system' | 'light' | 'dark')"
+            />
+          </div>
+
+          <span class="badge" :class="user.role === 'admin' ? 'badge-info' : 'badge-off'">
+            {{ user.displayName || user.username }} ·
+            {{ user.role === 'admin' ? t('nav.admin') : t('nav.operator') }}
+          </span>
+
+          <button class="btn btn-sm" @click="logout">{{ t('nav.logout') }}</button>
+        </div>
       </div>
 
       <div class="content">

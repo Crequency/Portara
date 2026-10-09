@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { api, ApiError, type User } from '../api'
+import { useI18n } from '../i18n'
+
+const { t } = useI18n()
 
 const emit = defineEmits<{ (e: 'logged-in', user: User): void }>()
 
@@ -19,7 +22,7 @@ async function submit(): Promise<void> {
     })
     emit('logged-in', res.user)
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : '登录失败，请稍后重试'
+    error.value = err instanceof ApiError ? err.message : t('login.failed')
   } finally {
     busy.value = false
   }
@@ -40,19 +43,19 @@ async function submit(): Promise<void> {
             />
           </svg>
         </div>
-        <div class="login-title">Portara</div>
-        <div class="login-sub">企业级 AI API 网关 · 管理控制台</div>
+        <div class="login-title">{{ t('nav.appName') }}</div>
+        <div class="login-sub">{{ t('login.subtitle') }}</div>
       </div>
 
       <div v-if="error" class="alert">{{ error }}</div>
 
       <div class="form-grid">
         <div class="field">
-          <label for="u">用户名</label>
+          <label for="u">{{ t('login.username') }}</label>
           <input id="u" v-model="username" autocomplete="username" placeholder="admin" />
         </div>
         <div class="field">
-          <label for="p">密码</label>
+          <label for="p">{{ t('login.password') }}</label>
           <input
             id="p"
             v-model="password"
@@ -62,7 +65,7 @@ async function submit(): Promise<void> {
           />
         </div>
         <button class="btn btn-primary" type="submit" :disabled="busy">
-          {{ busy ? '登录中…' : '登录' }}
+          {{ busy ? t('login.submitting') : t('login.submit') }}
         </button>
       </div>
     </form>
