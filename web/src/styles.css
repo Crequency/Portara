@@ -583,12 +583,27 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 /* ---------------------------------------------------------------- 图表 */
 
+/* 用量趋势：每个时段两根柱 —— 蓝=请求量，绿=Token 用量 */
+.chart-wrap { display: flex; flex-direction: column; gap: 7px; }
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.legend-dot-req { background: var(--accent); }
+.legend-dot-tok { background: var(--success); }
+
 .chart {
   display: flex;
   align-items: flex-end;
   gap: 6px;
   height: 150px;
-  padding-top: 8px;
+  padding-top: 4px;
   overflow-x: auto;
 }
 
@@ -603,20 +618,46 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   justify-content: flex-end;
 }
 
-.chart-bar {
+.chart-bars {
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
-  max-width: 44px;
-  border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 28%, transparent));
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+}
+
+.chart-bar {
+  flex: 1 1 0;
+  max-width: 22px;
+  border-radius: 3px 3px 0 0;
   min-height: 2px;
 }
 
+.chart-bar-req {
+  background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 28%, transparent));
+}
+
+.chart-bar-tok {
+  background: linear-gradient(180deg, var(--success), color-mix(in srgb, var(--success) 28%, transparent));
+}
+
+/* 该时段有失败请求：请求量柱转红，另在标签旁点一个红点 */
 .chart-bar-err {
   background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 28%, transparent));
 }
+.chart-err-dot { color: var(--danger); margin-left: 2px; }
 
 .chart-label { font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
-.chart-value { font-size: 10.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.chart-value {
+  display: flex;
+  gap: 6px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.cv-req { color: var(--accent); }
+.cv-tok { color: var(--success); }
 
 /* ---------------------------------------------------------------- 工具 */
 

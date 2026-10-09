@@ -36,7 +36,25 @@ const presets = computed<{ id: RangePreset; label: string }[]>(() => [
   { id: 'custom', label: t('overview.custom') }
 ])
 
+// 请求量与 Token 量级差得远（几十 vs 几百万），
+// 若共用一根轴，请求量的柱子会被压成一条线 —— 因此两条序列各自按自身峰值缩放
 const maxRequests = computed(() => Math.max(1, ...series.value.map((p) => p.requests)))
+const maxTokens = computed(() => Math.max(1, ...series.value.map((p) => p.tokens)))
+
+/** 柱高百分比：各自序列归一化，最小 2% 保证「有值就看得见」 */
+function barHeight(value: number, max: number): string {
+  return Math.max(2, (value / max) * 100) + '%'
+}
+
+/** 悬浮说明：一次给全该时段的三个数字 */
+function bucketTip(p: SeriesPoint): string {
+  return [
+    p.day,
+    `${t('overview.legendRequests')} ${formatNumber(p.requests)}`,
+    `${t('overview.legendTokens')} ${formatNumber(p.tokens)}`,
+    `${t('overview.failed')} ${formatNumber(p.errors)}`
+  ].join(' · ')
+}
 
 const rangeLabel = computed(() => {
   if (!stats.value) return ''
@@ -225,16 +243,47 @@ onMounted(load)
 
       <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
       <div v-else-if="series.length === 0" class="empty">{{ t('overview.rangeEmpty') }}</div>
-      <div v-else class="chart">
-        <div v-for="p in series" :key="p.day" class="chart-col">
-          <div class="chart-value">{{ p.requests }}</div>
-          <div
-            class="chart-bar"
-            :class="{ 'chart-bar-err': p.errors > 0 }"
-            :style="{ height: Math.max(2, (p.requests / maxRequests) * 100) + '%' }"
-            :title="p.day + '：' + p.requests + ' / ' + p.tokens + ' tok / ' + p.errors"
-          />
-          <div class="chart-label">{{ p.day }}</div>
+      <div v-else class="chart-wrap">
+        <div class="chart-legend">
+          <span class="legend-item">
+            <i class="legend-dot legend-dot-req" />{{ t('overview.legendRequests') }}
+          </span>
+          <span class="legend-item">
+            <i class="legend-dot legend-dot-tok" />{{ t('overview.legendTokens') }}
+          </span>
+          <span class="spacer" />
+          <span class="dim" style="font-size: 11px">{{ t('overview.dualScale') }}</span>
+        </div>
+
+        <div class="chart">
+          <div v-for="p in series" :key="p.day" class="chart-col">
+            <!-- 时段少时把数字标出来；时段多（如 30 天）留给悬浮说明，避免挤成一团 -->
+            <div v-if="series.length <= 14" class="chart-value">
+              <span class="cv-req">{{ p.requests }}</span>
+              <span class="cv-tok">{{ formatCompact(p.tokens) }}</span>
+            </div>
+            <div class="chart-bars">
+              <div
+                class="chart-bar chart-bar-req"
+                :class="{ 'chart-bar-err': p.errors > 0 }"
+                :style="{ height: barHeight(p.requests, maxRequests) }"
+                :title="bucketTip(p)"
+              />
+              <div
+                class="chart-bar chart-bar-tok"
+                :style="{ height: barHeight(p.tokens, maxTokens) }"
+                :title="bucketTip(p)"
+              />
+            </div>
+            <div class="chart-label">
+              {{ p.day }}
+              <span
+                v-if="p.errors > 0"
+                class="chart-err-dot"
+                :title="t('overview.failed') + ' ' + formatNumber(p.errors)"
+              >•</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
