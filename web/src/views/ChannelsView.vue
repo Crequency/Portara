@@ -89,6 +89,116 @@ const routeGroups = computed(() => {
     .sort((a, b) => a.alias.localeCompare(b.alias))
 })
 
+/**
+ * 再按前缀分组 —— 批量映射产生的别名形如 `前缀/模型`，
+ * 它们天然是一组，UI 上折叠起来才不会让页面无限变长。
+ */
+const prefixGroups = computed(() => {
+  const map = new Map<string, { alias: string; targets: ModelRoute[] }[]>()
+  for (const g of routeGroups.value) {
+    const slash = g.alias.lastIndexOf('/')
+    const prefix = slash > 0 ? g.alias.slice(0, slash) : ''
+    const list = map.get(prefix) ?? []
+    list.push(g)
+    map.set(prefix, list)
+  }
+  return [...map.entries()]
+    .map(([prefix, aliases]) => ({
+      prefix,
+      aliases,
+      targetCount: aliases.reduce((n, a) => n + a.targets.length, 0)
+    }))
+    .sort((a, b) => (a.prefix === '' ? 1 : b.prefix === '' ? -1 : a.prefix.localeCompare(b.prefix)))
+})
+
+/** 折叠状态按前缀记录；默认展开 */
+const collapsed = reactive<Record<string, boolean>>({})
+
+function toggleGroup(prefix: string): void {
+  collapsed[prefix] = !collapsed[prefix]
+}
+
+function setAllCollapsed(value: boolean): void {
+  for (const g of prefixGroups.value) collapsed[g.prefix] = value
+}
+
+// ---------------------------------------------------------------- JSON 编辑
+
+const showJsonForm = ref(false)
+const jsonText = ref('')
+const jsonMode = ref<'replace' | 'merge'>('replace')
+const jsonError = ref('')
+
+const jsonModeOptions = computed(() => [
+  { value: 'replace', label: t('mapping.modeReplace') },
+  { value: 'merge', label: t('mapping.modeMerge') }
+])
+
+/** 导出为 JSON：单目标用对象、多目标用数组；渠道用名称 */
+function buildJson(): string {
+  const out: Record<string, unknown> = {}
+  for (const g of routeGroups.value) {
+    const targets = g.targets.map((tg) => ({
+      channel: tg.channelName ?? '',
+      model: tg.upstreamModel,
+      ...(tg.priority !== 100 ? { priority: tg.priority } : {}),
+      ...(tg.weight !== 1 ? { weight: tg.weight } : {})
+    }))
+    out[g.alias] = targets.length === 1 ? targets[0] : targets
+  }
+  return JSON.stringify(out, null, 2)
+}
+
+function openJsonEditor(): void {
+  jsonText.value = buildJson()
+  jsonMode.value = 'replace'
+  jsonError.value = ''
+  showJsonForm.value = true
+}
+
+async function applyJson(): Promise<void> {
+  jsonError.value = ''
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText.value)
+  } catch (err) {
+    jsonError.value = t('mapping.jsonSyntaxError', {
+      msg: err instanceof Error ? err.message : String(err)
+    })
+    return
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    jsonError.value = t('mapping.jsonSyntaxError', { msg: 'expecting a JSON object' })
+    return
+  }
+  if (Object.keys(parsed as object).length === 0) {
+    jsonError.value = t('mapping.jsonEmpty')
+    return
+  }
+
+  savingRoute.value = true
+  try {
+    const res = await api.post<{ applied: number; removed: number }>(
+      '/api/model-routes/import',
+      { mode: jsonMode.value, mapping: parsed }
+    )
+    toast.success(t('mapping.jsonApplied', { n: res.applied, removed: res.removed }))
+    showJsonForm.value = false
+    await loadRoutes()
+  } catch (err) {
+    if (err instanceof ApiError) {
+      // 服务端会把「不存在的渠道」与「可用渠道」一并返回，直接展示出来
+      const extra = (err as ApiError & { extra?: Record<string, unknown> }).extra
+      jsonError.value = err.message
+      void extra
+    } else {
+      jsonError.value = t('mapping.jsonFailed')
+    }
+  } finally {
+    savingRoute.value = false
+  }
+}
+
 const channelSelectOptions = computed(() =>
   channels.value.map((c) => ({
     value: c.id,
@@ -494,8 +604,19 @@ onMounted(async () => {
           <div class="card-title">{{ t('mapping.title') }}</div>
           <div class="dim" style="font-size: 12px">{{ t('mapping.sub') }}</div>
         </div>
-        <div class="row">
+        <div class="row row-wrap">
           <button class="btn btn-sm" @click="loadRoutes">{{ t('common.refresh') }}</button>
+          <template v-if="prefixGroups.length > 1">
+            <button class="btn btn-sm" @click="setAllCollapsed(true)">
+              {{ t('mapping.collapseAll') }}
+            </button>
+            <button class="btn btn-sm" @click="setAllCollapsed(false)">
+              {{ t('mapping.expandAll') }}
+            </button>
+          </template>
+          <button v-if="isAdmin()" class="btn btn-sm" @click="openJsonEditor">
+            {{ t('mapping.jsonEdit') }}
+          </button>
           <button v-if="isAdmin()" class="btn btn-sm" @click="openBatch">
             {{ t('mapping.batchAdd') }}
           </button>
@@ -505,66 +626,104 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div v-if="routeGroups.length === 0" class="empty">{{ t('mapping.empty') }}</div>
-      <div v-else class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>{{ t('mapping.alias') }}</th>
-              <th>{{ t('mapping.channel') }}</th>
-              <th>{{ t('mapping.upstreamModel') }}</th>
-              <th>{{ t('mapping.priority') }} / {{ t('mapping.weight') }}</th>
-              <th>{{ t('common.status') }}</th>
-              <th style="width: 150px">{{ t('common.actions') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="g in routeGroups" :key="g.alias">
-              <tr v-for="(r, i) in g.targets" :key="r.id">
-                <td v-if="i === 0" :rowspan="g.targets.length" style="vertical-align: top">
-                  <div class="mono">{{ g.alias }}</div>
-                  <div class="dim" style="font-size: 11.5px">
-                    {{ t('mapping.targetsCount', { n: g.targets.length }) }}
-                  </div>
-                  <button
-                    v-if="isAdmin()"
-                    class="btn btn-sm btn-danger"
-                    style="margin-top: 6px"
-                    @click="purgeAlias(g.alias, g.targets.length)"
-                  >
-                    {{ t('mapping.purge') }}
-                  </button>
-                </td>
-                <td>
-                  {{ r.channelName ?? '—' }}
-                  <span
-                    v-if="r.channelStatus && r.channelStatus !== 'active'"
-                    class="badge badge-off"
-                    style="margin-left: 5px"
-                  >
-                    {{ t('common.disabled') }}
-                  </span>
-                </td>
-                <td class="mono">{{ r.upstreamModel }}</td>
-                <td class="nowrap">{{ r.priority }} / {{ r.weight }}</td>
-                <td>
-                  <span class="badge" :class="r.status === 'active' ? 'badge-ok' : 'badge-off'">
-                    {{ r.status === 'active' ? t('common.enabled') : t('common.disabled') }}
-                  </span>
-                </td>
-                <td>
-                  <button
-                    v-if="isAdmin()"
-                    class="btn btn-sm btn-danger"
-                    @click="removeRoute(r)"
-                  >
-                    {{ t('common.delete') }}
-                  </button>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
+      <div v-if="prefixGroups.length === 0" class="empty">{{ t('mapping.empty') }}</div>
+      <div v-else class="stack" style="gap: 10px">
+        <div v-for="group in prefixGroups" :key="group.prefix">
+          <button class="group-head" @click="toggleGroup(group.prefix)">
+            <svg
+              class="group-chevron"
+              :class="{ open: !collapsed[group.prefix] }"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+            >
+              <path
+                d="M4 2.5 8 6l-4 3.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="group-name mono">
+              {{ group.prefix || t('mapping.ungrouped') }}
+            </span>
+            <span class="dim" style="font-size: 12px">
+              {{
+                t('mapping.groupSummary', {
+                  aliases: group.aliases.length,
+                  targets: group.targetCount
+                })
+              }}
+            </span>
+          </button>
+
+          <div v-show="!collapsed[group.prefix]" class="group-body table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{{ t('mapping.alias') }}</th>
+                  <th>{{ t('mapping.channel') }}</th>
+                  <th>{{ t('mapping.upstreamModel') }}</th>
+                  <th>{{ t('mapping.priority') }} / {{ t('mapping.weight') }}</th>
+                  <th>{{ t('common.status') }}</th>
+                  <th style="width: 150px">{{ t('common.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template v-for="g in group.aliases" :key="g.alias">
+                  <tr v-for="(r, i) in g.targets" :key="r.id">
+                    <td v-if="i === 0" :rowspan="g.targets.length" style="vertical-align: top">
+                      <div class="mono">{{ g.alias }}</div>
+                      <div class="dim" style="font-size: 11.5px">
+                        {{ t('mapping.targetsCount', { n: g.targets.length }) }}
+                      </div>
+                      <button
+                        v-if="isAdmin()"
+                        class="btn btn-sm btn-danger"
+                        style="margin-top: 6px"
+                        @click="purgeAlias(g.alias, g.targets.length)"
+                      >
+                        {{ t('mapping.purge') }}
+                      </button>
+                    </td>
+                    <td>
+                      {{ r.channelName ?? '—' }}
+                      <span
+                        v-if="r.channelStatus && r.channelStatus !== 'active'"
+                        class="badge badge-off"
+                        style="margin-left: 5px"
+                      >
+                        {{ t('common.disabled') }}
+                      </span>
+                    </td>
+                    <td class="mono">{{ r.upstreamModel }}</td>
+                    <td class="nowrap">{{ r.priority }} / {{ r.weight }}</td>
+                    <td>
+                      <span
+                        class="badge"
+                        :class="r.status === 'active' ? 'badge-ok' : 'badge-off'"
+                      >
+                        {{ r.status === 'active' ? t('common.enabled') : t('common.disabled') }}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        v-if="isAdmin()"
+                        class="btn btn-sm btn-danger"
+                        @click="removeRoute(r)"
+                      >
+                        {{ t('common.delete') }}
+                      </button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -740,6 +899,47 @@ onMounted(async () => {
       <button class="btn" @click="showRouteForm = false">{{ t('common.cancel') }}</button>
       <button class="btn btn-primary" :disabled="savingRoute" @click="submitRoute">
         {{ savingRoute ? t('common.saving') : t('common.save') }}
+      </button>
+    </div>
+  </Modal>
+
+  <Modal
+    v-if="showJsonForm"
+    :title="t('mapping.jsonTitle')"
+    wide
+    @close="showJsonForm = false"
+  >
+    <div class="alert alert-info">{{ t('mapping.jsonSub') }}</div>
+
+    <div class="form-grid">
+      <div class="field">
+        <div class="row-between">
+          <label>{{ t('mapping.alias') }} → {{ t('mapping.targets') }}</label>
+          <button class="btn btn-sm" @click="jsonText = buildJson()">
+            {{ t('mapping.regenerate') }}
+          </button>
+        </div>
+        <textarea
+          v-model="jsonText"
+          rows="14"
+          spellcheck="false"
+          class="mono"
+          :placeholder="t('mapping.jsonPlaceholder')"
+        />
+      </div>
+
+      <div class="field">
+        <label>{{ t('mapping.applyMode') }}</label>
+        <PSelect v-model="jsonMode" :options="jsonModeOptions" />
+      </div>
+
+      <div v-if="jsonError" class="alert" style="margin-bottom: 0">{{ jsonError }}</div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn" @click="showJsonForm = false">{{ t('common.cancel') }}</button>
+      <button class="btn btn-primary" :disabled="savingRoute" @click="applyJson">
+        {{ savingRoute ? t('common.saving') : t('mapping.jsonApply') }}
       </button>
     </div>
   </Modal>

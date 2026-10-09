@@ -1,10 +1,16 @@
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { one, query } from '../db.js'
+import { one, pool, query } from '../db.js'
 import { badRequest, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
+import {
+  flattenJsonMapping,
+  resolveChannelRefs,
+  type ChannelRef,
+  type IncomingRoute
+} from '../services/mapping.js'
 import { toModelRouteDto, type ModelRouteRow } from '../types.js'
 
 export const modelRouteRoutes = new Hono()
@@ -234,4 +240,109 @@ modelRouteRoutes.post('/purge', requireAdmin, async (c) => {
   await recordAudit(c, 'model_route.purge', { type: 'model_route', id: alias }, { removed })
 
   return c.json({ ok: true, removed })
+})
+
+// ---------------------------------------------------------------- JSON 导入
+
+const jsonTargetSchema = z.object({
+  channel: z.string().min(1, '缺少 channel'),
+  model: z.string().min(1, '缺少 model').max(128),
+  priority: z.coerce.number().int().min(1).max(9999).optional(),
+  weight: z.coerce.number().int().min(1).max(1000).optional()
+})
+
+const importSchema = z.object({
+  /**
+   * replace：JSON 即全量映射列表（未出现的会被删除）
+   * merge：只新增/更新 JSON 里出现的
+   */
+  mode: z.enum(['replace', 'merge']).default('replace'),
+  /** alias → 单目标或目标数组 */
+  mapping: z.record(z.string(), z.union([jsonTargetSchema, z.array(jsonTargetSchema)]))
+})
+
+/**
+ * 以 JSON 形式整体编辑映射列表。
+ *
+ * 渠道用**名称**引用（人读写友好），服务端解析为 id 后落库；
+ * 因此渠道改名后，重新导出即可得到新名字 —— 映射本身不会失联，
+ * 因为它存的是 channel_id 外键而不是名字。
+ */
+modelRouteRoutes.post('/import', requireAdmin, async (c) => {
+  const body = await parseJson(c, importSchema)
+
+  const flattened = flattenJsonMapping(body.mapping as never)
+  if (flattened.errors.length > 0) {
+    throw badRequest('JSON 结构有问题', { issues: flattened.errors })
+  }
+  if (flattened.routes.length === 0) {
+    throw badRequest('JSON 里没有任何映射')
+  }
+
+  // 别名格式校验（键来自 JSON，必须逐个校验）
+  for (const r of flattened.routes) {
+    const parsed = aliasSchema.safeParse(r.alias)
+    if (!parsed.success) {
+      throw badRequest(`模型 ID 非法：${r.alias}`, {
+        issues: [parsed.error.issues[0]?.message ?? '格式错误']
+      })
+    }
+  }
+
+  const channels = await query<ChannelRef>('select id, name from channels order by name asc')
+  const { resolved, unknown, duplicates, available } = resolveChannelRefs(
+    flattened.routes as IncomingRoute[],
+    channels
+  )
+
+  if (unknown.length > 0) {
+    throw badRequest('引用了不存在的渠道', { unknown, available })
+  }
+  if (duplicates.length > 0) {
+    throw badRequest('存在重复的映射目标', { issues: duplicates })
+  }
+
+  let removed = 0
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+
+    if (body.mode === 'replace') {
+      const before = await client.query('select count(*)::int as n from model_routes')
+      removed = before.rows[0]?.n ?? 0
+      await client.query('delete from model_routes')
+    }
+
+    for (const r of resolved) {
+      await client.query(
+        `insert into model_routes (alias, channel_id, upstream_model, priority, weight)
+         values ($1,$2,$3,$4,$5)
+         on conflict (alias, channel_id, upstream_model)
+         do update set priority = excluded.priority,
+                       weight   = excluded.weight,
+                       status   = 'active',
+                       updated_at = now()`,
+        [r.alias, r.channelId, r.upstreamModel, r.priority, r.weight]
+      )
+    }
+
+    await client.query('commit')
+  } catch (err) {
+    await client.query('rollback')
+    throw err
+  } finally {
+    client.release()
+  }
+
+  await recordAudit(c, 'model_route.import', { type: 'model_route', id: body.mode }, {
+    mode: body.mode,
+    applied: resolved.length,
+    removed: body.mode === 'replace' ? removed : 0
+  })
+
+  return c.json({
+    mode: body.mode,
+    applied: resolved.length,
+    removed: body.mode === 'replace' ? removed : 0
+  })
 })

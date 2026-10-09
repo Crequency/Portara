@@ -1031,8 +1031,104 @@ async function main() {
     })
     await apiCall('DELETE', `/api/channels/${channelBId}`)
 
+    // ---------------------------------------------------------- JSON 编辑
+    section('⑲ 以 JSON 形式编辑映射列表')
+
+    const jsonAlias = `json-test-${RUN}`
+    const jsonImport = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'replace',
+      mapping: {
+        [jsonAlias]: { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL }
+      }
+    })
+    check('JSON 导入（替换模式）成功', () => assert.equal(jsonImport.status, 200))
+    const afterJson = await apiCall('GET', '/api/model-routes')
+    check('替换模式下旧映射被清空', () => {
+      const aliases = afterJson.body.routes.map((r) => r.alias)
+      assert.deepEqual(aliases, [jsonAlias])
+    })
+
+    const jsonCall = await proxyCall(
+      '/v1/chat/completions',
+      { model: jsonAlias, messages: [{ role: 'user', content: 'json' }] },
+      mapKey
+    )
+    check('JSON 导入的映射可直接用于转发', () => {
+      assert.equal(jsonCall.status, 200)
+      assert.equal(jsonCall.body?.received_model, MOCK_MODEL)
+    })
+
+    // 数组形式 = 一个网关 ID 负载均衡到多个目标
+    const jsonLbAlias = `json-lb-${RUN}`
+    const jsonMerge = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'merge',
+      mapping: {
+        [jsonLbAlias]: [
+          { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL, weight: 2 },
+          { channel: `smoke-mock-${RUN}`, model: 'second-model', weight: 1 }
+        ]
+      }
+    })
+    check('JSON 导入（合并模式）成功', () => assert.equal(jsonMerge.status, 200))
+    check('数组形式生成两个目标', () => assert.equal(jsonMerge.body?.applied, 2))
+
+    const merged = await apiCall('GET', '/api/model-routes')
+    check('合并模式保留原有映射', () => {
+      const aliases = merged.body.routes.map((r) => r.alias)
+      assert.ok(aliases.includes(jsonAlias), '原有映射被误删')
+      assert.ok(aliases.includes(jsonLbAlias))
+    })
+
+    const unknownChannel = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'merge',
+      mapping: { 'x/y': { channel: '不存在的渠道', model: 'm' } }
+    })
+    check('引用不存在的渠道被拒（400）', () => assert.equal(unknownChannel.status, 400))
+    check('报错里给出可用渠道列表', () => {
+      const body = JSON.stringify(unknownChannel.body)
+      assert.ok(body.includes('smoke-mock'), body)
+    })
+
+    const badJsonAlias = await apiCall('POST', '/api/model-routes/import', {
+      mode: 'merge',
+      mapping: { 'bad alias': { channel: `smoke-mock-${RUN}`, model: 'm' } }
+    })
+    check('JSON 里的非法模型 ID 被拒（400）', () => assert.equal(badJsonAlias.status, 400))
+
+    // ---------------------------------------------------------- 渠道重命名
+    section('⑳ 渠道重命名后映射不失联')
+
+    const renamed = `smoke-mock-renamed-${RUN}`
+    const doRename = await apiCall('PATCH', `/api/channels/${channelId}`, { name: renamed })
+    check('渠道改名成功', () => assert.equal(doRename.status, 200))
+
+    const afterRename = await apiCall('GET', '/api/model-routes')
+    const renamedRoute = afterRename.body.routes.find((r) => r.alias === jsonAlias)
+    check('映射列表显示改名后的渠道名', () =>
+      assert.equal(renamedRoute?.channelName, renamed)
+    )
+
+    const afterRenameCall = await proxyCall(
+      '/v1/chat/completions',
+      { model: jsonAlias, messages: [{ role: 'user', content: 'renamed' }] },
+      mapKey
+    )
+    check('改名后映射仍能正确转发到该渠道', () => {
+      assert.equal(afterRenameCall.status, 200)
+      assert.equal(afterRenameCall.headers.get('x-portara-channel'), renamed)
+    })
+
+    const renameBack = await apiCall('PATCH', `/api/channels/${channelId}`, {
+      name: `smoke-mock-${RUN}`
+    })
+    check('渠道名改回', () => assert.equal(renameBack.status, 200))
+
+    // 清掉本轮 JSON 映射
+    await apiCall('POST', '/api/model-routes/purge', { alias: jsonAlias })
+    await apiCall('POST', '/api/model-routes/purge', { alias: jsonLbAlias })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('⑲ 密钥不泄漏到日志')
+    section('㉑ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -1044,7 +1140,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('⑳ 清理测试数据')
+    section('㉒ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

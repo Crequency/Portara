@@ -698,3 +698,42 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   .grid-4 { grid-template-columns: minmax(0, 1fr); }
   .stat-value { font-size: 22px; }
 }
+
+/* 模型映射：按前缀折叠的分组头 */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 11px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+
+.group-head:hover {
+  border-color: var(--accent);
+}
+
+.group-chevron {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  transition: transform 0.15s ease;
+}
+
+.group-chevron.open {
+  transform: rotate(90deg);
+}
+
+.group-name {
+  font-weight: 560;
+}
+
+.group-body {
+  margin-top: 8px;
+}
