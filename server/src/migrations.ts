@@ -120,5 +120,29 @@ export const migrations: { id: string; sql: string }[] = [
       -- 密钥请放在 api_key_cipher，不要放这里）
       alter table channels add column if not exists extra_headers jsonb not null default '{}'::jsonb;
     `
+  },
+  {
+    id: '004_model_routes',
+    sql: `
+      -- 模型映射：网关受理的模型 id（alias）→ 具体渠道上的上游模型 id。
+      -- 一个 alias 可以对应多个 (渠道, 上游模型) 目标，按优先级与权重做负载均衡。
+      create table if not exists model_routes (
+        id             uuid primary key default gen_random_uuid(),
+        alias          text not null,
+        channel_id     uuid not null references channels(id) on delete cascade,
+        upstream_model text not null,
+        priority       int  not null default 100,
+        weight         int  not null default 1,
+        status         text not null default 'active' check (status in ('active','disabled')),
+        note           text not null default '',
+        created_at     timestamptz not null default now(),
+        updated_at     timestamptz not null default now(),
+        unique (alias, channel_id, upstream_model)
+      );
+      create index if not exists model_routes_alias_idx on model_routes (alias);
+
+      -- 请求日志同时记录「受理模型」与「实际上游模型」，便于排查映射问题
+      alter table request_logs add column if not exists upstream_model text not null default '';
+    `
   }
 ]

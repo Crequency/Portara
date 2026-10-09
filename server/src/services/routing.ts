@@ -55,3 +55,37 @@ export function pickChannel(
   }
   return group[group.length - 1] ?? null
 }
+
+// ---------------------------------------------------------------- 模型映射
+
+export interface RouteTarget {
+  id: string
+  channel_id: string
+  upstream_model: string
+  priority: number
+  weight: number
+  status: string
+}
+
+/**
+ * 在一个 alias 的多个目标间做选择。
+ * 与 pickChannel 同一套规则：只取 active、priority 最小的一组、组内按权重轮转。
+ * 排序键用 id 而非 name（映射目标没有 name），保证同一 rotation 下结果确定。
+ */
+export function pickRoute(targets: RouteTarget[], rotation = 0): RouteTarget | null {
+  const active = targets.filter((t) => t.status === 'active')
+  if (active.length === 0) return null
+
+  const minPriority = Math.min(...active.map((t) => t.priority))
+  const group = active
+    .filter((t) => t.priority === minPriority)
+    .sort((a, b) => a.id.localeCompare(b.id))
+
+  const totalWeight = group.reduce((sum, t) => sum + normalizeWeight(t.weight), 0)
+  let point = ((Math.trunc(rotation) % totalWeight) + totalWeight) % totalWeight
+  for (const t of group) {
+    point -= normalizeWeight(t.weight)
+    if (point < 0) return t
+  }
+  return group[group.length - 1] ?? null
+}

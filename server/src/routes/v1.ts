@@ -16,7 +16,12 @@ import {
   withStreamUsage
 } from '../services/proxy.js'
 import { checkRateLimit, quotaExceeded } from '../services/ratelimit.js'
-import { getChannelById, resolveChannel, type ChannelCandidate } from '../services/router.js'
+import {
+  getChannelById,
+  resolveBoundTarget,
+  resolveTarget,
+  type ResolvedTarget
+} from '../services/router.js'
 import type { ApiKeyRow, ChannelRow } from '../types.js'
 
 export const v1Routes = new Hono()
@@ -32,34 +37,43 @@ async function nextRotation(): Promise<number> {
   }
 }
 
-type ChannelPick =
-  | { ok: true; channel: ChannelCandidate }
+type TargetPick =
+  | { ok: true; target: ResolvedTarget }
   | { ok: false; message: string; code: string }
 
-async function selectChannel(key: ApiKeyRow, model: string): Promise<ChannelPick> {
-  // 绑定了渠道：只走它，不做任何回退 —— 不越过租户的明确意图
+/**
+ * 选定「渠道 + 上游模型」。
+ *
+ * 绑定了渠道的 Key 只在该渠道内解析（可在渠道内命中映射），
+ * 未绑定则走全局映射优先、旧逻辑回退。
+ */
+async function selectTarget(key: ApiKeyRow, model: string): Promise<TargetPick> {
   if (key.channel_id) {
     const bound = await getChannelById(key.channel_id)
     if (!bound) {
       return { ok: false, message: '该 Key 绑定的渠道已被删除', code: 'channel_missing' }
     }
     if (bound.status !== 'active') {
-      return { ok: false, message: `该 Key 绑定的渠道「${bound.name}」已停用`, code: 'channel_disabled' }
+      return {
+        ok: false,
+        message: `该 Key 绑定的渠道「${bound.name}」已停用`,
+        code: 'channel_disabled'
+      }
     }
-    return { ok: true, channel: bound as unknown as ChannelCandidate }
+    return { ok: true, target: await resolveBoundTarget(bound, model) }
   }
 
-  const picked = await resolveChannel(model, nextRotation)
-  if (!picked) {
+  const target = await resolveTarget(model, nextRotation)
+  if (!target) {
     return {
       ok: false,
       message: model
-        ? `没有可用于模型「${model}」的启用渠道`
+        ? `没有可用于模型「${model}」的启用渠道或映射`
         : '没有启用中的上游渠道，请先在管理面板配置',
       code: 'no_channel'
     }
   }
-  return { ok: true, channel: picked }
+  return { ok: true, target }
 }
 
 interface ProxyOptions {
@@ -83,6 +97,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     channelId: null as string | null,
     channelName: '',
     model,
+    // 尚未选定渠道时上游模型未知；选定后由 logCtx 覆盖为真实值
+    upstreamModel: '',
     path: restPath,
     clientIp: ip
   }
@@ -161,7 +177,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
 
   // ④ 选路
-  const pick = await selectChannel(key, model)
+  const pick = await selectTarget(key, model)
   if (!pick.ok) {
     fireAndForgetLog({
       ...baseLog,
@@ -176,8 +192,14 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     })
     return openaiError(c, 503, pick.message, 'api_error', pick.code)
   }
-  const channel = pick.channel
-  const logCtx = { ...baseLog, channelId: channel.id, channelName: channel.name }
+  const channel = pick.target.channel
+  const upstreamModel = pick.target.upstreamModel
+  const logCtx = {
+    ...baseLog,
+    channelId: channel.id,
+    channelName: channel.name,
+    upstreamModel
+  }
 
   // ⑤ 上游密钥
   let upstreamKey = ''
@@ -189,12 +211,29 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     }
   }
 
-  // ⑥ 转发。流式且未指定 stream_options 时补 include_usage，否则拿不到 usage
-  let bodyText = raw || undefined
-  if (opts.scanUsage && streamFlag && payload) {
-    const patched = withStreamUsage(payload)
-    if (patched.injected) bodyText = JSON.stringify(patched.payload)
+  // ⑥ 组装发往上游的请求体
+  //
+  // 两处可能改写 body：
+  //   ① 命中模型映射 → 把网关受理的 model 换成上游真实 model
+  //   ② 流式且客户端未指定 stream_options → 补 include_usage
+  // 只有确实需要改写时才重新序列化，未命中映射的请求仍是原始字节直通。
+  let outPayload: Record<string, unknown> | null = payload
+  let needsReserialize = false
+
+  if (payload && upstreamModel && upstreamModel !== model) {
+    outPayload = { ...payload, model: upstreamModel }
+    needsReserialize = true
   }
+
+  if (opts.scanUsage && streamFlag && outPayload) {
+    const patched = withStreamUsage(outPayload)
+    if (patched.injected) {
+      outPayload = patched.payload
+      needsReserialize = true
+    }
+  }
+
+  const bodyText = needsReserialize && outPayload ? JSON.stringify(outPayload) : raw || undefined
 
   const url = buildUpstreamUrl(channel.base_url, restPath)
   // 客户端断开 或 上游超时 —— 任一触发都会取消上游请求（避免幽灵计费）
@@ -332,17 +371,28 @@ v1Routes.post('/completions', (c) => handleProxy(c, '/completions', { scanUsage:
 v1Routes.post('/embeddings', (c) => handleProxy(c, '/embeddings', { scanUsage: true }))
 v1Routes.post('/responses', (c) => handleProxy(c, '/responses', { scanUsage: true }))
 
-/** 聚合各启用渠道声明的模型；仅返回该 Key 允许的模型 */
+/**
+ * 聚合可用的模型 id：
+ *   ① 模型映射的别名（网关受理的 id）
+ *   ② 各启用渠道声明的模型（未配映射时的直通 id）
+ */
 v1Routes.get('/models', async (c) => {
   const key = c.get('apiKey') as ApiKeyRow
+
+  const aliasRows = await query<{ alias: string }>(
+    `select distinct alias from model_routes where status = 'active' order by alias asc`
+  )
   const channels = await query<ChannelRow>(
     `select * from channels where status = 'active' order by priority asc, name asc`
   )
 
   const seen = new Map<string, string>()
+  for (const row of aliasRows) {
+    if (!seen.has(row.alias)) seen.set(row.alias, 'portara/mapping')
+  }
   for (const ch of channels) {
     for (const m of ch.models) {
-      if (!seen.has(m)) seen.set(m, ch.name)
+      if (!seen.has(m)) seen.set(m, `portara/${ch.name}`)
     }
   }
 
@@ -356,7 +406,7 @@ v1Routes.get('/models', async (c) => {
       id,
       object: 'model',
       created: Math.floor(Date.now() / 1000),
-      owned_by: `portara/${owner}`
+      owned_by: owner
     }))
   })
 })

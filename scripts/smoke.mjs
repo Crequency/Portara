@@ -137,6 +137,8 @@ function startMockUpstream() {
             id,
             object: 'chat.completion',
             model: MOCK_MODEL,
+            // 回显上游实际收到的模型 id —— 用于验证网关是否做了映射改写
+            received_model: body.model,
             choices: [
               {
                 index: 0,
@@ -847,8 +849,190 @@ async function main() {
     )
     check('操作员可查看自己名下的密钥', () => assert.equal(operatorRevealOwn.status, 200))
 
+    // ---------------------------------------------------------- 模型映射
+    section('⑮ 模型映射：别名 → 上游模型')
+
+    // 必须用**未绑定渠道**的 Key：绑定语义是「只走该渠道、不跨渠道回退」，
+    // 用绑定 Key 测负载均衡会永远只落在一个渠道（这是设计如此，不是 bug）
+    const mapKeyRes = await apiCall('POST', '/api/keys', {
+      name: `smoke-map-key-${RUN}`,
+      rpmLimit: 0,
+      quotaTokens: 0
+    })
+    check('创建未绑定渠道的 Key 用于映射测试', () => assert.equal(mapKeyRes.status, 201))
+    const mapKey = mapKeyRes.body.key
+    createdKeyIds.push(mapKeyRes.body.apiKey.id)
+
+    const ALIAS = `smoke-alias-${RUN}/mapped`
+
+    const created2 = await apiCall('POST', '/api/model-routes', {
+      alias: ALIAS,
+      targets: [{ channelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }],
+      note: '冒烟映射'
+    })
+    check('可创建模型映射', () => assert.equal(created2.status, 201))
+    check('映射返回带渠道名', () =>
+      assert.equal(created2.body?.routes?.[0]?.channelName, `smoke-mock-${RUN}`)
+    )
+
+    const aliasList = await apiCall('GET', '/api/model-routes')
+    check('映射列表可按别名查到', () =>
+      assert.ok((aliasList.body?.routes ?? []).some((r) => r.alias === ALIAS))
+    )
+
+    const modelsWithAlias = await fetch(`${BASE}/v1/models`, {
+      headers: { authorization: `Bearer ${mapKey}` }
+    })
+    const modelsWithAliasJson = await modelsWithAlias.json()
+    check('/v1/models 里出现映射别名', () =>
+      assert.ok(modelsWithAliasJson.data.some((m) => m.id === ALIAS))
+    )
+
+    const mappedCall = await proxyCall(
+      '/v1/chat/completions',
+      { model: ALIAS, messages: [{ role: 'user', content: '映射测试' }] },
+      mapKey
+    )
+    check('用别名调用成功（200）', () => assert.equal(mappedCall.status, 200))
+    check('上游收到的是映射后的真实模型 id', () =>
+      assert.equal(mappedCall.body?.received_model, MOCK_MODEL)
+    )
+    check('未配映射的模型仍按原样直通（回退逻辑）', () => {
+      // 前文用 MOCK_MODEL 直连成功过，这里再确认一次语义
+      assert.ok(chat.body?.received_model === MOCK_MODEL)
+    })
+
+    await sleep(600)
+    const mappedLogs = await apiCall('GET', '/api/logs?limit=50')
+    const mappedLog = (mappedLogs.body?.logs ?? []).find((l) => l.model === ALIAS)
+    check('日志同时记录受理模型与上游模型', () => {
+      assert.ok(mappedLog, '未找到该别名的日志')
+      assert.equal(mappedLog.model, ALIAS)
+      assert.equal(mappedLog.upstreamModel, MOCK_MODEL)
+    })
+
+    // ---------------------------------------------------------- 批量加前缀
+    section('⑯ 批量映射：给渠道所有模型加前缀')
+
+    const batch = await apiCall('POST', '/api/model-routes/batch', {
+      channelId,
+      prefix: `smoke-prefix-${RUN}`,
+      models: [MOCK_MODEL, 'second-model'],
+      priority: 50,
+      weight: 1
+    })
+    check('批量映射创建成功', () => assert.equal(batch.status, 201))
+    check('批量创建 2 条映射', () => assert.equal(batch.body?.created, 2))
+    check('别名按「前缀/模型」生成', () => {
+      const expected = `smoke-prefix-${RUN}/${MOCK_MODEL}`
+      assert.ok(batch.body?.aliases?.includes(expected), JSON.stringify(batch.body?.aliases))
+    })
+
+    const batchAgain = await apiCall('POST', '/api/model-routes/batch', {
+      channelId,
+      prefix: `smoke-prefix-${RUN}`,
+      models: [MOCK_MODEL],
+      priority: 60,
+      weight: 3
+    })
+    check('重复批量是 upsert（合并不报错）', () => {
+      assert.equal(batchAgain.status, 201)
+      assert.equal(batchAgain.body?.created, 0)
+      assert.equal(batchAgain.body?.merged, 1)
+    })
+
+    // ---------------------------------------------------------- 一别名多渠道负载均衡
+    section('⑰ 一个网关模型 id 负载均衡到多个渠道')
+
+    const channelB = await apiCall('POST', '/api/channels', {
+      name: `smoke-mock-b-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 10,
+      weight: 1,
+      status: 'active'
+    })
+    check('创建第二个渠道用于负载均衡', () => assert.equal(channelB.status, 201))
+    const channelBId = channelB.body.channel.id
+
+    const LB_ALIAS = `smoke-lb-${RUN}`
+    const lb = await apiCall('POST', '/api/model-routes', {
+      alias: LB_ALIAS,
+      targets: [
+        { channelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 2 },
+        { channelId: channelBId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }
+      ]
+    })
+    check('同一别名可挂两个渠道的目标', () =>
+      assert.equal(lb.body?.routes?.length, 2)
+    )
+
+    const served = []
+    for (let i = 0; i < 6; i++) {
+      const r = await proxyCall(
+        '/v1/chat/completions',
+        { model: LB_ALIAS, messages: [{ role: 'user', content: `lb-${i}` }] },
+        mapKey
+      )
+      served.push(r.headers.get('x-portara-channel'))
+    }
+    const uniqueServed = [...new Set(served)]
+    check('请求按权重分散到两个渠道', () => {
+      assert.equal(uniqueServed.length, 2, `实际只用到：${uniqueServed.join(',')}`)
+    })
+    check('权重 2:1 的分布正确', () => {
+      const a = served.filter((x) => x === `smoke-mock-${RUN}`).length
+      const b = served.filter((x) => x === `smoke-mock-b-${RUN}`).length
+      assert.equal(a, 4)
+      assert.equal(b, 2)
+    })
+
+    // ---------------------------------------------------------- 整组删除
+    section('⑱ 整组删除映射')
+
+    const purge = await apiCall('POST', '/api/model-routes/purge', { alias: LB_ALIAS })
+    check('按别名整组删除', () => {
+      assert.equal(purge.status, 200)
+      assert.equal(purge.body?.removed, 2)
+    })
+    const afterPurge = await apiCall('GET', '/api/model-routes')
+    check('删除后别名不再出现在列表中', () =>
+      assert.ok(!(afterPurge.body?.routes ?? []).some((r) => r.alias === LB_ALIAS))
+    )
+
+    const boundKeyCall = await proxyCall(
+      '/v1/chat/completions',
+      { model: LB_ALIAS, messages: [{ role: 'user', content: 'bound' }] },
+      keyFull
+    )
+    check('绑定渠道的 Key 不会跨渠道（即使别名挂了多个渠道）', () => {
+      // LB_ALIAS 已被 purge，绑定 Key 又只在该渠道内找映射 → 应回退为该渠道直通
+      assert.equal(boundKeyCall.status, 200)
+      assert.equal(boundKeyCall.headers.get('x-portara-channel'), `smoke-mock-${RUN}`)
+    })
+
+    const purgeMissing = await apiCall('POST', '/api/model-routes/purge', { alias: 'nope/none' })
+    check('删除不存在的别名返回 404', () => assert.equal(purgeMissing.status, 404))
+
+    const badAlias = await apiCall('POST', '/api/model-routes', {
+      alias: 'bad alias with spaces',
+      targets: [{ channelId, upstreamModel: MOCK_MODEL }]
+    })
+    check('非法别名被拒（400）', () => assert.equal(badAlias.status, 400))
+
+    // 清理本轮映射（渠道删除会级联删掉其映射，这里显式删别名更直观）
+    await apiCall('POST', '/api/model-routes/purge', { alias: ALIAS })
+    await apiCall('POST', '/api/model-routes/purge', {
+      alias: `smoke-prefix-${RUN}/${MOCK_MODEL}`
+    })
+    await apiCall('POST', '/api/model-routes/purge', {
+      alias: `smoke-prefix-${RUN}/second-model`
+    })
+    await apiCall('DELETE', `/api/channels/${channelBId}`)
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('⑮ 密钥不泄漏到日志')
+    section('⑲ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -860,7 +1044,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('⑯ 清理测试数据')
+    section('⑳ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

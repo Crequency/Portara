@@ -6,7 +6,12 @@ import {
   withStreamUsage
 } from '../src/services/proxy.js'
 import { currentWindow, quotaExceeded, rateLimitKey } from '../src/services/limits.js'
-import { pickChannel, type ChannelCandidate } from '../src/services/routing.js'
+import {
+  pickChannel,
+  pickRoute,
+  type ChannelCandidate,
+  type RouteTarget
+} from '../src/services/routing.js'
 
 function ch(partial: Partial<ChannelCandidate> & { name: string }): ChannelCandidate {
   return {
@@ -170,4 +175,53 @@ test('限流窗口按分钟切分，key 稳定', () => {
   assert.equal(currentWindow(t), currentWindow(t + 59_999))
   assert.notEqual(currentWindow(t), currentWindow(t + 60_000))
   assert.equal(rateLimitKey('abc', 42), 'portara:rl:abc:42')
+})
+
+// ------------------------------------------------------------------ 模型映射选路
+
+function route(partial: Partial<RouteTarget> & { id: string }): RouteTarget {
+  return {
+    channel_id: 'ch-' + partial.id,
+    upstream_model: 'upstream-' + partial.id,
+    priority: 100,
+    weight: 1,
+    status: 'active',
+    ...partial
+  }
+}
+
+test('pickRoute 忽略停用的映射目标', () => {
+  const picked = pickRoute([
+    route({ id: 'a', status: 'disabled' }),
+    route({ id: 'b', upstream_model: 'live' })
+  ])
+  assert.equal(picked?.upstream_model, 'live')
+})
+
+test('pickRoute 只取 priority 最小的一组', () => {
+  const picked = pickRoute([
+    route({ id: 'a', priority: 200 }),
+    route({ id: 'b', priority: 10, upstream_model: 'first' })
+  ])
+  assert.equal(picked?.upstream_model, 'first')
+})
+
+test('pickRoute 按权重轮转，分布符合权重比', () => {
+  const targets = [
+    route({ id: 'a', weight: 2, upstream_model: 'A' }),
+    route({ id: 'b', weight: 1, upstream_model: 'B' })
+  ]
+  const picks = [0, 1, 2, 3, 4, 5].map((r) => pickRoute(targets, r)?.upstream_model)
+  assert.deepEqual(picks, ['A', 'A', 'B', 'A', 'A', 'B'])
+})
+
+test('pickRoute 同一 rotation 下结果确定（与数组顺序无关）', () => {
+  const a = route({ id: 'a', upstream_model: 'A' })
+  const b = route({ id: 'b', upstream_model: 'B' })
+  assert.equal(pickRoute([a, b], 3)?.upstream_model, pickRoute([b, a], 3)?.upstream_model)
+})
+
+test('pickRoute 空列表或全停用返回 null', () => {
+  assert.equal(pickRoute([]), null)
+  assert.equal(pickRoute([route({ id: 'a', status: 'disabled' })]), null)
 })

@@ -80,6 +80,20 @@ export interface Channel {
   createdAt: string
 }
 
+export interface ModelRoute {
+  id: string
+  alias: string
+  channelId: string
+  channelName: string | null
+  channelStatus: string | null
+  upstreamModel: string
+  priority: number
+  weight: number
+  status: 'active' | 'disabled'
+  note: string
+  createdAt: string
+}
+
 export interface ApiKey {
   id: string
   name: string
@@ -104,6 +118,7 @@ export interface RequestLog {
   apiKeyName: string
   channelName: string
   model: string
+  upstreamModel: string
   path: string
   statusCode: number
   promptTokens: number

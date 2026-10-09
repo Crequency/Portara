@@ -65,6 +65,7 @@ logRoutes.get('/logs', async (c) => {
       apiKeyName: r.api_key_name,
       channelName: r.channel_name,
       model: r.model,
+      upstreamModel: r.upstream_model,
       path: r.path,
       statusCode: r.status_code,
       promptTokens: r.prompt_tokens,

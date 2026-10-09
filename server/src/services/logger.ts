@@ -6,6 +6,8 @@ export interface LogInput {
   channelId: string | null
   channelName: string
   model: string
+  /** 实际发往上游的模型 id（经映射时与 model 不同） */
+  upstreamModel: string
   path: string
   statusCode: number
   promptTokens: number
@@ -25,16 +27,17 @@ export interface LogInput {
 export async function writeLog(input: LogInput): Promise<void> {
   await query(
     `insert into request_logs
-       (api_key_id, api_key_name, channel_id, channel_name, model, path,
+       (api_key_id, api_key_name, channel_id, channel_name, model, upstream_model, path,
         status_code, prompt_tokens, completion_tokens, total_tokens, estimated,
         latency_ms, ttft_ms, client_ip, error)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       input.apiKeyId,
       input.apiKeyName,
       input.channelId,
       input.channelName,
       input.model,
+      input.upstreamModel,
       input.path,
       input.statusCode,
       input.promptTokens,

@@ -43,6 +43,7 @@ var client = new OpenAIClient(
 | 查看完整 Key（仅管理员 + 风险提示 + 审计留痕，见 D-013） | ✅ |
 | 对话测试页（仅管理员；可选「网关自身测试」或「上游渠道直连测试」） | ✅ |
 | 渠道协议与厂商兼容（OpenAI 兼容 / OpenCode）+ 自定义固定请求头 | ✅ |
+| **模型映射**（网关模型 ID → 上游模型；一个 ID 负载均衡到多渠道多模型） | ✅ |
 | 密钥归属（非管理员只见自己的，管理员可见全部并显示所有者） | ✅ |
 | 概览统计粒度（今日 / 近 7 天 / 近一个月 / 自定义） | ✅ |
 | 请求代理转发（`/v1/chat/completions` 非流式 + SSE 流式透传） | ✅ |
@@ -111,6 +112,9 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 9. **概览** 顶部可切换 今日 / 近 7 天 / 近一个月 / 自定义
 10. 渠道若要求特殊请求头（如 OpenCode 的 `x-opencode-session`），
     在渠道弹窗里选「厂商兼容」或在「固定请求头」里自行填写
+11. **模型映射**：点「批量映射」选渠道、填前缀 `opencode-go`，
+    即可生成 `opencode-go/deepseek-flash` 这样的网关模型 ID；
+    同一个网关 ID 再批量挂上别的渠道，就形成多渠道负载均衡
 
 ## 对外端点
 
@@ -137,6 +141,9 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `GET/POST/PATCH/DELETE /api/keys[/:id]`、`POST /api/keys/:id/rotate` | 密钥 |
 | `GET /api/keys/:id/reveal` | 查看完整密钥（**仅管理员**，必写审计） |
 | `GET /api/audit` | 审计日志查询（仅管理员） |
+| `GET/POST/PATCH/DELETE /api/model-routes[/:id]` | 模型映射 CRUD |
+| `POST /api/model-routes/batch` | 批量映射：给渠道的一批模型统一加前缀 |
+| `POST /api/model-routes/purge` | 按别名整组删除 |
 | `GET /api/logs` | 请求日志 |
 | `GET /api/stats/overview?range=today\|7d\|30d\|custom[&from=&to=]` | 区间统计 + Top 排行 |
 | `GET /api/stats/series?range=…` | 趋势序列（≤48 小时按小时，否则按天） |

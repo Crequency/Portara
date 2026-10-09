@@ -58,6 +58,22 @@ export interface ApiKeyRow {
   owner_name?: string | null
 }
 
+export interface ModelRouteRow {
+  id: string
+  alias: string
+  channel_id: string
+  upstream_model: string
+  priority: number
+  weight: number
+  status: 'active' | 'disabled'
+  note: string
+  created_at: string
+  updated_at: string
+  /** 仅 join 查询带出 */
+  channel_name?: string | null
+  channel_status?: string | null
+}
+
 export interface AuditEventRow {
   id: string
   ts: string
@@ -78,6 +94,7 @@ export interface RequestLogRow {
   channel_id: string | null
   channel_name: string
   model: string
+  upstream_model: string
   path: string
   status_code: number
   prompt_tokens: number
@@ -88,6 +105,23 @@ export interface RequestLogRow {
   ttft_ms: number | null
   client_ip: string
   error: string
+}
+
+/** 模型映射对外表示 */
+export function toModelRouteDto(r: ModelRouteRow) {
+  return {
+    id: r.id,
+    alias: r.alias,
+    channelId: r.channel_id,
+    channelName: r.channel_name ?? null,
+    channelStatus: r.channel_status ?? null,
+    upstreamModel: r.upstream_model,
+    priority: r.priority,
+    weight: r.weight,
+    status: r.status,
+    note: r.note,
+    createdAt: r.created_at
+  }
 }
 
 /** 用户对外表示：绝不包含 password_hash */

@@ -9,6 +9,7 @@ import { authRoutes } from './routes/auth.js'
 import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
 import { logRoutes } from './routes/logs.js'
+import { modelRouteRoutes } from './routes/modelRoutes.js'
 import { userRoutes } from './routes/users.js'
 import { v1Routes } from './routes/v1.js'
 import { serveWebDist } from './static.js'
@@ -90,6 +91,7 @@ export function createApp(): Hono {
   app.route('/api/channels', channelRoutes)
   app.route('/api/keys', keyRoutes)
   app.route('/api/audit', auditRoutes)
+  app.route('/api/model-routes', modelRouteRoutes)
   app.route('/api', logRoutes) // /api/logs、/api/stats/*
 
   // ---- 数据面（OpenAI 兼容）----
