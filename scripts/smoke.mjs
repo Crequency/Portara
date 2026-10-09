@@ -499,6 +499,12 @@ async function main() {
       assert.ok(streamLog >= 2)
     })
 
+    check('日志里的渠道归属正确（确定性断言）', () => {
+      const row = mine.find((l) => l.channelName === `smoke-mock-${RUN}`)
+      assert.ok(row, '未找到属于本轮渠道的日志记录')
+      assert.equal(row.statusCode, 200)
+    })
+
     const overview = await apiCall('GET', '/api/stats/overview?range=today')
     check('今日统计反映请求数', () => {
       // 此刻已落库的是：1 次非流式 + 1 次流式（401/403 在鉴权层被拒，不计入）
@@ -520,9 +526,19 @@ async function main() {
     })
 
     check('统计带出 Top 模型 / 渠道 / 密钥', () => {
+      // Top 榜单只取前 5，而跨轮次累积的历史日志会影响排名 ——
+      // 因此这里只断言结构与内容形态，**不断言「我这条一定在前 5」**
+      // （那会让测试依赖数据库的累积状态，是间歇性失败的根源）
       assert.ok(Array.isArray(overview.body.topModels))
+      assert.ok(overview.body.topModels.length > 0)
       assert.ok(overview.body.topModels.some((m) => m.name === MOCK_MODEL))
-      assert.ok(overview.body.topChannels.some((x) => x.name === `smoke-mock-${RUN}`))
+      assert.ok(Array.isArray(overview.body.topChannels))
+      assert.ok(overview.body.topChannels.length > 0)
+      assert.ok(
+        overview.body.topChannels.every(
+          (x) => typeof x.name === 'string' && typeof x.requests === 'number'
+        )
+      )
       assert.ok(Array.isArray(overview.body.topKeys))
     })
 
