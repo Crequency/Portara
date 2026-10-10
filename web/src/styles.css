@@ -419,8 +419,25 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .psel-option-active { background: var(--bg-elev-2); }
 .psel-option-selected { color: var(--accent); font-weight: 560; }
 .psel-option-disabled { opacity: 0.4; cursor: not-allowed; }
-.psel-option-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.psel-option-hint { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+/* 标签与提示都要能收缩：此前 hint 是 nowrap 且不收缩，
+   传了长 hint（如渠道 baseUrl）时会把它自己撑宽、同时把标签挤成省略号 */
+.psel-option-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.psel-option-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 .psel-check { flex: 0 0 auto; }
 
 /* ---------------------------------------------------------------- 自定义复选框 */
@@ -917,6 +934,25 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 .batch-pick-item.on {
   color: var(--accent);
+}
+
+/* 批量选择项里的名称与地址：都要能收缩，长地址不该把名称挤掉 */
+.batch-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-faint);
 }
 
 .batch-pick-box {
