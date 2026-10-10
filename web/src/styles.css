@@ -82,7 +82,12 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ---------------------------------------------------------------- 布局 */
 
-.shell { display: flex; min-height: 100vh; }
+/*
+ * 外壳固定为视口高度，滚动发生在 .content 内部 —— 这样侧栏与顶栏常驻，
+ * 且「撑满内容区 + 表格内滚动」的页面才有确定的可用高度。
+ * 用 100dvh 兜移动端动态工具栏；不支持时回落到 100vh。
+ */
+.shell { display: flex; height: 100vh; height: 100dvh; }
 
 .sidebar {
   width: 232px;
@@ -152,7 +157,7 @@ a { color: var(--accent); text-decoration: none; }
   gap: 3px;
 }
 
-.main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 .topbar {
   display: flex;
@@ -181,6 +186,48 @@ a { color: var(--accent); text-decoration: none; }
   max-width: none;
   min-width: 0;
   flex: 1 1 auto;
+  /* 页面滚动发生在这里，而不是整页 —— 顶栏/侧栏因此常驻 */
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/*
+ * 「撑满内容区 + 内部滚动」模式（表格类页面用）。
+ *
+ * 用法：把视图根元素加上 .fill-view，滚动容器（.table-wrap）会自动占满剩余高度，
+ * 表头吸顶。因为 .content 高度确定，height:100% 才有意义。
+ */
+.fill-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fill-view .table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 同时支持横向与纵向滚动；纵向由表体承担，表头吸顶 */
+  overflow: auto;
+}
+
+/*
+ * 吸顶表头。border-collapse: collapse 下表头下边框会随内容滚走，
+ * 故用 inset 阴影画那条分隔线。
+ */
+.fill-view table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+/* 表格区域内的空态/加载态同样撑满，避免整页高度塌成一条 */
+.fill-rest {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
 }
 
 /* 统一纵向间距：用 gap，不用相邻兄弟 margin */

@@ -66,7 +66,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="card">
+  <!-- fill-view：卡片撑满内容区，表格在内部滚动、表头吸顶、分页常驻底部 -->
+  <div class="card fill-view">
     <div class="card-head">
       <div class="card-title">
         {{ t('logs.title') }} · {{ t('logs.count', { n: formatNumber(total) }) }}
@@ -84,8 +85,8 @@ onMounted(load)
       <button class="btn btn-sm" @click="applyFilter">{{ t('logs.query') }}</button>
     </div>
 
-    <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
-    <div v-else-if="logs.length === 0" class="empty">{{ t('logs.empty') }}</div>
+    <div v-if="loading" class="loading fill-rest">{{ t('common.loading') }}</div>
+    <div v-else-if="logs.length === 0" class="empty fill-rest">{{ t('logs.empty') }}</div>
     <div v-else class="table-wrap">
       <table>
         <thead>
@@ -134,7 +135,7 @@ onMounted(load)
       </table>
     </div>
 
-    <div class="pager">
+    <div class="pager" style="flex: 0 0 auto">
       <span>
         {{
           t('logs.pageInfo', {
