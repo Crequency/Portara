@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import LogoMark from '../components/LogoMark.vue'
 import { api, ApiError, type User } from '../api'
 import { useI18n } from '../i18n'
 
@@ -33,16 +34,7 @@ async function submit(): Promise<void> {
   <div class="login-page">
     <form class="login-card" @submit.prevent="submit">
       <div class="login-logo">
-        <div class="brand-mark">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M7 20V9a5 5 0 0 1 10 0v11"
-              stroke="#fff"
-              stroke-width="2.2"
-              stroke-linecap="round"
-            />
-          </svg>
-        </div>
+        <LogoMark :size="44" />
         <div class="login-title">{{ t('nav.appName') }}</div>
         <div class="login-sub">{{ t('login.subtitle') }}</div>
       </div>

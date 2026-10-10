@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "pnpm --filter @portara/server dev",
     "dev:web": "pnpm --filter @portara/web dev",
-    "build": "pnpm --filter @portara/web build && pnpm --filter @portara/server build",
+    "build": "pnpm brand && pnpm --filter @portara/web build && pnpm --filter @portara/server build",
     "start": "pnpm --filter @portara/server start",
     "typecheck": "pnpm --filter @portara/server typecheck && pnpm --filter @portara/web typecheck",
     "test": "pnpm --filter @portara/server test",
@@ -20,6 +20,8 @@
     "infra:down": "docker compose down",
     "app:up": "docker compose --profile app up -d --build",
     "app:down": "docker compose --profile app down",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "brand": "node scripts/brand.mjs",
+    "brand:check": "node scripts/brand.mjs --check"
   }
 }

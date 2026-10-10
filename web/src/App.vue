@@ -10,6 +10,7 @@ import ChannelDetailView from './views/ChannelDetailView.vue'
 import ChannelsView from './views/ChannelsView.vue'
 import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
+import LogoMark from './components/LogoMark.vue'
 import LoginView from './views/LoginView.vue'
 import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
@@ -165,16 +166,7 @@ function go(id: string): void {
   <div v-else class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M7 20V9a5 5 0 0 1 10 0v11"
-              stroke="#fff"
-              stroke-width="2.2"
-              stroke-linecap="round"
-            />
-          </svg>
-        </div>
+        <LogoMark :size="30" />
         <div>
           <div class="brand-name">{{ t('nav.appName') }}</div>
           <div class="brand-sub">{{ brandSub }}</div>
