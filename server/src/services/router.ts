@@ -18,6 +18,9 @@ export type { ChannelCandidate, RouteTarget } from './routing.js'
  * `upstreamModel` 是**真正发往上游**的模型 id —— 经过映射时与调用方请求的
  * 模型 id 不同，这个区别必须一路带到转发与日志里。
  */
+import { getProxyTarget } from './proxies.js'
+import type { ProxyTarget } from './proxyAgent.js'
+
 export interface ResolvedTarget {
   channel: ChannelCandidate
   upstreamModel: string
@@ -26,6 +29,13 @@ export interface ResolvedTarget {
   protocol: EffectiveProtocol
   /** 实际请求的 Base URL（逐模型覆盖优先） */
   baseUrl: string
+  /**
+   * 上游访问要走哪个代理；null = 直连。
+   *
+   * 放在解析结果里而不是各调用点自己查 —— 否则「某条路径忘了带代理」
+   * 这种漏洞迟早会出现（relay.ts 那次教训）。
+   */
+  proxy: ProxyTarget | null
 }
 
 interface RouteJoin extends ModelRouteRow {
@@ -38,6 +48,7 @@ interface RouteJoin extends ModelRouteRow {
   c_timeout_ms: number
   c_protocol: string
   c_model_overrides: Record<string, { protocol?: string; baseUrl?: string }> | null
+  c_proxy_id: string | null
 }
 
 /** 别名映射查询：只取「映射启用 且 渠道启用」的目标 */
@@ -51,7 +62,8 @@ const ROUTE_SQL = `
          c.extra_headers   as c_extra_headers,
          c.timeout_ms      as c_timeout_ms,
          c.protocol        as c_protocol,
-         c.model_overrides as c_model_overrides
+         c.model_overrides as c_model_overrides,
+         c.proxy_id        as c_proxy_id
     from model_routes r
     join channels c on c.id = r.channel_id
    where r.alias = $1
@@ -73,22 +85,24 @@ function toCandidate(row: RouteJoin): ChannelCandidate {
     vendor: row.c_vendor,
     extra_headers: row.c_extra_headers ?? {},
     protocol: row.c_protocol,
-    model_overrides: row.c_model_overrides ?? {}
+    model_overrides: row.c_model_overrides ?? {},
+    proxy_id: row.c_proxy_id
   }
 }
 
 /** 由渠道 + 上游模型解析出协议与地址 */
-function targetOf(
+async function targetOf(
   channel: ChannelCandidate,
   upstreamModel: string,
   viaMapping: boolean
-): ResolvedTarget {
+): Promise<ResolvedTarget> {
   return {
     channel,
     upstreamModel,
     viaMapping,
     protocol: resolveProtocol(channel, upstreamModel),
-    baseUrl: resolveBaseUrl(channel, upstreamModel)
+    baseUrl: resolveBaseUrl(channel, upstreamModel),
+    proxy: await getProxyTarget(channel.proxy_id)
   }
 }
 
@@ -113,7 +127,7 @@ export async function resolveTarget(
       const picked = pickRoute(routes as unknown as RouteTarget[], round)
       if (picked) {
         const row = routes.find((r) => r.id === picked.id)!
-        return targetOf(toCandidate(row), row.upstream_model, true)
+        return await targetOf(toCandidate(row), row.upstream_model, true)
       }
     }
   }
@@ -123,7 +137,7 @@ export async function resolveTarget(
   )
   const picked = pickChannel(channels as unknown as ChannelCandidate[], model, round)
   if (!picked) return null
-  return targetOf(picked, model, false)
+  return await targetOf(picked, model, false)
 }
 
 /**
@@ -144,7 +158,7 @@ export async function resolveBoundTarget(
       return targetOf(channel as unknown as ChannelCandidate, route.upstream_model, true)
     }
   }
-  return targetOf(channel as unknown as ChannelCandidate, model, false)
+  return await targetOf(channel as unknown as ChannelCandidate, model, false)
 }
 
 export async function getChannelById(id: string): Promise<ChannelRow | null> {

@@ -11,6 +11,7 @@ import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
 import { logRoutes } from './routes/logs.js'
 import { modelRouteRoutes } from './routes/modelRoutes.js'
+import { proxyRoutes } from './routes/proxies.js'
 import { settingsRoutes } from './routes/settings.js'
 import { userRoutes } from './routes/users.js'
 import { v1Routes } from './routes/v1.js'
@@ -108,6 +109,7 @@ export function createApp(): Hono {
   app.route('/api/audit', auditRoutes)
   app.route('/api/model-routes', modelRouteRoutes)
   app.route('/api/settings', settingsRoutes)
+  app.route('/api/proxies', proxyRoutes)
   app.route('/api', logRoutes) // /api/logs、/api/stats/*
 
   // ---- 数据面（OpenAI 兼容）----

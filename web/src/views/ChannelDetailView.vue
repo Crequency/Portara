@@ -91,7 +91,33 @@ const modelRows = computed(() => {
 
 const headerEntries = computed(() => Object.entries(channel.value?.extraHeaders ?? {}))
 
+/** 该渠道选用的代理（详情页只读展示；改在编辑弹窗里改） */
+const proxyName = ref('')
+const proxyAddress = ref('')
+
+async function loadProxyLabel(): Promise<void> {
+  const id = channel.value?.proxyId
+  if (!id) {
+    proxyName.value = ''
+    proxyAddress.value = ''
+    return
+  }
+  try {
+    const res = await api.get<{ proxies: { id: string; name: string; host: string; port: number }[] }>(
+      '/api/proxies'
+    )
+    const hit = res.proxies.find((p) => p.id === id)
+    proxyName.value = hit?.name ?? id
+    proxyAddress.value = hit ? `${hit.host}:${hit.port}` : ''
+  } catch {
+    // 操作员无权限读代理列表 —— 退化显示 id，不影响其它信息
+    proxyName.value = id
+    proxyAddress.value = ''
+  }
+}
+
 async function loadChannel(): Promise<void> {
+  // 代理名称与渠道无关地并行加载，不阻塞主信息
   loading.value = true
   notFound.value = false
   try {
@@ -110,6 +136,7 @@ async function loadChannel(): Promise<void> {
     return
   }
   await loadStats()
+  void loadProxyLabel()
   loading.value = false
 }
 
@@ -343,6 +370,14 @@ onMounted(loadChannel)
         <div class="field">
           <label>{{ t('channelDetail.note') }}</label>
           <div class="dim">{{ channel.note || '—' }}</div>
+        </div>
+        <div class="field">
+          <label>{{ t('channels.proxy') }}</label>
+          <div v-if="!channel.proxyId" class="dim">{{ t('channels.proxyNone') }}</div>
+          <div v-else>
+            <span class="tag" style="color: var(--accent)">{{ proxyName }}</span>
+            <span class="dim" style="margin-left: 6px">{{ proxyAddress }}</span>
+          </div>
         </div>
         <div class="field">
           <label>{{ t('channelDetail.fixedHeaders') }}</label>

@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -23,6 +23,51 @@ const API_PORT = Number(process.env.SMOKE_API_PORT ?? 52750)
 const MOCK_PORT = API_PORT + 1
 const BASE = `http://127.0.0.1:${API_PORT}`
 const MOCK = `http://127.0.0.1:${MOCK_PORT}`
+/** 伪正向代理的端口；用于验证「渠道走代理」确实生效 */
+const PROXY_PORT = API_PORT + 2
+/** 被代理转发的请求（绝对 URI + 代理认证头），用于断言流量真的过代理了 */
+const proxiedRequests = []
+
+/**
+ * 极简 HTTP 正向代理：接收绝对 URI，转发到目标并回传。
+ * 只支持明文 HTTP —— 够用来验证「请求是否经过代理」这件事。
+ */
+function startMockProxy() {
+  const server = createServer((req, res) => {
+    proxiedRequests.push({
+      url: req.url,
+      method: req.method,
+      proxyAuth: req.headers['proxy-authorization'] ?? null
+    })
+    let target
+    try {
+      target = new URL(req.url)
+    } catch {
+      res.writeHead(400)
+      res.end('bad absolute uri')
+      return
+    }
+    const upstream = httpRequest(
+      {
+        host: target.hostname,
+        port: target.port,
+        path: target.pathname + target.search,
+        method: req.method,
+        headers: { ...req.headers, host: target.host }
+      },
+      (up) => {
+        res.writeHead(up.statusCode, up.headers)
+        up.pipe(res)
+      }
+    )
+    upstream.on('error', (err) => {
+      res.writeHead(502)
+      res.end(String(err))
+    })
+    req.pipe(upstream)
+  })
+  return new Promise((resolve) => server.listen(PROXY_PORT, '127.0.0.1', () => resolve(server)))
+}
 const RUN = Date.now().toString(36)
 
 /**
@@ -363,6 +408,7 @@ async function main() {
   console.log(`  数据库 schema: ${SMOKE_SCHEMA}（与开发数据隔离）`)
 
   const mock = await startMockUpstream()
+  const mockProxy = await startMockProxy()
   const { child, output } = startServer()
 
   let channelId = null
@@ -2218,8 +2264,136 @@ async function main() {
       settings: [{ key: 'timezone', value: 'UTC' }]
     })
 
+    // ---------------------------------------------------------- HTTP 代理
+    section('㉘ HTTP 代理配置与「渠道是否走代理」')
+
+    const proxyCreate = await apiCall('POST', '/api/proxies', {
+      name: `smoke-proxy-${RUN}`,
+      host: '127.0.0.1',
+      port: PROXY_PORT,
+      username: 'puser',
+      password: 'ppass',
+      note: '冒烟用'
+    })
+    check('可创建代理配置', () => {
+      assert.equal(proxyCreate.status, 201)
+      assert.equal(proxyCreate.body.proxy.hasPassword, true)
+    })
+    const proxyId = proxyCreate.body.proxy.id
+    check('代理响应只给掩码，绝不含密文', () => {
+      assert.ok(!JSON.stringify(proxyCreate.body).includes('ppass'), '明文密码泄漏')
+      assert.ok(!('password_cipher' in proxyCreate.body.proxy), '密文字段泄漏')
+      assert.equal(proxyCreate.body.proxy.passwordMasked, '••••••••')
+    })
+    const revealedProxy = await apiCall('GET', `/api/proxies/${proxyId}/reveal`)
+    check('管理员可查看代理密码明文', () => {
+      assert.equal(revealedProxy.status, 200)
+      assert.equal(revealedProxy.body.password, 'ppass')
+    })
+
+    // 校验
+    const badHost = await apiCall('POST', '/api/proxies', {
+      name: `smoke-badhost-${RUN}`, host: 'http://1.2.3.4', port: 8080
+    })
+    check('主机填成 URL 被拒（400）', () => assert.equal(badHost.status, 400))
+    const badPort = await apiCall('POST', '/api/proxies', {
+      name: `smoke-badport-${RUN}`, host: '1.2.3.4', port: 99999
+    })
+    check('端口越界被拒（400）', () => assert.equal(badPort.status, 400))
+    const dupName = await apiCall('POST', '/api/proxies', {
+      name: `smoke-proxy-${RUN}`, host: '1.2.3.4', port: 8080
+    })
+    check('代理重名被拒（400）', () => assert.equal(dupName.status, 400))
+
+    // 关键：渠道走代理后，流量必须真的经过代理
+    proxiedRequests.length = 0
+    const proxyAlias = `proxy-alias-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: proxyAlias,
+      targets: [{ channelId, upstreamModel: MOCK_MODEL, priority: 10, weight: 1 }]
+    })
+
+    await proxyCall('/v1/chat/completions',
+      { model: proxyAlias, messages: [{ role: 'user', content: 'hi' }] }, mapKey)
+    check('渠道未配代理时，流量不经过代理', () =>
+      assert.equal(proxiedRequests.length, 0)
+    )
+
+    const bindProxy = await apiCall('PATCH', `/api/channels/${channelId}`, { proxyId })
+    check('渠道可绑定代理', () => assert.equal(bindProxy.body.channel.proxyId, proxyId))
+    const proxyList = await apiCall('GET', '/api/proxies')
+    check('代理列表回报引用它的渠道数', () => {
+      const p = proxyList.body.proxies.find((x) => x.id === proxyId)
+      assert.equal(p.channelCount, 1)
+    })
+
+    proxiedRequests.length = 0
+    await proxyCall('/v1/chat/completions',
+      { model: proxyAlias, messages: [{ role: 'user', content: 'hi' }] }, mapKey)
+    check('渠道绑定代理后，流量确实经过代理', () => {
+      assert.ok(proxiedRequests.length > 0, '代理没有收到任何请求')
+      assert.ok(
+        proxiedRequests.every((r) => String(r.url).startsWith('http://')),
+        '代理收到的不是绝对 URI'
+      )
+    })
+    check('代理认证信息按期发送（Proxy-Authorization）', () => {
+      const expected = 'Basic ' + Buffer.from('puser:ppass').toString('base64')
+      assert.equal(proxiedRequests[0].proxyAuth, expected)
+    })
+
+    // 延迟对比
+    const latency = await apiCall('POST', '/api/proxies/latency-test', {
+      channelId, proxyId
+    })
+    check('可对同一渠道做「直连 vs 走代理」延迟对比', () => {
+      assert.equal(latency.status, 200)
+      assert.equal(typeof latency.body.direct.latencyMs, 'number')
+      assert.equal(typeof latency.body.proxied.latencyMs, 'number')
+      assert.equal(latency.body.comparable, true)
+    })
+    check('对比结果含差值', () => {
+      assert.equal(
+        latency.body.deltaMs,
+        latency.body.proxied.latencyMs - latency.body.direct.latencyMs
+      )
+    })
+    const afterProbe = await apiCall('GET', '/api/proxies')
+    check('探测后代理记录下延迟与可用性', () => {
+      const p = afterProbe.body.proxies.find((x) => x.id === proxyId)
+      assert.equal(p.lastTestOk, true)
+      assert.ok(typeof p.lastLatencyMs === 'number')
+    })
+    const badProbe = await apiCall('POST', '/api/proxies/latency-test', {
+      channelId, proxyId: '00000000-0000-0000-0000-000000000000'
+    })
+    check('对不存在的代理做探测返回 400', () => assert.equal(badProbe.status, 400))
+
+    // 停用代理 → 静默回退直连（而不是把渠道打死）
+    await apiCall('PATCH', `/api/proxies/${proxyId}`, { status: 'disabled' })
+    proxiedRequests.length = 0
+    const disabledCall = await proxyCall('/v1/chat/completions',
+      { model: proxyAlias, messages: [{ role: 'user', content: 'hi' }] }, mapKey)
+    check('代理停用后渠道回退直连，仍可用', () => {
+      assert.equal(disabledCall.status, 200)
+      assert.equal(proxiedRequests.length, 0)
+    })
+    await apiCall('PATCH', `/api/proxies/${proxyId}`, { status: 'active' })
+
+    // 删除代理 → 渠道自动回到直连
+    const delProxy = await apiCall('DELETE', `/api/proxies/${proxyId}`)
+    check('删除代理时回报受影响渠道', () =>
+      assert.ok(delProxy.body.unboundChannels.includes(`smoke-mock-${RUN}`))
+    )
+    const chAfterDel = await apiCall('GET', `/api/channels/${channelId}`)
+    check('删除代理后渠道自动回到直连（不留悬空引用）', () =>
+      assert.equal(chAfterDel.body.channel.proxyId, null)
+    )
+
+    await apiCall('POST', '/api/model-routes/purge', { alias: proxyAlias })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉘ 密钥不泄漏到日志')
+    section('㉙ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2231,7 +2405,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉙ 清理测试数据')
+    section('㉚ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {
@@ -2248,6 +2422,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 600))
     if (!child.killed) child.kill('SIGKILL')
     mock.close()
+    mockProxy.close()
   }
 
   console.log(

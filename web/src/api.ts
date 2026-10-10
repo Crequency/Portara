@@ -48,6 +48,26 @@ export const api = {
 
 // ------------------------------------------------------------------ 类型
 
+/** HTTP 代理配置（密码只以掩码形式返回） */
+export interface ProxyConfig {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  hasPassword: boolean
+  passwordMasked: string
+  status: 'active' | 'disabled'
+  note: string
+  lastLatencyMs: number | null
+  lastTestAt: string | null
+  lastTestOk: boolean | null
+  createdAt: string
+  updatedAt: string
+  /** 有多少渠道正在使用它 */
+  channelCount: number
+}
+
 /** 系统设置（与后端 services/settings.ts 的注册表一一对应） */
 export interface GatewaySettings {
   gatewayName: string
@@ -79,6 +99,8 @@ export interface Channel {
   modelsPath: string
   modelsMeta: Record<string, ModelMeta>
   modelOverrides: Record<string, ModelOverride>
+  /** 选用的 HTTP 代理；null = 直连 */
+  proxyId: string | null
   baseUrl: string
   apiKeyMasked: string
   hasApiKey: boolean

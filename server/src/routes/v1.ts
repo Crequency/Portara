@@ -7,6 +7,7 @@ import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
+import { upstreamFetch } from '../services/proxyAgent.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamUrl,
@@ -270,12 +271,17 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
   let res: Response
   try {
-    res = await fetch(url, {
-      method: c.req.method,
-      headers: upstreamHeaders.headers,
-      body: plan.bodyText,
-      signal
-    })
+    // 配了代理就走代理；没配则与改造前完全一致（全局 fetch）
+    res = await upstreamFetch(
+      url,
+      {
+        method: c.req.method,
+        headers: upstreamHeaders.headers,
+        body: plan.bodyText,
+        signal
+      },
+      pick.target.proxy
+    )
   } catch (err) {
     const clientGone = c.req.raw.signal.aborted
     const timedOut = !clientGone && signal.aborted

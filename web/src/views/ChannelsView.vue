@@ -47,6 +47,8 @@ const form = reactive({
   priority: 100,
   weight: 1,
   timeoutMs: 120000,
+  /** 选用的 HTTP 代理；null = 直连 */
+  proxyId: null as string | null,
   status: 'active' as 'active' | 'disabled',
   note: ''
 })
@@ -438,6 +440,27 @@ async function load(): Promise<void> {
 /** 系统设置里的「新建渠道默认超时」；拿不到就用内置默认 */
 const gatewayDefaults = ref<{ defaultChannelTimeoutMs: number } | null>(null)
 
+/** 可选代理（仅管理员可读；操作员拿不到就只显示「直连」） */
+const proxies = ref<{ id: string; name: string; host: string; port: number; status: string }[]>([])
+
+const proxyOptions = computed(() => [
+  { value: '', label: t('channels.proxyDirect'), hint: t('channels.proxyDirectHint') },
+  ...proxies.value.map((p) => ({
+    value: p.id,
+    label: p.name,
+    hint: `${p.host}:${p.port}${p.status === 'disabled' ? ' · ' + t('common.disabled') : ''}`
+  }))
+])
+
+async function loadProxies(): Promise<void> {
+  try {
+    const res = await api.get<{ proxies: typeof proxies.value }>('/api/proxies')
+    proxies.value = res.proxies
+  } catch {
+    proxies.value = []
+  }
+}
+
 async function loadGatewayDefaults(): Promise<void> {
   try {
     const res = await api.get<{ settings: { defaultChannelTimeoutMs: number } }>('/api/settings')
@@ -463,6 +486,7 @@ function openCreate(): void {
     priority: 100,
     weight: 1,
     timeoutMs: gatewayDefaults.value?.defaultChannelTimeoutMs ?? 120000,
+    proxyId: null,
     status: 'active',
     note: ''
   })
@@ -482,6 +506,7 @@ function openEdit(ch: Channel): void {
     vendor: ch.vendor,
     modelsPath: ch.modelsPath ?? '/models',
     modelsMeta: { ...(ch.modelsMeta ?? {}) },
+    proxyId: ch.proxyId ?? null,
     headersText: headerLines(ch.extraHeaders ?? {}),
     modelsText: ch.models.join('\n'),
     priority: ch.priority,
@@ -604,6 +629,7 @@ async function submit(): Promise<void> {
       priority: Number(form.priority),
       weight: Number(form.weight),
       timeoutMs: Number(form.timeoutMs),
+      proxyId: form.proxyId || null,
       status: form.status,
       note: form.note
     }
@@ -1136,6 +1162,17 @@ onMounted(async () => {
           </label>
           <input v-model.number="form.weight" type="number" min="1" />
         </div>
+      </div>
+
+      <div class="field">
+        <label>{{ t('channels.proxy') }}</label>
+        <!-- PSelect 的值类型是 string，而 proxyId 可为 null（= 直连），这里显式转换 -->
+        <PSelect
+          :model-value="form.proxyId ?? ''"
+          :options="proxyOptions"
+          @update:model-value="form.proxyId = $event || null"
+        />
+        <span class="hint">{{ t('channels.proxyHint') }}</span>
       </div>
 
       <div class="form-row">

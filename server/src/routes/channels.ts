@@ -24,6 +24,9 @@ import {
   withStreamUsage
 } from '../services/proxy.js'
 import { getSetting } from '../services/settings.js'
+import { getProxyTarget } from '../services/proxies.js'
+import { upstreamFetch } from '../services/proxyAgent.js'
+import type { ProxyTarget } from '../services/proxyAgent.js'
 import { toChannelDto, type ChannelRow } from '../types.js'
 
 export const channelRoutes = new Hono()
@@ -54,6 +57,8 @@ async function fetchModelsFor(opts: {
   protocol?: string
   /** 用于派生厂商会话头的稳定兜底值 */
   channelId?: string
+  /** 走哪个代理；null/缺省 = 直连 */
+  proxy?: ProxyTarget | null
 }): Promise<{
   ok: boolean
   status: number
@@ -69,7 +74,7 @@ async function fetchModelsFor(opts: {
   const started = Date.now()
 
   try {
-    const res = await fetch(url, {
+    const res = await upstreamFetch(url, {
       headers: buildUpstreamHeaders(opts.upstreamKey, 'application/json', {
         extraHeaders: opts.extraHeaders,
         vendor: opts.vendor,
@@ -150,7 +155,9 @@ const fetchModelsSchema = z.object({
   extraHeaders: z.record(z.string(), z.string()).default({}),
   vendor: z.string().default('generic'),
   /** 决定用哪种认证头（anthropic 用 x-api-key） */
-  protocol: z.enum(['openai', 'anthropic', 'mixed']).default('openai')
+  protocol: z.enum(['openai', 'anthropic', 'mixed']).default('openai'),
+  /** 选用哪个代理拉取模型列表；空 = 直连 */
+  proxyId: z.string().optional()
 })
 
 /**
@@ -169,7 +176,8 @@ channelRoutes.post('/fetch-models', requireAdmin, async (c) => {
     timeoutMs: body.timeoutMs,
     extraHeaders: headers,
     vendor: body.vendor,
-    protocol: body.protocol
+    protocol: body.protocol,
+    proxy: await getProxyTarget(body.proxyId)
   })
   return c.json(result)
 })
@@ -197,7 +205,8 @@ channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
     extraHeaders: ch.extra_headers ?? {},
     vendor: ch.vendor,
     protocol: ch.protocol,
-    channelId: ch.id
+    channelId: ch.id,
+    proxy: await getProxyTarget(ch.proxy_id)
   })
   return c.json(result)
 })
@@ -233,6 +242,8 @@ const channelShape = {
     })
   ),
   apiKey: z.string(),
+  /** 选用的 HTTP 代理；null/空 = 直连 */
+  proxyId: z.string().uuid().nullable().optional(),
   models: z.array(z.string().min(1)),
   priority: z.coerce.number().int().min(1).max(9999),
   weight: z.coerce.number().int().min(1).max(1000),
@@ -266,6 +277,8 @@ function withCreateDefaults(b: CreateInput) {
     modelsPath: b.modelsPath ?? '/models',
     modelsMeta: b.modelsMeta ?? {},
     modelOverrides: b.modelOverrides ?? {},
+    // 代理：显式给了就用，没给则直连（与既有渠道行为一致）
+    proxyId: b.proxyId ?? null,
     apiKey: b.apiKey ?? '',
     models: b.models ?? [],
     priority: b.priority ?? 100,
@@ -341,8 +354,9 @@ channelRoutes.post('/', requireAdmin, async (c) => {
   const row = await one<ChannelRow>(
     `insert into channels
        (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
-        model_overrides, api_key_cipher, models, priority, weight, timeout_ms, status, note)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
+        model_overrides, api_key_cipher, proxy_id, models, priority, weight, timeout_ms,
+        status, note)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning *`,
     [
       body.name,
       body.baseUrl,
@@ -353,6 +367,7 @@ channelRoutes.post('/', requireAdmin, async (c) => {
       JSON.stringify(body.modelsMeta),
       JSON.stringify(body.modelOverrides),
       cipher,
+      body.proxyId ?? null,
       body.models,
       body.priority,
       body.weight,
@@ -400,12 +415,13 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        models_meta    = coalesce($8, models_meta),
        model_overrides = coalesce($9, model_overrides),
        api_key_cipher = $10,
-       models         = coalesce($11, models),
-       priority       = coalesce($12, priority),
-       weight         = coalesce($13, weight),
-       timeout_ms     = coalesce($14, timeout_ms),
-       status         = coalesce($15, status),
-       note           = coalesce($16, note),
+       proxy_id       = $11,
+       models         = coalesce($12, models),
+       priority       = coalesce($13, priority),
+       weight         = coalesce($14, weight),
+       timeout_ms     = coalesce($15, timeout_ms),
+       status         = coalesce($16, status),
+       note           = coalesce($17, note),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -420,6 +436,8 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       body.modelsMeta === undefined ? null : JSON.stringify(body.modelsMeta),
       body.modelOverrides === undefined ? null : JSON.stringify(body.modelOverrides),
       cipher,
+      // undefined = 不改动；null = 显式取消代理回到直连
+      body.proxyId === undefined ? current.proxy_id : body.proxyId,
       body.models ?? null,
       body.priority ?? null,
       body.weight ?? null,
@@ -510,7 +528,8 @@ channelRoutes.post('/:id/test', async (c) => {
     extraHeaders: ch.extra_headers ?? {},
     vendor: ch.vendor,
     protocol: ch.protocol,
-    channelId: ch.id
+    channelId: ch.id,
+    proxy: await getProxyTarget(ch.proxy_id)
   })
 
   await record(result.latencyMs, result.ok)
@@ -603,6 +622,7 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     source: 'playground'
   }
 
+  const directProxy = await getProxyTarget(ch.proxy_id)
   const upstreamHeaders = buildUpstreamHeaders(upstreamKey, 'application/json', {
     extraHeaders: ch.extra_headers ?? {},
     vendor: ch.vendor,
@@ -618,12 +638,12 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
 
   let res: Response
   try {
-    res = await fetch(plan.url, {
+    res = await upstreamFetch(plan.url, {
       method: 'POST',
       headers: upstreamHeaders.headers,
       body: plan.bodyText,
       signal
-    })
+    }, directProxy)
   } catch (err) {
     const message = signal.aborted
       ? `上游响应超时（${ch.timeout_ms}ms）`

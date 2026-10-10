@@ -26,6 +26,8 @@ export interface ChannelCandidate {
   protocol?: string
   /** 逐模型覆盖：协议与 Base URL */
   model_overrides?: Record<string, { protocol?: string; baseUrl?: string }>
+  /** 选用的 HTTP 代理；null/缺省 = 直连 */
+  proxy_id?: string | null
 }
 
 export type EffectiveProtocol = 'openai' | 'anthropic'

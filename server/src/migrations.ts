@@ -240,5 +240,35 @@ export const migrations: { id: string; sql: string }[] = [
         updated_by text
       );
     `
+  },
+  {
+    id: '011_proxies',
+    sql: `
+      -- HTTP 代理配置库。管理员维护多份，渠道按需选用。
+      --
+      -- 密码与上游渠道密钥同规格：AES-256-GCM 加密存储（PORTARA_MASTER_KEY），
+      -- 界面上只显示掩码，管理员可显式查看（留审计）。
+      create table if not exists proxies (
+        id              uuid primary key default gen_random_uuid(),
+        name            text not null,
+        host            text not null,
+        port            integer not null,
+        username        text not null default '',
+        password_cipher text not null default '',
+        status          text not null default 'active',
+        note            text not null default '',
+        last_latency_ms integer,
+        last_test_at    timestamptz,
+        last_test_ok    boolean,
+        created_at      timestamptz not null default now(),
+        updated_at      timestamptz not null default now()
+      );
+      create unique index if not exists proxies_name_key on proxies (name);
+
+      -- 渠道可选是否走代理；null = 直连（默认，不改变既有行为）。
+      -- on delete set null：删掉代理时渠道自动回到直连，而不是留下悬空引用。
+      alter table channels
+        add column if not exists proxy_id uuid references proxies(id) on delete set null;
+    `
   }
 ]

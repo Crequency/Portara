@@ -30,6 +30,8 @@ export interface ChannelRow {
   models_meta: Record<string, unknown>
   /** 逐模型的协议 / Base URL 覆盖，键为模型 id */
   model_overrides: Record<string, ModelOverride>
+  /** 选用的 HTTP 代理；null = 直连 */
+  proxy_id: string | null
   models: string[]
   priority: number
   weight: number
@@ -62,6 +64,44 @@ export interface ApiKeyRow {
   created_at: string
   /** 仅 list 查询带出（join users） */
   owner_name?: string | null
+}
+
+/** HTTP 代理配置 */
+export interface ProxyRow {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  /** AES-256-GCM 密文；绝不出现在任何 DTO 里 */
+  password_cipher: string
+  status: 'active' | 'disabled'
+  note: string
+  last_latency_ms: number | null
+  last_test_at: string | null
+  last_test_ok: boolean | null
+  created_at: string
+  updated_at: string
+}
+
+/** 代理的对外表示：只给掩码，不给密文 */
+export function toProxyDto(r: ProxyRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    name: r.name,
+    host: r.host,
+    port: r.port,
+    username: r.username,
+    hasPassword: Boolean(r.password_cipher),
+    passwordMasked: r.password_cipher ? '••••••••' : '',
+    status: r.status,
+    note: r.note,
+    lastLatencyMs: r.last_latency_ms,
+    lastTestAt: r.last_test_at,
+    lastTestOk: r.last_test_ok,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
 }
 
 /** 逐模型覆盖：协议与 Base URL */
@@ -165,6 +205,7 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     modelsPath: ch.models_path ?? '/models',
     modelsMeta: ch.models_meta ?? {},
     modelOverrides: ch.model_overrides ?? {},
+    proxyId: ch.proxy_id ?? null,
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     hasApiKey: Boolean(ch.api_key_cipher),
