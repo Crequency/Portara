@@ -230,6 +230,31 @@ a { color: var(--accent); text-decoration: none; }
   place-items: center;
 }
 
+/*
+ * 页内 Tabs：整体撑满内容区，每个面板各自内部滚动。
+ * .view-panel 必须放在 .fill-view 之后 —— 它用 height:auto 覆盖后者的 height:100%，
+ * 否则在 flex 列里 flex-basis:auto 会按 100% 计算而溢出。
+ */
+.view-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.view-tabbar { flex: 0 0 auto; margin-bottom: 12px; }
+.view-panel { flex: 1 1 auto; min-height: 0; height: auto; }
+
+/* 面板内非表格结构的滚动区（如按前缀分组的映射列表） */
+.fill-view .fill-scroll,
+.view-panel .fill-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* 居中的表格列（表头与单元格都要加） */
+table .col-center { text-align: center; }
+
 /* 统一纵向间距：用 gap，不用相邻兄弟 margin */
 .stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
@@ -378,6 +403,13 @@ tbody tr:hover td { background: color-mix(in srgb, var(--text) 3%, transparent);
 
 .segmented button:hover { color: var(--text); }
 .segmented button.on { background: var(--accent); color: var(--accent-contrast); font-weight: 600; }
+
+/* 紧凑变体：用在卡片右上角这类空间有限的位置 */
+.segmented-sm { padding: 2px; gap: 2px; }
+.segmented-sm button { font-size: 11.5px; padding: 3px 9px; }
+
+/* 当前排序依据对应的那个数字点亮，另一个保持 dim */
+.metric-on { color: var(--text); font-weight: 600; }
 
 /* ---------------------------------------------------------------- 表单 */
 

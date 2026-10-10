@@ -2264,8 +2264,46 @@ async function main() {
       settings: [{ key: 'timezone', value: 'UTC' }]
     })
 
+    // ---------------------------------------------------------- Top 榜单排序
+    section('㉘ Top 榜单的排序依据（次数 / 用量）')
+
+    const byReq = await apiCall('GET', '/api/stats/overview?range=today&sortBy=requests')
+    const byTok = await apiCall('GET', '/api/stats/overview?range=today&sortBy=tokens')
+    check('统计回报本次排序依据', () => {
+      assert.equal(byReq.body.sortBy, 'requests')
+      assert.equal(byTok.body.sortBy, 'tokens')
+    })
+    check('按次数排序：Top 模型按次数递减', () => {
+      const rows = byReq.body.topModels
+      for (let i = 1; i < rows.length; i++) {
+        assert.ok(rows[i - 1].requests >= rows[i].requests, JSON.stringify(rows))
+      }
+    })
+    check('按用量排序：Top 模型按 token 递减', () => {
+      const rows = byTok.body.topModels
+      for (let i = 1; i < rows.length; i++) {
+        assert.ok(rows[i - 1].tokens >= rows[i].tokens, JSON.stringify(rows))
+      }
+    })
+    check('候选集同时覆盖两种排序（三张卡片都能本地切换）', () => {
+      // 后端返回的是候选集，两种排序的成员应完全一致，只是顺序不同
+      for (const key of ['topModels', 'topChannels', 'topKeys']) {
+        const a = byReq.body[key].map((x) => x.name).sort()
+        const b = byTok.body[key].map((x) => x.name).sort()
+        assert.deepEqual(a, b, `${key} 两种排序的候选集不一致`)
+      }
+    })
+    check('每条候选都同时带次数与 token', () => {
+      for (const row of byReq.body.topModels) {
+        assert.equal(typeof row.requests, 'number')
+        assert.equal(typeof row.tokens, 'number')
+      }
+    })
+    const badSort = await apiCall('GET', '/api/stats/overview?range=today&sortBy=bogus')
+    check('非法 sortBy 被拒（400）', () => assert.equal(badSort.status, 400))
+
     // ---------------------------------------------------------- HTTP 代理
-    section('㉘ HTTP 代理配置与「渠道是否走代理」')
+    section('㉙ HTTP 代理配置与「渠道是否走代理」')
 
     const proxyCreate = await apiCall('POST', '/api/proxies', {
       name: `smoke-proxy-${RUN}`,
@@ -2393,7 +2431,7 @@ async function main() {
     await apiCall('POST', '/api/model-routes/purge', { alias: proxyAlias })
 
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉙ 密钥不泄漏到日志')
+    section('㉚ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2405,7 +2443,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉚ 清理测试数据')
+    section('㉛ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

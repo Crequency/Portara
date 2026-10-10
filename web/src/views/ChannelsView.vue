@@ -34,6 +34,14 @@ const saving = ref(false)
 const editingId = ref<string | null>(null)
 const testResults = reactive<Record<string, ChannelTestResult | 'loading'>>({})
 
+/** 页内 Tabs：上游渠道 / 模型映射 */
+type PageTab = 'channels' | 'mapping'
+const tab = ref<PageTab>('channels')
+
+/** 「测试全部」的进度 */
+const testingAll = ref(false)
+const testAllProgress = reactive({ done: 0, total: 0 })
+
 const form = reactive({
   name: '',
   baseUrl: '',
@@ -603,6 +611,33 @@ async function copyRawModelsBody(): Promise<void> {
   }
 }
 
+/**
+ * 一键测试所有渠道的延迟。
+ *
+ * **顺序执行**，不并发：并发探测会让本机与其出口互相抢带宽，
+ * 测出来的延迟就不再是各渠道自身的表现。顺序执行也顺带给了进度。
+ * 单个渠道失败不中断整轮 —— 一键测试的价值就是一次看完。
+ */
+async function testAll(): Promise<void> {
+  if (testingAll.value || channels.value.length === 0) return
+  testingAll.value = true
+  testAllProgress.done = 0
+  testAllProgress.total = channels.value.length
+
+  let okCount = 0
+  for (const ch of channels.value) {
+    await test(ch, { silent: true })
+    const r = testResults[ch.id]
+    if (r && r !== 'loading' && r.ok) okCount += 1
+    testAllProgress.done += 1
+  }
+
+  testingAll.value = false
+  toast.success(
+    t('channels.testAllDone', { total: testAllProgress.total, ok: okCount })
+  )
+}
+
 async function submit(): Promise<void> {
   const parsedHeaders = parseHeaderLines(form.headersText)
   if (parsedHeaders.errors.length > 0) {
@@ -653,7 +688,7 @@ async function submit(): Promise<void> {
   }
 }
 
-async function test(ch: Channel): Promise<void> {
+async function test(ch: Channel, opts: { silent?: boolean } = {}): Promise<void> {
   testResults[ch.id] = 'loading'
   try {
     const res = await api.post<ChannelTestResult>('/api/channels/' + ch.id + '/test')
@@ -661,6 +696,8 @@ async function test(ch: Channel): Promise<void> {
     ch.lastLatencyMs = res.latencyMs
     ch.lastTestAt = res.testedAt ?? new Date().toISOString()
     ch.lastTestOk = res.ok
+    // 批量测试时静默：否则 N 个渠道会弹 N 条 toast 把屏幕刷满
+    if (opts.silent) return
     if (res.ok) toast.success(ch.name + ' · ' + res.latencyMs + 'ms')
     else toast.error(ch.name + ' · ' + res.message)
   } catch (err) {
@@ -674,7 +711,7 @@ async function test(ch: Channel): Promise<void> {
     ch.lastLatencyMs = 0
     ch.lastTestAt = new Date().toISOString()
     ch.lastTestOk = false
-    toast.error(t('channels.testFailed'))
+    if (!opts.silent) toast.error(t('channels.testFailed'))
   }
 }
 
@@ -712,14 +749,36 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="stack">
-    <div class="card">
+  <!-- 页内 Tabs：两个板块各自撑满内容区并在内部滚动 -->
+  <div class="view-tabs">
+    <div class="view-tabbar">
+      <div class="segmented">
+        <button :class="{ on: tab === 'channels' }" @click="tab = 'channels'">
+          {{ t('nav.channels') }}
+        </button>
+        <button :class="{ on: tab === 'mapping' }" @click="tab = 'mapping'">
+          {{ t('mapping.title') }}
+        </button>
+      </div>
+    </div>
+
+    <div v-show="tab === 'channels'" class="card fill-view view-panel">
       <div class="card-head">
         <div>
           <div class="card-title">{{ t('nav.channels') }}</div>
           <div class="dim" style="font-size: 12px">{{ t('channels.hint') }}</div>
         </div>
         <div class="row">
+          <!-- 一键测所有渠道：放在刷新按钮左侧 -->
+          <button
+            class="btn btn-sm"
+            :disabled="testingAll || channels.length === 0"
+            @click="testAll"
+          >
+            {{
+              testingAll ? t('channels.testAllProgress', testAllProgress) : t('channels.testAll')
+            }}
+          </button>
           <button class="btn btn-sm" @click="load">{{ t('common.refresh') }}</button>
           <button v-if="isAdmin()" class="btn btn-primary btn-sm" @click="openCreate">
             ＋ {{ t('channels.newChannel') }}
@@ -737,7 +796,7 @@ onMounted(async () => {
               <th>{{ t('channels.baseUrl') }}</th>
               <th>{{ t('channels.upstreamKey') }}</th>
               <th>{{ t('channels.models') }}</th>
-              <th>
+              <th class="col-center">
                 <span class="row" style="gap: 5px; display: inline-flex">
                   {{ t('channels.priority') }} / {{ t('channels.weight') }}
                   <PInfo :text="t('channels.priorityWeightHint')" />
@@ -807,7 +866,7 @@ onMounted(async () => {
                   <span v-if="ch.models.length > 3" class="tag">+{{ ch.models.length - 3 }}</span>
                 </span>
               </td>
-              <td class="nowrap">{{ ch.priority }} / {{ ch.weight }}</td>
+              <td class="nowrap col-center">{{ ch.priority }} / {{ ch.weight }}</td>
               <td>
                 <span class="badge" :class="ch.status === 'active' ? 'badge-ok' : 'badge-off'">
                   {{ ch.status === 'active' ? t('common.enabled') : t('common.disabled') }}
@@ -854,7 +913,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div class="card">
+    <div v-show="tab === 'mapping'" class="card fill-view view-panel">
       <div class="card-head">
         <div>
           <div class="card-title">{{ t('mapping.title') }}</div>
@@ -883,7 +942,7 @@ onMounted(async () => {
       </div>
 
       <div v-if="prefixGroups.length === 0" class="empty">{{ t('mapping.empty') }}</div>
-      <div v-else class="stack" style="gap: 10px">
+      <div v-else class="stack fill-scroll" style="gap: 10px">
         <div v-for="group in prefixGroups" :key="group.prefix">
           <button class="group-head" @click="toggleGroup(group.prefix)">
             <svg

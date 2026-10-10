@@ -89,6 +89,8 @@ const rangeQuery = z.object({
   to: z.string().optional(),
   /** 可选：只看某个渠道的流量（渠道详情页用） */
   channelId: z.string().optional(),
+  /** Top 榜单的排序依据：调用次数 / 已用 token */
+  sortBy: z.enum(['requests', 'tokens']).default('requests'),
   /**
    * 可选：请求方时区（IANA 名）。
    * 前端会带上**浏览器时区**，于是面板里的「今日」就是用户眼里的今日；
@@ -193,33 +195,56 @@ logRoutes.get('/stats/overview', async (c) => {
   `)
   const r = resourceRows[0] ?? {}
 
+  /**
+   * Top 榜单：三种 kind 各取前 5。
+   *
+   * 用窗口函数按 kind 分别排名，而不是先全局 limit ——
+   * 原来的 `limit 15` 是全局限额，某个 kind 占满 15 条时另外两个就取不满 5 条。
+   * 同时把「按次数」与「按 token」两套排名一次算出来（只多扫一遍，省一次查询）。
+   */
   const topRows = await query<{
     kind: string
     name: string
     requests: string
     tokens: string
   }>(
-    `select kind, name, count(*)::text as requests, coalesce(sum(total_tokens),0)::text as tokens
-       from (
-         select 'model'   as kind, model          as name, total_tokens from request_logs
-          where ts >= $1 and ts <= $2 and model <> '' and ($3::uuid is null or channel_id = $3)
-         union all
-         select 'channel' as kind, channel_name   as name, total_tokens from request_logs
-          where ts >= $1 and ts <= $2 and channel_name <> '' and ($3::uuid is null or channel_id = $3)
-         union all
-         select 'key'     as kind, api_key_name   as name, total_tokens from request_logs
-          where ts >= $1 and ts <= $2 and api_key_name <> '' and ($3::uuid is null or channel_id = $3)
-       ) x
-      group by kind, name
-      order by count(*) desc
-      limit 15`,
+    `with agg as (
+       select kind, name, count(*) as requests, coalesce(sum(total_tokens), 0) as tokens
+         from (
+           select 'model'   as kind, model          as name, total_tokens from request_logs
+            where ts >= $1 and ts <= $2 and model <> '' and ($3::uuid is null or channel_id = $3)
+           union all
+           select 'channel' as kind, channel_name   as name, total_tokens from request_logs
+            where ts >= $1 and ts <= $2 and channel_name <> '' and ($3::uuid is null or channel_id = $3)
+           union all
+           select 'key'     as kind, api_key_name   as name, total_tokens from request_logs
+            where ts >= $1 and ts <= $2 and api_key_name <> '' and ($3::uuid is null or channel_id = $3)
+         ) x
+        group by kind, name
+     ),
+     ranked as (
+       select *,
+              row_number() over (partition by kind order by requests desc, name asc) as rn_req,
+              row_number() over (partition by kind order by tokens   desc, name asc) as rn_tok
+         from agg
+     )
+     select kind, name, requests::text as requests, tokens::text as tokens
+       from ranked
+      where rn_req <= 5 or rn_tok <= 5`,
     params
   )
 
+  const sortBy = q.sortBy
   const top = (kind: string) =>
     topRows
       .filter((row) => row.kind === kind)
-      .slice(0, 5)
+      .sort((a, b) =>
+        sortBy === 'tokens'
+          ? num(b.tokens) - num(a.tokens) || a.name.localeCompare(b.name)
+          : num(b.requests) - num(a.requests) || a.name.localeCompare(b.name)
+      )
+      // 返回候选集（每类最多 10 条 = 两种排序各自的前 5），
+      // 调用方可自行再排序；面板据此实现「零延迟切换排序依据」
       .map((row) => ({
         name: row.name,
         requests: num(row.requests),
@@ -248,6 +273,7 @@ logRoutes.get('/stats/overview', async (c) => {
       activeChannels: num(r.active_channels),
       keys: num(r.keys)
     },
+    sortBy,
     topModels: top('model'),
     topChannels: top('channel'),
     topKeys: top('key')

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   api,
   type RangePreset,
@@ -7,7 +7,6 @@ import {
   type SeriesPoint,
   type StatsOverview,
   type StatsSeries,
-  type TopEntry,
   type User
 } from '../api'
 import { formatCompact, formatLatency, formatNumber, formatPercent, formatTime } from '../format'
@@ -72,11 +71,48 @@ const rangeLabel = computed(() => {
   return fmt(from) + ' → ' + fmt(to)
 })
 
+/**
+ * Top 卡片的排序依据（每张卡片独立切换）。
+ *
+ * 后端返回的是**候选集**（每类最多 10 条 = 两种排序各自的前 5），
+ * 所以切换排序纯属本地重排，不需要再请求一次。
+ */
+type TopSort = 'requests' | 'tokens'
+const topSort = reactive<Record<'models' | 'channels' | 'keys', TopSort>>({
+  models: 'requests',
+  channels: 'requests',
+  keys: 'requests'
+})
+
 const topBlocks = computed(() => [
-  { title: t('overview.topModels'), rows: stats.value?.topModels ?? [] },
-  { title: t('overview.topChannels'), rows: stats.value?.topChannels ?? [] },
-  { title: t('overview.topKeys'), rows: stats.value?.topKeys ?? [] }
+  { key: 'models' as const, title: t('overview.topModels'), rows: stats.value?.topModels ?? [] },
+  { key: 'channels' as const, title: t('overview.topChannels'), rows: stats.value?.topChannels ?? [] },
+  { key: 'keys' as const, title: t('overview.topKeys'), rows: stats.value?.topKeys ?? [] }
 ])
+
+/** 按指定依据排序并取前 5 */
+function sortedTop(key: 'models' | 'channels' | 'keys'): {
+  name: string
+  requests: number
+  tokens: number
+}[] {
+  const rows = topBlocks.value.find((b) => b.key === key)?.rows ?? []
+  const metric = topSort[key]
+  return [...rows]
+    .sort((a, b) =>
+      metric === 'tokens'
+        ? b.tokens - a.tokens || a.name.localeCompare(b.name)
+        : b.requests - a.requests || a.name.localeCompare(b.name)
+    )
+    .slice(0, 5)
+}
+
+/** 当前排序依据下的最大值，用于柱长归一化 */
+function topMax(key: 'models' | 'channels' | 'keys'): number {
+  const rows = sortedTop(key)
+  const metric = topSort[key]
+  return Math.max(1, ...rows.map((r) => (metric === 'tokens' ? r.tokens : r.requests)))
+}
 
 function rangeQuery(): string {
   if (preset.value === 'custom' && appliedCustom.value) {
@@ -139,10 +175,6 @@ function applyCustom(): void {
   }
   appliedCustom.value = { from: customFrom.value, to: customTo.value }
   void load()
-}
-
-function maxOf(list: TopEntry[]): number {
-  return Math.max(1, ...list.map((x) => x.requests))
 }
 
 onMounted(load)
@@ -298,26 +330,54 @@ onMounted(load)
     </div>
 
     <div class="grid grid-3">
-      <div v-for="block in topBlocks" :key="block.title" class="card">
+      <div v-for="block in topBlocks" :key="block.key" class="card">
         <div class="card-head">
           <div class="card-title">{{ block.title }}</div>
+          <!-- 右上角：切换排序依据（本地重排，不重新请求） -->
+          <div class="segmented segmented-sm" :title="t('overview.sortHint')">
+            <button
+              :class="{ on: topSort[block.key] === 'requests' }"
+              @click="topSort[block.key] = 'requests'"
+            >
+              {{ t('overview.sortByRequestsShort') }}
+            </button>
+            <button
+              :class="{ on: topSort[block.key] === 'tokens' }"
+              @click="topSort[block.key] = 'tokens'"
+            >
+              {{ t('overview.sortByTokensShort') }}
+            </button>
+          </div>
         </div>
-        <div v-if="block.rows.length === 0" class="empty">{{ t('common.empty') }}</div>
+
+        <div v-if="sortedTop(block.key).length === 0" class="empty">
+          {{ t('common.empty') }}
+        </div>
         <div v-else class="form-grid" style="gap: 10px">
-          <div v-for="row in block.rows" :key="row.name">
+          <div v-for="row in sortedTop(block.key)" :key="row.name">
             <div class="row-between" style="font-size: 12.5px">
               <span class="mono" style="overflow: hidden; text-overflow: ellipsis">
                 {{ row.name }}
               </span>
-              <span class="dim nowrap">
-                {{ t('overview.times', { n: row.requests }) }} ·
-                {{ formatCompact(row.tokens) }} tok
+              <!-- 两个数字都给，把当前排序依据的那个点亮 -->
+              <span class="nowrap">
+                <span :class="topSort[block.key] === 'requests' ? 'metric-on' : 'dim'">
+                  {{ t('overview.times', { n: row.requests }) }}
+                </span>
+                <span class="dim"> · </span>
+                <span :class="topSort[block.key] === 'tokens' ? 'metric-on' : 'dim'">
+                  {{ formatCompact(row.tokens) }} tok
+                </span>
               </span>
             </div>
             <div style="height: 4px; background: var(--bg-elev-2); border-radius: 3px; margin-top: 4px">
               <div
                 :style="{
-                  width: (row.requests / maxOf(block.rows)) * 100 + '%',
+                  width:
+                    ((topSort[block.key] === 'tokens' ? row.tokens : row.requests) /
+                      topMax(block.key)) *
+                      100 +
+                    '%',
                   height: '100%',
                   background: 'var(--accent)',
                   borderRadius: '3px'
