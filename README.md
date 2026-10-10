@@ -96,8 +96,13 @@ docker compose --profile app up -d --build
 ### 4. 天天开发
 
 ```bash
-pnpm dev            # 后端（tsx watch，52740）
+pnpm dev            # 后端（tsx watch 热重载，52740）
 pnpm dev:web        # 前端（vite，52741，自动代理 /api 与 /v1 到 52740）
+
+# 注意：DevHub 里登记的 api 命令跑的是 `pnpm start`（构建产物，pid 稳定，
+# 这样 devctl restart 才可靠）。**改完服务端源码必须先 `pnpm build` 再重启**，
+# 否则 52740 上仍是旧产物。要热重载就用上面的 `pnpm dev`，但那个进程
+# 无法被 devctl 可靠地 stop/restart（详见 DECISIONS D-037）。
 ```
 
 > **可复现性检查**：`pnpm test`（单元测试）与 `pnpm smoke`（端到端冒烟，
