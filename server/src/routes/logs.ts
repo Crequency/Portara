@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { query } from '../db.js'
 import { badRequest, parseQuery } from '../lib/http.js'
+import { getSetting, isValidTimeZone } from '../services/settings.js'
 import { requireAuth } from '../middleware/auth.js'
 import type { RequestLogRow } from '../types.js'
 
@@ -87,8 +88,23 @@ const rangeQuery = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   /** 可选：只看某个渠道的流量（渠道详情页用） */
-  channelId: z.string().optional()
+  channelId: z.string().optional(),
+  /**
+   * 可选：请求方时区（IANA 名）。
+   * 前端会带上**浏览器时区**，于是面板里的「今日」就是用户眼里的今日；
+   * 不传则回落到系统设置里的网关时区。
+   */
+  tz: z.string().max(64).optional()
 })
+
+/**
+ * 决定本次查询用哪个时区做「按天」的口径。
+ * 请求方指定且合法 → 用它；否则用网关时区设置。
+ */
+async function resolveQueryTimeZone(requested?: string): Promise<string> {
+  if (requested && isValidTimeZone(requested)) return requested
+  return getSetting('timezone')
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -97,8 +113,16 @@ interface Bounds {
   to: string
 }
 
+/**
+ * 算出一个范围的起止（UTC 瞬时）。
+ *
+ * 关键：`from` 必须是**指定时区**的当地 00:00，再转回 UTC 瞬时。
+ * 此前直接用 `date_trunc('day', now())`（库会话时区 = UTC），
+ * 导致 UTC+8 的用户选「今日」时会丢掉本地 00:00–08:00 的数据。
+ */
 async function resolveBounds(
   range: 'today' | '7d' | '30d' | 'custom',
+  tz: string,
   from?: string,
   to?: string
 ): Promise<Bounds> {
@@ -112,16 +136,17 @@ async function resolveBounds(
     return { from: f.toISOString(), to: t.toISOString() }
   }
 
-  // 交给数据库算边界，保证与 request_logs.ts 的 date_trunc 口径一致
+  // 交给数据库算边界：先把 now() 换算到目标时区的当地墙钟，取当地日界，
+  // 再转回 timestamptz。这样「今日」在不同时区都从各自当地 00:00 起算。
   const rows = await query<{ from_ts: string; to_ts: string }>(
     `select
        case $1
-         when 'today' then date_trunc('day', now())
-         when '7d'    then date_trunc('day', now()) - interval '6 days'
-         when '30d'   then date_trunc('day', now()) - interval '29 days'
+         when 'today' then (date_trunc('day', now() at time zone $2)) at time zone $2
+         when '7d'    then (date_trunc('day', now() at time zone $2) - interval '6 days') at time zone $2
+         when '30d'   then (date_trunc('day', now() at time zone $2) - interval '29 days') at time zone $2
        end as from_ts,
        now() as to_ts`,
-    [range]
+    [range, tz]
   )
   const row = rows[0]!
   return { from: row.from_ts, to: row.to_ts }
@@ -134,7 +159,8 @@ const num = (v: unknown): number => {
 
 logRoutes.get('/stats/overview', async (c) => {
   const q = parseQuery(c, rangeQuery)
-  const { from, to } = await resolveBounds(q.range, q.from, q.to)
+  const tz = await resolveQueryTimeZone(q.tz)
+  const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
   const params = [from, to, channelFilter]
 
@@ -202,6 +228,7 @@ logRoutes.get('/stats/overview', async (c) => {
 
   return c.json({
     range: { preset: q.range, from, to },
+    timezone: tz,
     totals: {
       requests,
       errors,
@@ -229,33 +256,55 @@ logRoutes.get('/stats/overview', async (c) => {
 
 logRoutes.get('/stats/series', async (c) => {
   const q = parseQuery(c, rangeQuery)
-  const { from, to } = await resolveBounds(q.range, q.from, q.to)
+  const tz = await resolveQueryTimeZone(q.tz)
+  const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
   // 跨度 ≤ 48 小时按小时分桶，否则按天 —— 否则今日范围只会有一个点
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
   const hourly = spanHours <= 48
   const interval = hourly ? '1 hour' : '1 day'
+  const gran = hourly ? 'hour' : 'day'
   const labelFormat = hourly ? 'MM-DD HH24:00' : 'MM-DD'
 
+  // 分桶要在**目标时区**里生成：先把起止换算成当地墙钟、取当地整点/日界，
+  // 再逐个转回 timestamptz。桶的结束取下一个桶的开始（而不是 +24h），
+  // 这样夏令时切换那天（23/25 小时）也切得准。
   const rows = await query<{ label: string; requests: number; tokens: string; errors: number }>(
     `
-    select to_char(bucket, $4) as label,
+    with bucket_starts as (
+      select (b at time zone $6) as bucket_start
+        from generate_series(
+          date_trunc($4, ($1::timestamptz at time zone $6)),
+          date_trunc($4, ($2::timestamptz at time zone $6)),
+          $3::interval
+        ) as b
+    ),
+    spans as (
+      select bucket_start,
+             coalesce(
+               lead(bucket_start) over (order by bucket_start),
+               bucket_start + $3::interval
+             ) as bucket_end
+        from bucket_starts
+    )
+    select to_char(s.bucket_start at time zone $6, $5) as label,
            coalesce(count(l.id), 0)::int as requests,
            coalesce(sum(l.total_tokens), 0)::text as tokens,
            coalesce(count(l.id) filter (where l.status_code >= 400), 0)::int as errors
-      from generate_series($1::timestamptz, $2::timestamptz, $3::interval) as bucket
+      from spans s
       left join request_logs l
-             on l.ts >= bucket and l.ts < bucket + $3::interval
-            and ($5::uuid is null or l.channel_id = $5)
-     group by bucket
-     order by bucket asc
+             on l.ts >= s.bucket_start and l.ts < s.bucket_end
+            and ($7::uuid is null or l.channel_id = $7)
+     group by s.bucket_start
+     order by s.bucket_start asc
     `,
-    [from, to, interval, labelFormat, channelFilter]
+    [from, to, interval, gran, labelFormat, tz, channelFilter]
   )
 
   return c.json({
     granularity: hourly ? 'hour' : 'day',
+    timezone: tz,
     range: { preset: q.range, from, to },
     series: rows.map((row) => ({
       day: row.label,

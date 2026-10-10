@@ -11,11 +11,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, type GatewaySettings } from '../api'
 import PCheckbox from '../components/PCheckbox.vue'
+import PCombobox from '../components/PCombobox.vue'
+import { CLIENT_TZ, timeZoneOptions } from '../time'
 import { loadMeta } from '../meta'
 import { toast } from '../toast'
 import { useI18n } from '../i18n'
 
 const { t } = useI18n()
+
+/** 可搜索的 IANA 时区列表（约 400 项，故用可过滤的下拉） */
+const zoneOptions = timeZoneOptions()
 
 const loading = ref(true)
 const saving = ref(false)
@@ -31,7 +36,8 @@ const form = ref<GatewaySettings>({
   allowDirectChannelTest: true,
   logRetentionDays: 0,
   defaultChannelTimeoutMs: 120000,
-  defaultKeyRpmLimit: 60
+  defaultKeyRpmLimit: 60,
+  timezone: 'UTC'
 })
 
 const dirty = computed(() => {
@@ -154,6 +160,23 @@ onMounted(load)
       </div>
 
       <div class="form-grid">
+        <div class="field">
+          <div class="row-between">
+            <label>{{ t('settings.timezone') }}</label>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :disabled="form.timezone === CLIENT_TZ"
+              @click="form.timezone = CLIENT_TZ"
+            >
+              {{ t('settings.timezoneUseBrowser') }}
+            </button>
+          </div>
+          <PCombobox v-model="form.timezone" :options="zoneOptions" placeholder="Asia/Shanghai" />
+          <span class="hint">{{ t('settings.timezoneHint') }}</span>
+          <span class="hint">{{ t('settings.timezoneBrowser', { tz: CLIENT_TZ }) }}</span>
+        </div>
+
         <div class="field">
           <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
             <PCheckbox v-model="form.allowDirectChannelTest" />

@@ -12,6 +12,7 @@ import {
 } from '../api'
 import { formatCompact, formatLatency, formatNumber, formatPercent, formatTime } from '../format'
 import { useI18n } from '../i18n'
+import { CLIENT_TZ, tzQueryParam } from '../time'
 import { toast } from '../toast'
 
 defineProps<{ user?: User }>()
@@ -85,8 +86,11 @@ function rangeQuery(): string {
       to: new Date(appliedCustom.value.to).toISOString()
     }).toString()
   }
-  return 'range=' + preset.value
+  return 'range=' + preset.value + '&' + tzQueryParam()
 }
+
+/** 本次统计实际使用的时区：以服务端回报为准（它可能回落到网关设置） */
+const effectiveTz = computed(() => stats.value?.timezone ?? CLIENT_TZ)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -181,6 +185,11 @@ onMounted(load)
           <span>{{ rangeLabel }}</span>
           <span>·</span>
           <span>{{ granularity === 'hour' ? t('overview.perHour') : t('overview.perDay') }}</span>
+          <span>·</span>
+          <!-- 让用户明确知道统计口径用的是哪个时区，否则改了设置也看不出来 -->
+          <span :title="t('overview.timezoneLabel') + '：' + effectiveTz">
+            {{ t('overview.timezoneLabel') }} {{ effectiveTz }}
+          </span>
           <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
             {{ t('common.refresh') }}
           </button>

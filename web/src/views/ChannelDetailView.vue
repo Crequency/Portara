@@ -25,6 +25,7 @@ import Modal from '../components/Modal.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatCompact, formatLatency, formatNumber, formatPercent, formatTime } from '../format'
 import { useI18n } from '../i18n'
+import { CLIENT_TZ, tzQueryParam } from '../time'
 import { toast } from '../toast'
 
 const props = defineProps<{ user?: User; channelId: string }>()
@@ -113,7 +114,7 @@ async function loadChannel(): Promise<void> {
 }
 
 async function loadStats(): Promise<void> {
-  const q = 'range=' + preset.value + '&channelId=' + props.channelId
+  const q = 'range=' + preset.value + '&channelId=' + props.channelId + '&' + tzQueryParam()
   try {
     const [s, se, lg] = await Promise.all([
       api.get<StatsOverview>('/api/stats/overview?' + q),
@@ -357,6 +358,9 @@ onMounted(loadChannel)
     <div class="card">
       <div class="card-head">
         <div class="card-title">{{ t('channelDetail.usage') }}</div>
+        <span class="dim" style="font-size: 11.5px; margin-left: auto; margin-right: 10px">
+          {{ t('overview.timezoneLabel') }} {{ stats?.timezone ?? CLIENT_TZ }}
+        </span>
         <div style="width: 150px">
           <PSelect v-model="preset" :options="rangeOptions" size="sm" align="end" />
         </div>

@@ -1,11 +1,11 @@
+import { formatInTimeZone } from './time'
+
+/**
+ * 格式化时间 —— 按**浏览器时区**展示。
+ * 实现放在 time.ts 里，与查询口径共用同一套时区逻辑，避免两处各写一份。
+ */
 export function formatTime(iso: string | null): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return formatInTimeZone(iso)
 }
 
 export function formatNumber(n: number | null | undefined): string {

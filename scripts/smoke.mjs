@@ -2131,8 +2131,95 @@ async function main() {
       )
     })
 
+    // ---------------------------------------------------------- 时区
+    section('㉗ 时区：UTC 存储 + 按请求方时区聚合')
+
+    /** 某时刻在指定时区的「当地墙钟」 */
+    const localParts = (iso, tz) => {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      }).formatToParts(new Date(iso))
+      const g = (t) => parts.find((x) => x.type === t)?.value ?? ''
+      return `${g('year')}-${g('month')}-${g('day')} ${g('hour')}:${g('minute')}`
+    }
+
+    const tzUtc = await apiCall('GET', '/api/stats/overview?range=today&tz=UTC')
+    const tzSh = await apiCall('GET', '/api/stats/overview?range=today&tz=Asia%2FShanghai')
+    check('统计回报本次实际使用的时区', () => {
+      assert.equal(tzUtc.body.timezone, 'UTC')
+      assert.equal(tzSh.body.timezone, 'Asia/Shanghai')
+    })
+    check('起算点是该时区的当地 00:00', () => {
+      assert.match(localParts(tzUtc.body.range.from, 'UTC'), /00:00$/)
+      assert.match(localParts(tzSh.body.range.from, 'Asia/Shanghai'), /00:00$/)
+    })
+    check('不同时区的「今日」起点不同（UTC 与 UTC+8 差 8 小时）', () => {
+      const diff =
+        new Date(tzUtc.body.range.from).getTime() - new Date(tzSh.body.range.from).getTime()
+      assert.equal(diff, 8 * 3600 * 1000)
+    })
+    check('起点仍是 UTC 瞬时（存储一律 UTC）', () => {
+      // ISO 串必须带 Z（UTC），而不是当地时间的裸串
+      assert.ok(String(tzSh.body.range.from).endsWith('Z'), tzSh.body.range.from)
+    })
+
+    const badTz = await apiCall('GET', '/api/stats/overview?range=today&tz=Not%2FAZone')
+    check('非法时区参数回落到网关设置，不报错', () =>
+      assert.equal(badTz.body.timezone, 'UTC')
+    )
+
+    // 网关时区设置：无 tz 参数时的默认口径
+    const setTz = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'timezone', value: 'Asia/Shanghai' }]
+    })
+    check('可设置网关时区', () => assert.equal(setTz.body.settings.timezone, 'Asia/Shanghai'))
+    const noTz = await apiCall('GET', '/api/stats/overview?range=today')
+    check('不传 tz 时用网关时区设置', () => assert.equal(noTz.body.timezone, 'Asia/Shanghai'))
+    const browserWins = await apiCall('GET', '/api/stats/overview?range=today&tz=UTC')
+    check('传了 tz 时以请求方为准（浏览器时区覆盖网关设置）', () =>
+      assert.equal(browserWins.body.timezone, 'UTC')
+    )
+    const badZoneSetting = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'timezone', value: 'Not/AZone' }]
+    })
+    check('非法时区设置被拒（400）', () => assert.equal(badZoneSetting.status, 400))
+
+    // 分桶：按请求时区的日界
+    const shSeries = await apiCall('GET', '/api/stats/series?range=7d&tz=Asia%2FShanghai')
+    const utcSeries = await apiCall('GET', '/api/stats/series?range=7d&tz=UTC')
+    check('趋势序列回报时区', () => {
+      assert.equal(shSeries.body.timezone, 'Asia/Shanghai')
+      assert.equal(utcSeries.body.timezone, 'UTC')
+    })
+    check('7 天在两个时区都是 7 个日桶', () => {
+      assert.equal(shSeries.body.series.length, 7)
+      assert.equal(utcSeries.body.series.length, 7)
+    })
+    check('日桶标签按各自时区的当地日期', () => {
+      const shLast = shSeries.body.series.at(-1).day
+      const utcLast = utcSeries.body.series.at(-1).day
+      // 上海比 UTC 早 8 小时，同一时刻的当地日期可能差一天
+      assert.match(shLast, /^\d{2}-\d{2}$/)
+      assert.match(utcLast, /^\d{2}-\d{2}$/)
+      assert.equal(shLast, localParts(tzSh.body.range.to, 'Asia/Shanghai').slice(5, 10))
+    })
+    // 今日按小时分桶时，标签是当地整点
+    const shToday = await apiCall('GET', '/api/stats/series?range=today&tz=Asia%2FShanghai')
+    check('今日按小时分桶且标签为当地整点', () => {
+      assert.equal(shToday.body.granularity, 'hour')
+      assert.ok(shToday.body.series.length > 0)
+      assert.match(shToday.body.series[0].day, /^\d{2}-\d{2} \d{2}:00$/)
+      assert.ok(shToday.body.series[0].day.endsWith('00:00'), shToday.body.series[0].day)
+    })
+
+    // 还原网关时区，避免影响后续断言
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'timezone', value: 'UTC' }]
+    })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉗ 密钥不泄漏到日志')
+    section('㉘ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2144,7 +2231,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉘ 清理测试数据')
+    section('㉙ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

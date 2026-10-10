@@ -23,6 +23,17 @@ export interface GatewaySettings {
   defaultChannelTimeoutMs: number
   /** 签发新密钥时预填的每分钟请求上限；0 = 不限 */
   defaultKeyRpmLimit: number
+  /**
+   * 网关时区（IANA 名，如 Asia/Shanghai）。
+   *
+   * 用途：**服务端按天聚合的默认边界** —— 统计的「今日/7天/30天」预设、
+   * 趋势分桶的日界。
+   *
+   * 注意：**日志始终以 UTC 存储**（timestamptz），这里只影响「哪一刻算一天的开始」。
+   * 面板展示时区由**浏览器**决定（前端会带上自己的时区覆盖此项），
+   * 本项是无浏览器上下文的调用方（API 消费者、运维脚本）的默认值。
+   */
+  timezone: string
 }
 
 export type SettingGroup = 'brand' | 'gateway'
@@ -31,6 +42,22 @@ interface SettingDef<K extends keyof GatewaySettings> {
   schema: z.ZodType<GatewaySettings[K]>
   default: GatewaySettings[K]
   group: SettingGroup
+}
+
+/**
+ * 是否是合法的 IANA 时区名。
+ *
+ * 用 `Intl` 实际构造一次来判定 —— 比维护一份时区列表可靠，
+ * 且会自动跟随运行时的 tzdata。
+ */
+export function isValidTimeZone(tz: string): boolean {
+  if (!tz || tz.length > 64) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
@@ -58,6 +85,17 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
     // 默认 60 与既有签发表单的预填值一致 —— 引入设置不该悄悄改变行为
     schema: z.coerce.number().int().min(0).max(1_000_000),
     default: 60,
+    group: 'gateway'
+  },
+  timezone: {
+    // 默认 UTC：不改变既有行为（此前所有按天聚合都是按 UTC 日界）
+    schema: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .refine(isValidTimeZone, '不是合法的 IANA 时区名（形如 Asia/Shanghai）'),
+    default: 'UTC',
     group: 'gateway'
   }
 }

@@ -55,6 +55,8 @@ export interface GatewaySettings {
   logRetentionDays: number
   defaultChannelTimeoutMs: number
   defaultKeyRpmLimit: number
+  /** 网关时区（IANA）；无浏览器上下文时的默认口径 */
+  timezone: string
 }
 
 export interface User {
@@ -211,6 +213,8 @@ export interface TopEntry {
 }
 
 export interface StatsOverview {
+  /** 本次查询实际使用的时区 */
+  timezone?: string
   range: StatsRange
   totals: StatsTotals
   resources: StatsResources
@@ -227,6 +231,8 @@ export interface SeriesPoint {
 }
 
 export interface StatsSeries {
+  /** 本次查询实际使用的时区 */
+  timezone?: string
   granularity: 'hour' | 'day'
   range: StatsRange
   series: SeriesPoint[]
