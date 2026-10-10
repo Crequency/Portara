@@ -4,6 +4,7 @@ import { ensureAdmin } from './bootstrap.js'
 import { closeDb, runMigrations } from './db.js'
 import { env, printStartupWarnings } from './env.js'
 import { closeRedis, redis } from './redis.js'
+import { getSettings, purgeOldLogs } from './services/settings.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -49,6 +50,29 @@ async function main(): Promise<void> {
   }
 
   await ensureAdmin()
+
+  /**
+   * 按「日志保留天数」定时清理。
+   *
+   * 用 setInterval 而不是 cron：单实例部署下够用，且不引入依赖。
+   * 启动时先不跑（避免刚起来就干重活），首次清理在一个周期后。
+   * unref() 让它不阻止进程退出。
+   */
+  const LOG_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000
+  const sweepLogs = async (): Promise<void> => {
+    try {
+      const retentionDays = await getSettings().then((r) => r.settings.logRetentionDays)
+      if (retentionDays <= 0) return
+      const deleted = await purgeOldLogs(retentionDays)
+      if (deleted > 0) {
+        console.log(`[portara] 已按「保留 ${retentionDays} 天」清理 ${deleted} 条请求日志`)
+      }
+    } catch (err) {
+      // 清理失败不能影响服务本身
+      console.warn('[portara] 清理请求日志失败：', err instanceof Error ? err.message : String(err))
+    }
+  }
+  setInterval(() => void sweepLogs(), LOG_SWEEP_INTERVAL_MS).unref()
 
   const app = createApp()
   const server = serve(

@@ -435,6 +435,19 @@ async function load(): Promise<void> {
   }
 }
 
+/** 系统设置里的「新建渠道默认超时」；拿不到就用内置默认 */
+const gatewayDefaults = ref<{ defaultChannelTimeoutMs: number } | null>(null)
+
+async function loadGatewayDefaults(): Promise<void> {
+  try {
+    const res = await api.get<{ settings: { defaultChannelTimeoutMs: number } }>('/api/settings')
+    gatewayDefaults.value = res.settings
+  } catch {
+    // 操作员没有系统设置权限 —— 用内置默认即可，不影响功能
+    gatewayDefaults.value = null
+  }
+}
+
 function openCreate(): void {
   editingId.value = null
   Object.assign(form, {
@@ -449,7 +462,7 @@ function openCreate(): void {
     modelsText: '',
     priority: 100,
     weight: 1,
-    timeoutMs: 120000,
+    timeoutMs: gatewayDefaults.value?.defaultChannelTimeoutMs ?? 120000,
     status: 'active',
     note: ''
   })

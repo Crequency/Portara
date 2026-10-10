@@ -1989,8 +1989,150 @@ async function main() {
     await apiCall('DELETE', `/api/channels/${plainChannelId}`)
     await apiCall('DELETE', `/api/channels/${zenId}`)
 
+    // ---------------------------------------------------------- 系统设置
+    section('㉖ 系统设置（仅管理员可见可用）')
+
+    const settingsNoAuth = await fetch(`${BASE}/api/settings`)
+    check('未登录不可读系统设置（401）', () => assert.equal(settingsNoAuth.status, 401))
+
+    const settingsAsOperator = await apiCall('GET', '/api/settings', undefined, {
+      cookie: operatorCookie
+    })
+    check('操作员不可读系统设置（403）', () => assert.equal(settingsAsOperator.status, 403))
+
+    const patchAsOperator = await apiCall(
+      'PATCH',
+      '/api/settings',
+      { settings: [{ key: 'gatewayName', value: 'hacked' }] },
+      { cookie: operatorCookie }
+    )
+    check('操作员不可改系统设置（403）', () => assert.equal(patchAsOperator.status, 403))
+
+    // 公开 meta：登录页在拿到会话之前就要显示网关名称
+    const metaRes = await fetch(`${BASE}/api/meta`)
+    const metaJson = await metaRes.json()
+    check('/api/meta 无需登录即可读（供页面标题与副标题）', () => {
+      assert.equal(metaRes.status, 200)
+      assert.equal(metaJson.productName, 'Portara')
+      assert.ok('gatewayName' in metaJson)
+    })
+    check('公开 meta 不暴露任何设置开关', () => {
+      assert.equal(metaJson.allowDirectChannelTest, undefined)
+      assert.equal(metaJson.logRetentionDays, undefined)
+    })
+
+    const settings0 = await apiCall('GET', '/api/settings')
+    check('管理员可读全部设置（含默认值）', () => {
+      assert.equal(settings0.status, 200)
+      assert.equal(settings0.body.settings.allowDirectChannelTest, true)
+      assert.equal(settings0.body.settings.logRetentionDays, 0)
+      assert.equal(settings0.body.settings.defaultChannelTimeoutMs, 120000)
+      assert.equal(settings0.body.settings.defaultKeyRpmLimit, 60)
+      assert.deepEqual(settings0.body.invalid, [])
+    })
+
+    const unknownKey = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'notARealSetting', value: 1 }]
+    })
+    check('未知设置项被明确拒绝（400）', () => assert.equal(unknownKey.status, 400))
+    const badValue = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'logRetentionDays', value: -5 }]
+    })
+    check('非法设置值被拒绝（400）', () => assert.equal(badValue.status, 400))
+    const emptyPatch = await apiCall('PATCH', '/api/settings', { settings: [] })
+    check('空更新被拒绝（400）', () => assert.equal(emptyPatch.status, 400))
+
+    // 网关名称：真的进到公开 meta
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'gatewayName', value: '冒烟网关' }]
+    })
+    const metaNamed = await (await fetch(`${BASE}/api/meta`)).json()
+    check('网关名称出现在公开 meta（标题/副标题的数据源）', () =>
+      assert.equal(metaNamed.gatewayName, '冒烟网关')
+    )
+    const tooLongName = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'gatewayName', value: 'x'.repeat(65) }]
+    })
+    check('超长网关名称被拒绝', () => assert.equal(tooLongName.status, 400))
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'gatewayName', value: '' }]
+    })
+    const metaCleared = await (await fetch(`${BASE}/api/meta`)).json()
+    check('清空网关名称后回落到空值（前端用产品名兜底）', () =>
+      assert.equal(metaCleared.gatewayName, '')
+    )
+
+    // 直连开关必须真的生效 —— 存了不生效的设置项就是骗人
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'allowDirectChannelTest', value: false }]
+    })
+    const blockedDirect = await apiCall('POST', `/api/channels/${channelId}/chat`, {
+      model: MOCK_MODEL,
+      messages: [{ role: 'user', content: 'x' }]
+    })
+    check('关闭「允许直连测试」后该入口真的被拒（403）', () => {
+      assert.equal(blockedDirect.status, 403)
+      assert.equal(blockedDirect.body?.error?.code, 'direct_test_disabled')
+    })
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'allowDirectChannelTest', value: true }]
+    })
+    const restoredDirect = await apiCall('POST', `/api/channels/${channelId}/chat`, {
+      model: MOCK_MODEL,
+      messages: [{ role: 'user', content: 'x' }]
+    })
+    check('重新打开后直连测试恢复可用', () =>
+      assert.equal(restoredDirect.status, 200)
+    )
+
+    // 日志保留：写设置 + 立即清理（保留 0 天表示永久，不该删任何东西）
+    const retentionSet = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'logRetentionDays', value: 1 }]
+    })
+    check('可设置日志保留天数', () =>
+      assert.equal(retentionSet.body.settings.logRetentionDays, 1)
+    )
+    const settingsPurge = await apiCall('POST', '/api/settings/purge-logs')
+    check('可按保留策略立即清理（并回报删除条数）', () => {
+      assert.equal(settingsPurge.status, 200)
+      assert.equal(settingsPurge.body.retentionDays, 1)
+      assert.equal(typeof settingsPurge.body.deleted, 'number')
+    })
+    // 立即还原为永久保留，避免影响后续断言
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'logRetentionDays', value: 0 }]
+    })
+    const purgeForever = await apiCall('POST', '/api/settings/purge-logs')
+    check('保留天数为 0（永久）时不删除任何记录', () => {
+      assert.equal(purgeForever.body.retentionDays, 0)
+      assert.equal(purgeForever.body.deleted, 0)
+    })
+
+    // 设置变更要留痕
+    const auditAfterSettings = await apiCall('GET', '/api/audit?limit=100')
+    const settingsEvents = (auditAfterSettings.body?.events ?? []).filter(
+      (e) => e.action === 'settings.update'
+    )
+    check('设置变更写入审计，且记录改了什么', () => {
+      assert.ok(settingsEvents.length > 0, '未找到 settings.update 审计')
+      // 审计按时间倒序，单条只含本次改的项 —— 要跨事件合并后再看
+      const changedKeys = new Set(
+        settingsEvents.flatMap((e) => Object.keys(e.detail?.changes ?? {}))
+      )
+      assert.ok(changedKeys.has('gatewayName'), `明细缺少 gatewayName：${[...changedKeys]}`)
+      assert.ok(changedKeys.has('allowDirectChannelTest'), '明细缺少 allowDirectChannelTest')
+      // 明细要含「从什么变成什么」，否则出了事回答不了「谁关的开关」
+      const sample = settingsEvents.find((e) => e.detail?.changes?.gatewayName)
+      assert.ok(
+        sample.detail.changes.gatewayName &&
+          'from' in sample.detail.changes.gatewayName &&
+          'to' in sample.detail.changes.gatewayName,
+        '明细缺少 from/to'
+      )
+    })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉖ 密钥不泄漏到日志')
+    section('㉗ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2002,7 +2144,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉗ 清理测试数据')
+    section('㉘ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

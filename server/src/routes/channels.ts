@@ -23,6 +23,7 @@ import {
   sanitizeExtraHeaders,
   withStreamUsage
 } from '../services/proxy.js'
+import { getSetting } from '../services/settings.js'
 import { toChannelDto, type ChannelRow } from '../types.js'
 
 export const channelRoutes = new Hono()
@@ -537,6 +538,15 @@ channelRoutes.post('/:id/test', async (c) => {
  * 仅管理员可用：它会消耗渠道的上游额度。诊断用途，不写 request_logs。
  */
 channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
+  // 系统设置可关闭该诊断入口（它绕过网关的鉴权/限流/配额，直连上游）
+  if (!(await getSetting('allowDirectChannelTest'))) {
+    throw new ApiError(
+      403,
+      'direct_test_disabled',
+      '系统设置中已关闭「允许直连上游测试」，如需使用请在系统设置里打开'
+    )
+  }
+
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')

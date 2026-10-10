@@ -48,6 +48,15 @@ export const api = {
 
 // ------------------------------------------------------------------ 类型
 
+/** 系统设置（与后端 services/settings.ts 的注册表一一对应） */
+export interface GatewaySettings {
+  gatewayName: string
+  allowDirectChannelTest: boolean
+  logRetentionDays: number
+  defaultChannelTimeoutMs: number
+  defaultKeyRpmLimit: number
+}
+
 export interface User {
   id: string
   username: string

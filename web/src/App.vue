@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watchEffect } from 'vue'
 import { api, type User } from './api'
 import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
 import { LOCALES, locale, setLocale, useI18n } from './i18n'
+import { loadMeta, meta, siteName } from './meta'
 import { THEME_MODES, setThemeMode, themeMode } from './theme'
 import ChannelDetailView from './views/ChannelDetailView.vue'
 import ChannelsView from './views/ChannelsView.vue'
@@ -12,6 +13,7 @@ import KeysView from './views/KeysView.vue'
 import LoginView from './views/LoginView.vue'
 import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
+import SettingsView from './views/SettingsView.vue'
 import UsersView from './views/UsersView.vue'
 
 const { t } = useI18n()
@@ -45,7 +47,8 @@ const NAV = [
   { id: 'keys', icon: 'M14 7a4 4 0 1 0-3.5 4L4 17v3h3v-2h2v-2h2l1.5-1.5', adminOnly: false },
   { id: 'chat', icon: 'M4 5h16v11H8l-4 4z', adminOnly: true },
   { id: 'users', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
-  { id: 'logs', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false }
+  { id: 'logs', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false },
+  { id: 'settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4Z', adminOnly: true }
 ] as const
 
 /** 对话测试需要读取密钥明文，仅管理员可见 */
@@ -67,6 +70,8 @@ const currentView = computed(() => {
       return UsersView
     case 'logs':
       return LogsView
+    case 'settings':
+      return SettingsView
     default:
       return OverviewView
   }
@@ -78,6 +83,30 @@ const pageTitle = computed(() =>
 const pageSub = computed(() =>
   isChannelDetail.value ? t('channelDetail.sub') : t(route.value.name + '.sub')
 )
+
+/**
+ * 当前路由是否对该用户可见。
+ *
+ * 仅靠「隐藏导航项」是不够的 —— 手动改 hash 就能进到页面壳子。
+ * 管理专属页面必须在这里拦住，否则是「看不见但进得去」，
+ * 既误导用户（页面显示着默认值），也让人以为权限控制只管导航。
+ */
+const routeAllowed = computed(() => {
+  const item = NAV.find((i) => i.id === route.value.name)
+  if (!item) return true
+  return !item.adminOnly || user.value?.role === 'admin'
+})
+
+/** 左上角副标题：设置了网关名称就显示它，否则回落到默认文案 */
+const brandSub = computed(() => meta.gatewayName.trim() || t('nav.appSub'))
+
+/**
+ * 浏览器标签标题：`网关名 · 当前页面`。
+ * 用 watchEffect 而不是 onMounted，这样在设置页改完名称能立刻反映到标签上。
+ */
+watchEffect(() => {
+  document.title = `${siteName()} · ${pageTitle.value}`
+})
 
 const languageOptions = computed(() =>
   LOCALES.map((l) => ({ value: l.value, label: l.label, hint: l.short }))
@@ -93,6 +122,8 @@ function onHash(): void {
 window.addEventListener('hashchange', onHash)
 
 onMounted(async () => {
+  // 与登录态并行拉取：登录页也要显示网关名称
+  void loadMeta()
   try {
     const res = await api.get<{ user: User }>('/api/auth/me')
     user.value = res.user
@@ -142,7 +173,7 @@ function go(id: string): void {
         </div>
         <div>
           <div class="brand-name">{{ t('nav.appName') }}</div>
-          <div class="brand-sub">{{ t('nav.appSub') }}</div>
+          <div class="brand-sub">{{ brandSub }}</div>
         </div>
       </div>
 
@@ -210,8 +241,17 @@ function go(id: string): void {
       </div>
 
       <div class="content">
+        <div v-if="!routeAllowed" class="card">
+          <div class="empty">{{ t('nav.noPermission') }}</div>
+          <div class="row" style="justify-content: center">
+            <button class="btn btn-sm" @click="go('overview')">
+              {{ t('nav.backToOverview') }}
+            </button>
+          </div>
+        </div>
+
         <ChannelDetailView
-          v-if="isChannelDetail"
+          v-else-if="isChannelDetail"
           :user="user"
           :channel-id="route.param"
         />

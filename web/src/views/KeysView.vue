@@ -82,13 +82,25 @@ async function load(): Promise<void> {
   }
 }
 
+/** 系统设置里的「新建密钥默认每分钟上限」 */
+const keyDefaults = ref<{ defaultKeyRpmLimit: number } | null>(null)
+
+async function loadKeyDefaults(): Promise<void> {
+  try {
+    const res = await api.get<{ settings: { defaultKeyRpmLimit: number } }>('/api/settings')
+    keyDefaults.value = res.settings
+  } catch {
+    keyDefaults.value = null
+  }
+}
+
 function openCreate(): void {
   Object.assign(form, {
     name: '',
     userId: props.user?.id ?? '',
     channelId: '',
     modelAllowText: '',
-    rpmLimit: 60,
+    rpmLimit: keyDefaults.value?.defaultKeyRpmLimit ?? 60,
     quotaTokens: 0,
     expiresAt: ''
   })
@@ -194,7 +206,10 @@ function quotaPercent(k: ApiKey): number {
   return Math.min(100, Math.round((k.usedTokens / k.quotaTokens) * 100))
 }
 
-onMounted(load)
+onMounted(() => {
+  void loadKeyDefaults()
+  void load()
+})
 </script>
 
 <template>

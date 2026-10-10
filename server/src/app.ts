@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { query } from './db.js'
 import { env } from './env.js'
+import { getSettings } from './services/settings.js'
 import { ApiError, errorResponse, openaiError } from './lib/http.js'
 import { redis } from './redis.js'
 import { auditRoutes } from './routes/audit.js'
@@ -10,6 +11,7 @@ import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
 import { logRoutes } from './routes/logs.js'
 import { modelRouteRoutes } from './routes/modelRoutes.js'
+import { settingsRoutes } from './routes/settings.js'
 import { userRoutes } from './routes/users.js'
 import { v1Routes } from './routes/v1.js'
 import { serveWebDist } from './static.js'
@@ -82,6 +84,19 @@ export function createApp(): Hono {
     return c.json({ ok, checks, version: VERSION }, ok ? 200 : 503)
   })
 
+  /**
+   * 公开的品牌信息 —— **登录页也要显示网关名称**，那时还没有会话。
+   * 只暴露非敏感内容，绝不放设置项全量（其中可能含安全开关）。
+   */
+  app.get('/api/meta', async (c) => {
+    const { settings } = await getSettings()
+    return c.json({
+      gatewayName: settings.gatewayName,
+      productName: 'Portara',
+      version: VERSION
+    })
+  })
+
   // ---- 前端产物（单端口部署；未构建时自动跳过）----
   app.use('*', serveWebDist(env.webDist))
 
@@ -92,6 +107,7 @@ export function createApp(): Hono {
   app.route('/api/keys', keyRoutes)
   app.route('/api/audit', auditRoutes)
   app.route('/api/model-routes', modelRouteRoutes)
+  app.route('/api/settings', settingsRoutes)
   app.route('/api', logRoutes) // /api/logs、/api/stats/*
 
   // ---- 数据面（OpenAI 兼容）----

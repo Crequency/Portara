@@ -222,5 +222,23 @@ export const migrations: { id: string; sql: string }[] = [
       -- 两者生命周期不同，混在一起必然丢配置。
       alter table channels add column if not exists model_overrides jsonb not null default '{}'::jsonb;
     `
+  },
+  {
+    id: '010_settings',
+    sql: `
+      -- 系统设置：键值表。
+      --
+      -- 为什么是键值而不是单行多列：
+      --   新增一个设置项只需加一条记录，不必再写迁移；列名与代码里的
+      --   注册表（services/settings.ts）一一对应，类型与默认值都在代码里。
+      --
+      -- 无历史数据需要迁移：这是新表，默认值由代码提供（表里没有记录 = 用默认值）。
+      create table if not exists settings (
+        key        text primary key,
+        value      jsonb not null,
+        updated_at timestamptz not null default now(),
+        updated_by text
+      );
+    `
   }
 ]
