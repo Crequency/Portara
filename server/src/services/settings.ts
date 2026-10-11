@@ -34,6 +34,13 @@ export interface GatewaySettings {
    * 本项是无浏览器上下文的调用方（API 消费者、运维脚本）的默认值。
    */
   timezone: string
+  /**
+   * 余额/用量快照的缓存时长（秒）。
+   *
+   * 存在的意义就是**避免限频** —— 各厂商的余额接口多有频率限制，
+   * 面板与 API 都不该每次都真打上游。
+   */
+  usageCacheTtlSec: number
 }
 
 export type SettingGroup = 'brand' | 'gateway'
@@ -85,6 +92,12 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
     // 默认 60 与既有签发表单的预填值一致 —— 引入设置不该悄悄改变行为
     schema: z.coerce.number().int().min(0).max(1_000_000),
     default: 60,
+    group: 'gateway'
+  },
+  usageCacheTtlSec: {
+    // 5 分钟：足够挡住面板轮询与多人同时查看，又不至于让余额看着像"卡住了"
+    schema: z.coerce.number().int().min(30).max(86_400),
+    default: 300,
     group: 'gateway'
   },
   timezone: {

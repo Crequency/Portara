@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api, ApiError, type ApiKey, type Channel, type User } from '../api'
 import Modal from '../components/Modal.vue'
+import PCheckbox from '../components/PCheckbox.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatNumber, formatTime, parseList } from '../format'
 import { useI18n } from '../i18n'
@@ -31,10 +32,17 @@ const form = reactive({
   userId: '',
   channelId: '',
   modelAllowText: '',
+  /** 余额读取权限（默认关闭：余额反映账户资金状况） */
+  usageAllow: false,
+  usageRefresh: false,
+  usageChannels: [] as string[],
   rpmLimit: 60,
   quotaTokens: 0,
   expiresAt: ''
 })
+
+/** 正在编辑的密钥 id；null = 新建 */
+const editingKeyId = ref<string | null>(null)
 
 const isAdmin = (): boolean => props.user?.role === 'admin'
 
@@ -100,9 +108,32 @@ function openCreate(): void {
     userId: props.user?.id ?? '',
     channelId: '',
     modelAllowText: '',
+    usageAllow: false,
+    usageRefresh: false,
+    usageChannels: [],
     rpmLimit: keyDefaults.value?.defaultKeyRpmLimit ?? 60,
     quotaTokens: 0,
     expiresAt: ''
+  })
+  editingKeyId.value = null
+  issuedKey.value = ''
+  showForm.value = true
+}
+
+/** 编辑已有密钥（权限只能在这里改 —— 新建后不给入口就永远改不了） */
+function openEdit(k: ApiKey): void {
+  editingKeyId.value = k.id
+  Object.assign(form, {
+    name: k.name,
+    userId: k.userId ?? '',
+    channelId: k.channelId ?? '',
+    modelAllowText: (k.modelAllow ?? []).join('\n'),
+    usageAllow: k.usageAllow ?? false,
+    usageRefresh: k.usageRefresh ?? false,
+    usageChannels: [...(k.usageChannels ?? [])],
+    rpmLimit: k.rpmLimit,
+    quotaTokens: k.quotaTokens,
+    expiresAt: k.expiresAt ? k.expiresAt.slice(0, 10) : ''
   })
   issuedKey.value = ''
   showForm.value = true
@@ -111,15 +142,28 @@ function openCreate(): void {
 async function submit(): Promise<void> {
   saving.value = true
   try {
-    const res = await api.post<{ apiKey: ApiKey; key: string }>('/api/keys', {
+    const body = {
       name: form.name.trim(),
       userId: isAdmin() ? form.userId || null : null,
       channelId: form.channelId || null,
       modelAllow: parseList(form.modelAllowText),
+      usageAllow: form.usageAllow,
+      usageRefresh: form.usageRefresh,
+      usageChannels: form.usageChannels,
       rpmLimit: Number(form.rpmLimit),
       quotaTokens: Number(form.quotaTokens),
       expiresAt: form.expiresAt || null
-    })
+    }
+
+    if (editingKeyId.value) {
+      await api.patch('/api/keys/' + editingKeyId.value, body)
+      toast.success(t('keys.updated'))
+      showForm.value = false
+      await load()
+      return
+    }
+
+    const res = await api.post<{ apiKey: ApiKey; key: string }>('/api/keys', body)
     issuedKey.value = res.key
     issuedName.value = res.apiKey.name
     toast.success(t('keys.created'))
@@ -312,6 +356,9 @@ onMounted(() => {
                   >
                     {{ t('keys.reveal') }}
                   </button>
+                  <button class="btn btn-sm" :disabled="!canManage(k)" @click="openEdit(k)">
+                    {{ t('common.edit') }}
+                  </button>
                   <button class="btn btn-sm" :disabled="!canManage(k)" @click="rotate(k)">
                     {{ t('keys.rotate') }}
                   </button>
@@ -363,7 +410,9 @@ onMounted(() => {
 
   <Modal
     v-if="showForm"
-    :title="issuedKey ? t('keys.saveTitle') : t('keys.issueTitle')"
+    :title="
+      editingKeyId ? t('keys.editTitle') : issuedKey ? t('keys.saveTitle') : t('keys.issueTitle')
+    "
     wide
     @close="showForm = false"
   >
@@ -401,6 +450,71 @@ onMounted(() => {
           <label>{{ t('keys.modelAllow') }}</label>
           <textarea v-model="form.modelAllowText" rows="2" placeholder="gpt-4o-mini" />
           <span class="hint">{{ t('keys.modelAllowHint') }}</span>
+        </div>
+
+        <!-- 余额读取权限 -->
+        <div class="field">
+          <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
+            <PCheckbox v-model="form.usageAllow" />
+            {{ t('usage.canRead') }}
+          </label>
+          <span class="hint">{{ t('usage.canReadHint') }}</span>
+        </div>
+
+        <div class="field">
+          <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
+            <PCheckbox v-model="form.usageRefresh" :disabled="!form.usageAllow" />
+            {{ t('usage.canRefresh') }}
+          </label>
+          <span class="hint">{{ t('usage.canRefreshHint') }}</span>
+        </div>
+
+        <div v-if="form.usageAllow" class="field">
+          <div class="row-between">
+            <label>{{ t('usage.visibleChannels') }}</label>
+            <div class="row">
+              <button class="btn btn-sm" @click="form.usageChannels = channels.map((c) => c.id)">
+                {{ t('usage.allChannels') }}
+              </button>
+              <button class="btn btn-sm" @click="form.usageChannels = []">
+                {{ t('usage.clearChannels') }}
+              </button>
+            </div>
+          </div>
+          <div class="batch-pick" style="max-height: 180px">
+            <div
+              v-for="c in channels.filter((x) => x.usageAdapter)"
+              :key="c.id"
+              class="batch-pick-item"
+              :class="{ on: form.usageChannels.includes(c.id) }"
+              @click="
+                form.usageChannels.includes(c.id)
+                  ? (form.usageChannels = form.usageChannels.filter((i) => i !== c.id))
+                  : form.usageChannels.push(c.id)
+              "
+            >
+              <span class="batch-pick-box">
+                <svg
+                  v-if="form.usageChannels.includes(c.id)"
+                  width="10" height="10" viewBox="0 0 12 12"
+                >
+                  <path d="M2 6.4 4.6 9 10 3.4" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="batch-name">{{ c.name }}</span>
+              <span class="spacer" />
+              <span class="batch-hint">{{ c.usageAdapter }}</span>
+            </div>
+            <div
+              v-if="channels.filter((x) => x.usageAdapter).length === 0"
+              class="psel-option-disabled"
+              style="padding: 10px"
+            >
+              {{ t('usage.notConfigured') }}
+            </div>
+          </div>
+          <span class="hint">{{ t('usage.visibleChannelsHint') }}</span>
         </div>
 
         <div class="form-row">

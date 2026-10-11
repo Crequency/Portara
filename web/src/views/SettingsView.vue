@@ -37,7 +37,8 @@ const form = ref<GatewaySettings>({
   logRetentionDays: 0,
   defaultChannelTimeoutMs: 120000,
   defaultKeyRpmLimit: 60,
-  timezone: 'UTC'
+  timezone: 'UTC',
+  usageCacheTtlSec: 300
 })
 
 const dirty = computed(() => {
@@ -194,6 +195,12 @@ onMounted(load)
             </button>
           </div>
           <span class="hint">{{ t('settings.logRetentionDaysHint') }}</span>
+        </div>
+
+        <div class="field">
+          <label>{{ t('usage.cacheTtl') }}</label>
+          <input v-model.number="form.usageCacheTtlSec" type="number" min="30" max="86400" />
+          <span class="hint">{{ t('usage.cacheTtlHint') }}</span>
         </div>
 
         <div class="grid grid-2">

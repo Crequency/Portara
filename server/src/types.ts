@@ -32,6 +32,10 @@ export interface ChannelRow {
   model_overrides: Record<string, ModelOverride>
   /** 选用的 HTTP 代理；null = 直连 */
   proxy_id: string | null
+  /** 余额/用量适配器 id；'' = 不提供余额 */
+  usage_adapter: string
+  /** 余额接口的 base 覆盖；'' = 用 adapter 默认 */
+  usage_url: string
   models: string[]
   priority: number
   weight: number
@@ -55,6 +59,12 @@ export interface ApiKeyRow {
   user_id: string | null
   channel_id: string | null
   model_allow: string[]
+  /** 是否允许读取余额/用量 */
+  usage_allow: boolean
+  /** 可见渠道范围；空数组 = 全部 */
+  usage_channels: string[]
+  /** 是否允许 ?refresh=1 强制刷新 */
+  usage_refresh: boolean
   rpm_limit: number
   quota_tokens: string | number
   used_tokens: string | number
@@ -206,6 +216,8 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     modelsMeta: ch.models_meta ?? {},
     modelOverrides: ch.model_overrides ?? {},
     proxyId: ch.proxy_id ?? null,
+    usageAdapter: ch.usage_adapter ?? '',
+    usageUrl: ch.usage_url ?? '',
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     hasApiKey: Boolean(ch.api_key_cipher),
@@ -236,6 +248,9 @@ export function toApiKeyDto(k: ApiKeyRow) {
     ownerName: k.owner_name ?? null,
     channelId: k.channel_id,
     modelAllow: k.model_allow,
+    usageAllow: k.usage_allow ?? false,
+    usageChannels: k.usage_channels ?? [],
+    usageRefresh: k.usage_refresh ?? false,
     rpmLimit: k.rpm_limit,
     quotaTokens: Number(k.quota_tokens),
     usedTokens: Number(k.used_tokens),

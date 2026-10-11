@@ -68,6 +68,70 @@ export interface ProxyConfig {
   channelCount: number
 }
 
+/** 余额快照（与后端 services/usage.ts 的 UsageSnapshot 对应） */
+export interface UsageBalance {
+  currency: string
+  unit: 'currency' | 'credits'
+  remaining: number
+  total?: number
+  granted?: number
+  toppedUp?: number
+}
+
+export interface UsageWindow {
+  key: string
+  used: number
+  total: number
+  remaining: number
+  resetAt?: string
+  exceeded?: boolean
+  /** 上限是推算出来的（上游没有这个窗口对象） */
+  inferred?: boolean
+}
+
+export interface UsagePeriod {
+  start?: string
+  end?: string
+  requests?: number
+  successRate?: number
+  tokensIn?: number
+  tokensOut?: number
+  cost?: number
+  costCurrency?: string
+}
+
+export interface UsagePlan {
+  id?: string
+  name?: string
+  status?: string
+  renewAt?: string
+  inferred?: boolean
+}
+
+export interface UsageSnapshot {
+  channelId: string
+  channelName: string
+  adapter: string
+  ok: boolean
+  error?: string
+  fetchedAt: string
+  cached: boolean
+  stale?: boolean
+  warnings: string[]
+  balances: UsageBalance[]
+  windows: UsageWindow[]
+  period?: UsagePeriod
+  plan?: UsagePlan
+  raw?: unknown
+}
+
+export interface UsageAdapterInfo {
+  id: string
+  label: string
+  note: string
+  endpoints: string[]
+}
+
 /** 系统设置（与后端 services/settings.ts 的注册表一一对应） */
 export interface GatewaySettings {
   gatewayName: string
@@ -77,6 +141,8 @@ export interface GatewaySettings {
   defaultKeyRpmLimit: number
   /** 网关时区（IANA）；无浏览器上下文时的默认口径 */
   timezone: string
+  /** 余额快照缓存时长（秒）；用于避免上游限频 */
+  usageCacheTtlSec: number
 }
 
 export interface User {
@@ -101,6 +167,10 @@ export interface Channel {
   modelOverrides: Record<string, ModelOverride>
   /** 选用的 HTTP 代理；null = 直连 */
   proxyId: string | null
+  /** 余额/用量适配器 id；'' = 不提供余额 */
+  usageAdapter: string
+  /** 余额接口 base 覆盖 */
+  usageUrl: string
   baseUrl: string
   apiKeyMasked: string
   hasApiKey: boolean
@@ -171,6 +241,12 @@ export interface ApiKey {
   ownerName: string | null
   channelId: string | null
   modelAllow: string[]
+  /** 能否读取余额/用量 */
+  usageAllow: boolean
+  /** 可见渠道范围；空 = 全部 */
+  usageChannels: string[]
+  /** 能否 ?refresh=1 强制刷新 */
+  usageRefresh: boolean
   rpmLimit: number
   quotaTokens: number
   usedTokens: number

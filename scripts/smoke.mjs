@@ -175,6 +175,58 @@ function startMockUpstream() {
         return
       }
 
+      // ---- 余额 / 用量接口（四种，与真实上游同形）----
+      if (url.endsWith('/user/balance')) {
+        // DeepSeek：金额是字符串，数组可多币种
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          is_available: true,
+          balance_infos: [{ currency: 'CNY', total_balance: '100.00',
+                            granted_balance: '0.00', topped_up_balance: '100.00' }]
+        }))
+        return
+      }
+      if (url.endsWith('/v1/users/me/balance')) {
+        // Moonshot：数值是 number
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ code: 0, scode: '0x0', status: true,
+          data: { available_balance: 10.00000, voucher_balance: 10.00000, cash_balance: 0 } }))
+        return
+      }
+      if (url.endsWith('/alpha/billing/credits')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          credits: { monthlyCredits: 0, purchasedCredits: 5.0, freeCredits: 0, belowThreshold: false },
+          windowLimits: { limited: true, exceeded: null,
+            fiveHour: { used: 0, cap: 14, exceeded: false, resetAt: 0 },
+            weekly: { used: 3.0, cap: 35, exceeded: false, resetAt: 1791859267795 } }
+        }))
+        return
+      }
+      if (url.endsWith('/alpha/billing/subscriptions')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ success: true, data: { planId: 'individual-goat', status: 'active',
+          currentPeriodStart: '2026-09-14T11:18:10.000Z',
+          currentPeriodEnd: '2026-10-14T11:18:10.000Z' } }))
+        return
+      }
+      if (url.endsWith('/alpha/usage/summary')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ totalCount: 1234, totalCost: 12.345, successRate: 99.99,
+          totalTokensIn: 1000000000, totalTokensOut: 20000000 }))
+        return
+      }
+      if (url.endsWith('/coding_plan/remains')) {
+        // MiniMax：注意 usage_count 实际是"剩余"
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ model_remains: [{ model_name: 'MiniMax-M*',
+          current_interval_total_count: 1500, current_interval_usage_count: 1200,
+          current_weekly_total_count: 15000,
+          current_weekly_usage_count: 14000, end_time: 1774605600000 }],
+          base_resp: { status_code: 0, status_msg: 'success' } }))
+        return
+      }
+
       // ---- Anthropic 协议（/messages）----
       if (url.endsWith('/messages')) {
         let body = {}
@@ -2200,10 +2252,16 @@ async function main() {
       assert.match(localParts(tzUtc.body.range.from, 'UTC'), /00:00$/)
       assert.match(localParts(tzSh.body.range.from, 'Asia/Shanghai'), /00:00$/)
     })
-    check('不同时区的「今日」起点不同（UTC 与 UTC+8 差 8 小时）', () => {
-      const diff =
-        new Date(tzUtc.body.range.from).getTime() - new Date(tzSh.body.range.from).getTime()
-      assert.equal(diff, 8 * 3600 * 1000)
+    check('不同时区的「今日」各自按当地日界（差值 8h 或 16h）', () => {
+      // 断言不能写死 8 小时 —— 这是**时间相关**的：
+      // 在 UTC 16:00–24:00 这个窗口里上海已是次日，两个「今日」相差 16 小时。
+      // 真正要保证的语义是「各自取当地 00:00」（上一条已断言），
+      // 这里只校验差值落在仅有的两种可能上。
+      const hours =
+        Math.abs(
+          new Date(tzUtc.body.range.from).getTime() - new Date(tzSh.body.range.from).getTime()
+        ) / 3_600_000
+      assert.ok([8, 16].includes(hours), `实际相差 ${hours} 小时`)
     })
     check('起点仍是 UTC 瞬时（存储一律 UTC）', () => {
       // ISO 串必须带 Z（UTC），而不是当地时间的裸串
@@ -2430,8 +2488,174 @@ async function main() {
 
     await apiCall('POST', '/api/model-routes/purge', { alias: proxyAlias })
 
+    // ---------------------------------------------------------- 余额 / 用量
+    section('㉚ 聚合余额 / 用量（适配器 + 缓存 + 权限）')
+
+    // 适配器清单
+    const usAdapters = await apiCall('GET', '/api/usage/adapters')
+    check('可列出余额适配器（供渠道弹窗选择）', () => {
+      assert.equal(usAdapters.status, 200)
+      const ids = usAdapters.body.adapters.map((a) => a.id)
+      assert.deepEqual(ids.sort(), ['commandcode', 'deepseek', 'minimax', 'moonshot'])
+      assert.ok(usAdapters.body.adapters.every((a) => a.note), '适配器应带提示文案')
+    })
+    check('未实现的两个厂商不在清单里（厂商侧无 API）', () => {
+      const ids = usAdapters.body.adapters.map((a) => a.id)
+      assert.ok(!ids.includes('opencode') && !ids.includes('kimi-coding'))
+    })
+
+    // 造四个渠道，各配一个适配器（baseUrl 用伪上游，适配器按 origin 拼路径）
+    const usageChannels = {}
+    for (const [adapter, name] of [
+      ['deepseek', `smoke-us-deepseek-${RUN}`],
+      ['moonshot', `smoke-us-moonshot-${RUN}`],
+      ['commandcode', `smoke-us-commandcode-${RUN}`],
+      ['minimax', `smoke-us-minimax-${RUN}`]
+    ]) {
+      const r = await apiCall('POST', '/api/channels', {
+        name,
+        baseUrl: `${MOCK}/v1`,
+        apiKey: UPSTREAM_KEY,
+        models: [MOCK_MODEL],
+        usageAdapter: adapter,
+        priority: 900
+      })
+      assert.equal(r.status, 201, `建渠道 ${name} 失败`)
+      usageChannels[adapter] = r.body.channel.id
+    }
+    check('渠道可保存余额适配器', () => assert.ok(Object.keys(usageChannels).length === 4))
+
+    const usAll = await apiCall('GET', '/api/usage')
+    const usSnap = (adapter) => usAll.body.providers.find((p) => p.adapter === adapter)
+    check('聚合接口返回本次四个渠道的快照', () => {
+      assert.equal(usAll.status, 200)
+      // 只校验本次创建的四个 —— 断言不能依赖全局数量，
+      // 否则上一次失败运行残留的渠道会让它误报
+      const mine = usAll.body.providers.filter((p) => p.channelName.includes(RUN))
+      assert.equal(mine.length, 4, `实际 ${mine.length} 个`)
+      assert.ok(mine.every((p) => p.ok), JSON.stringify(mine.map((p) => [p.adapter, p.error])))
+    })
+    check('deepseek：字符串金额被正确解析', () => {
+      const b = usSnap('deepseek').balances[0]
+      assert.equal(b.remaining, 100.00)
+      assert.equal(b.currency, 'CNY')
+      assert.equal(b.toppedUp, 100.00)
+    })
+    check('moonshot：可用/代金券余额解析正确', () => {
+      const b = usSnap('moonshot').balances[0]
+      assert.equal(b.remaining, 10.00000)
+      assert.equal(b.granted, 10.00000)
+    })
+    check('commandcode：余额 + 三个窗口 + 套餐 + 账期', () => {
+      const p = usSnap('commandcode')
+      assert.ok(Math.abs(p.balances[0].remaining - 4.8) < 1e-9)
+      const w = Object.fromEntries(p.windows.map((x) => [x.key, x]))
+      assert.equal(w.fiveHour.total, 14)
+      assert.equal(w.weekly.total, 35)
+      // 月度是推算的
+      assert.equal(w.monthly.total, 70)
+      assert.equal(w.monthly.inferred, true)
+      assert.equal(p.plan.id, 'individual-goat')
+      assert.equal(p.period.requests, 1234)
+    })
+    check('minimax：usage_count 按「剩余」换算成已用', () => {
+      const w = Object.fromEntries(usSnap('minimax').windows.map((x) => [x.key, x]))
+      const k = Object.keys(w).find((x) => x.includes('interval'))
+      assert.equal(w[k].total, 1500)
+      assert.equal(w[k].remaining, 1200)
+      assert.equal(w[k].used, 300)
+    })
+
+    // 缓存
+    const usCached = await apiCall('GET', `/api/channels/${usageChannels.deepseek}/usage`)
+    check('第二次读取命中缓存（避免限频）', () => assert.equal(usCached.body.cached, true))
+    const usForced = await apiCall('GET', `/api/channels/${usageChannels.deepseek}/usage?refresh=1`)
+    check('管理面可强制刷新', () => assert.equal(usForced.body.cached, false))
+
+    // 改配置后缓存必须失效，否则返回旧口径
+    await apiCall('PATCH', `/api/channels/${usageChannels.deepseek}`, { usageAdapter: 'moonshot' })
+    const usAfterChange = await apiCall('GET', `/api/channels/${usageChannels.deepseek}/usage`)
+    check('改适配器后缓存失效（不返回旧口径）', () => {
+      assert.equal(usAfterChange.body.adapter, 'moonshot')
+      assert.equal(usAfterChange.body.cached, false)
+    })
+    await apiCall('PATCH', `/api/channels/${usageChannels.deepseek}`, { usageAdapter: 'deepseek' })
+
+    // 数据面权限
+    const usageKey = await apiCall('POST', '/api/keys', { name: `smoke-usage-${RUN}` })
+    const usageKeyId = usageKey.body.apiKey.id
+    const usageSecret = usageKey.body.key
+    check('新签发的密钥默认不能读余额（安全默认）', () => {
+      assert.equal(usageKey.body.apiKey.usageAllow, false)
+      assert.equal(usageKey.body.apiKey.usageRefresh, false)
+    })
+
+    const usDenied = await fetch(`${BASE}/v1/usage`, { headers: { authorization: `Bearer ${usageSecret}` } })
+    const usDeniedBody = await usDenied.json()
+    check('未授权读取余额 → 403', () => {
+      assert.equal(usDenied.status, 403)
+      assert.equal(usDeniedBody.error.code, 'usage_not_allowed')
+    })
+
+    await apiCall('PATCH', `/api/keys/${usageKeyId}`, {
+      usageAllow: true,
+      usageRefresh: false,
+      usageChannels: [usageChannels.deepseek]
+    })
+    const usAllowed = await fetch(`${BASE}/v1/usage`, { headers: { authorization: `Bearer ${usageSecret}` } })
+    const usAllowedBody = await usAllowed.json()
+    check('授权后聚合接口可用，且只返回可见范围内的渠道', () => {
+      assert.equal(usAllowed.status, 200)
+      assert.equal(usAllowedBody.object, 'usage.list')
+      assert.equal(usAllowedBody.providers.length, 1)
+      assert.equal(usAllowedBody.providers[0].adapter, 'deepseek')
+    })
+
+    const usOneOk = await fetch(`${BASE}/v1/usage/${usageChannels.deepseek}`, {
+      headers: { authorization: `Bearer ${usageSecret}` }
+    })
+    check('可按渠道 id 查单个 provider', () => assert.equal(usOneOk.status, 200))
+
+    const usOutOfScope = await fetch(`${BASE}/v1/usage/${usageChannels.moonshot}`, {
+      headers: { authorization: `Bearer ${usageSecret}` }
+    })
+    const usOutBody = await usOutOfScope.json()
+    check('范围外的渠道 → 403', () => {
+      assert.equal(usOutOfScope.status, 403)
+      assert.equal(usOutBody.error.code, 'usage_channel_not_allowed')
+    })
+
+    const usBadProvider = await fetch(`${BASE}/v1/usage/not-a-uuid`, {
+      headers: { authorization: `Bearer ${usageSecret}` }
+    })
+    check('provider 不是 uuid → 400', () => assert.equal(usBadProvider.status, 400))
+
+    const usNoRefresh = await fetch(`${BASE}/v1/usage?refresh=1`, {
+      headers: { authorization: `Bearer ${usageSecret}` }
+    })
+    const usNoRefreshBody = await usNoRefresh.json()
+    check('无 refresh 权限时 ?refresh=1 → 403（不静默忽略）', () => {
+      assert.equal(usNoRefresh.status, 403)
+      assert.equal(usNoRefreshBody.error.code, 'usage_refresh_not_allowed')
+    })
+
+    // 未配置适配器的渠道不出现
+    // 用管理面接口测「未配适配器」：数据面还要过 usage 权限，会把这条断言变成权限测试
+    const usPlainUsage = await apiCall('GET', `/api/channels/${channelId}/usage`)
+    check('未配适配器的渠道：明确告知未配置，而不是假装余额为 0', () => {
+      assert.equal(usPlainUsage.status, 200)
+      assert.equal(usPlainUsage.body.ok, false)
+      assert.match(String(usPlainUsage.body.error), /未配置余额适配器/)
+    })
+
+    // 清理
+    await apiCall('DELETE', `/api/keys/${usageKeyId}`)
+    for (const id of Object.values(usageChannels)) {
+      await apiCall('DELETE', `/api/channels/${id}`)
+    }
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉚ 密钥不泄漏到日志')
+    section('㉛ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2443,7 +2667,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉛ 清理测试数据')
+    section('㉜ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

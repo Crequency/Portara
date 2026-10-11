@@ -14,6 +14,7 @@ import {
   type ModelMeta,
   type ModelOverride,
   type ModelRoute,
+  type UsageSnapshot,
   type RangePreset,
   type RequestLog,
   type SeriesPoint,
@@ -22,6 +23,7 @@ import {
   type User
 } from '../api'
 import Modal from '../components/Modal.vue'
+import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatCompact, formatLatency, formatNumber, formatPercent, formatTime } from '../format'
 import { useI18n } from '../i18n'
@@ -91,6 +93,41 @@ const modelRows = computed(() => {
 
 const headerEntries = computed(() => Object.entries(channel.value?.extraHeaders ?? {}))
 
+/** 余额快照：只在渠道配了适配器时才请求 */
+const usage = ref<UsageSnapshot | null>(null)
+const usageLoading = ref(false)
+
+async function loadUsage(force = false): Promise<void> {
+  const ch = channel.value
+  if (!ch?.usageAdapter) return
+  usageLoading.value = true
+  try {
+    usage.value = await api.get<UsageSnapshot>(
+      '/api/channels/' + ch.id + '/usage' + (force ? '?refresh=1' : '')
+    )
+  } catch {
+    usage.value = null
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+function windowPercent(w: { used: number; total: number }): number {
+  if (!w.total || w.total <= 0) return 0
+  return Math.min(100, Math.round((w.used / w.total) * 100))
+}
+
+function windowLabel(key: string): string {
+  const base = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key
+  const map: Record<string, string> = {
+    fiveHour: t('usage.windowFiveHour'),
+    weekly: t('usage.windowWeekly'),
+    monthly: t('usage.windowMonthly'),
+    interval: t('usage.windowInterval')
+  }
+  return map[base] ?? base
+}
+
 /** 该渠道选用的代理（详情页只读展示；改在编辑弹窗里改） */
 const proxyName = ref('')
 const proxyAddress = ref('')
@@ -137,6 +174,7 @@ async function loadChannel(): Promise<void> {
   }
   await loadStats()
   void loadProxyLabel()
+  void loadUsage()
   loading.value = false
 }
 
@@ -442,6 +480,79 @@ onMounted(loadChannel)
           <div class="chart-label">{{ p.day }}</div>
         </div>
       </div>
+    </div>
+
+    <!-- 余额 / 用量（仅当渠道配了适配器） -->
+    <div v-if="channel.usageAdapter" class="card">
+      <div class="card-head">
+        <div class="card-title row" style="gap: 8px">
+          {{ t('usage.title') }}
+          <span class="tag">{{ channel.usageAdapter }}</span>
+        </div>
+        <button class="btn btn-sm" :disabled="usageLoading" @click="loadUsage(true)">
+          {{ t('common.refresh') }}
+        </button>
+      </div>
+
+      <div v-if="usageLoading && !usage" class="loading">{{ t('common.loading') }}</div>
+
+      <template v-else-if="usage">
+        <div v-if="!usage.ok" class="alert">
+          <b>{{ t('usage.error') }}：</b>{{ usage.error }}
+        </div>
+        <template v-else>
+          <div v-if="usage.stale" class="alert">{{ t('usage.stale') }}</div>
+          <div v-if="usage.balances.length" class="grid grid-3" style="margin-bottom: 14px">
+            <div v-for="b in usage.balances" :key="b.currency" class="stat">
+              <div class="stat-label">{{ t('usage.balance') }} · {{ b.currency }}</div>
+              <div class="stat-value">
+                {{ b.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) }}
+              </div>
+              <div class="stat-hint">
+                <template v-if="b.granted !== undefined">
+                  {{ t('usage.granted') }} {{ formatNumber(b.granted) }}
+                </template>
+                <template v-if="b.toppedUp !== undefined">
+                  · {{ t('usage.toppedUp') }} {{ formatNumber(b.toppedUp) }}
+                </template>
+              </div>
+            </div>
+          </div>
+          <div v-if="usage.windows.length" class="form-grid" style="gap: 10px">
+            <div v-for="w in usage.windows" :key="w.key">
+              <div class="row-between" style="font-size: 12.5px">
+                <span class="row" style="gap: 5px">
+                  {{ windowLabel(w.key) }}
+                  <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
+                  <span v-if="w.inferred" class="tag" style="color: var(--warn)">
+                    {{ t('usage.inferred') }}
+                  </span>
+                </span>
+                <span class="nowrap">
+                  {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
+                  <span v-if="w.resetAt" class="dim">· {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}</span>
+                </span>
+              </div>
+              <div style="height: 5px; background: var(--bg-elev-2); border-radius: 3px; margin-top: 5px">
+                <div
+                  :style="{
+                    width: windowPercent(w) + '%',
+                    height: '100%',
+                    background: w.exceeded ? 'var(--danger)' : 'var(--accent)',
+                    borderRadius: '3px'
+                  }"
+                />
+              </div>
+            </div>
+          </div>
+          <div v-for="(wn, i) in usage.warnings" :key="i" class="dim" style="font-size: 12px; margin-top: 8px">
+            · {{ wn }}
+          </div>
+          <div class="dim" style="font-size: 11.5px; margin-top: 10px">
+            {{ t('usage.fetchedAt') }} {{ formatTime(usage.fetchedAt) }}
+          </div>
+        </template>
+      </template>
     </div>
 
     <!-- 模型列表 -->

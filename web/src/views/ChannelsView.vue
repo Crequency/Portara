@@ -57,6 +57,9 @@ const form = reactive({
   timeoutMs: 120000,
   /** 选用的 HTTP 代理；null = 直连 */
   proxyId: null as string | null,
+  /** 余额/用量适配器 id；'' = 不提供余额 */
+  usageAdapter: '',
+  usageUrl: '',
   status: 'active' as 'active' | 'disabled',
   note: ''
 })
@@ -448,6 +451,22 @@ async function load(): Promise<void> {
 /** 系统设置里的「新建渠道默认超时」；拿不到就用内置默认 */
 const gatewayDefaults = ref<{ defaultChannelTimeoutMs: number } | null>(null)
 
+/** 可选余额适配器（管理员） */
+const usageAdapters = ref<{ id: string; label: string; note: string }[]>([])
+const usageAdapterOptions = computed(() => [
+  { value: '', label: t('usage.adapterNone'), hint: '' },
+  ...usageAdapters.value.map((a) => ({ value: a.id, label: a.label, hint: a.note }))
+])
+
+async function loadUsageAdapters(): Promise<void> {
+  try {
+    const res = await api.get<{ adapters: typeof usageAdapters.value }>('/api/usage/adapters')
+    usageAdapters.value = res.adapters
+  } catch {
+    usageAdapters.value = []
+  }
+}
+
 /** 可选代理（仅管理员可读；操作员拿不到就只显示「直连」） */
 const proxies = ref<{ id: string; name: string; host: string; port: number; status: string }[]>([])
 
@@ -495,6 +514,8 @@ function openCreate(): void {
     weight: 1,
     timeoutMs: gatewayDefaults.value?.defaultChannelTimeoutMs ?? 120000,
     proxyId: null,
+    usageAdapter: '',
+    usageUrl: '',
     status: 'active',
     note: ''
   })
@@ -515,6 +536,8 @@ function openEdit(ch: Channel): void {
     modelsPath: ch.modelsPath ?? '/models',
     modelsMeta: { ...(ch.modelsMeta ?? {}) },
     proxyId: ch.proxyId ?? null,
+    usageAdapter: ch.usageAdapter ?? '',
+    usageUrl: ch.usageUrl ?? '',
     headersText: headerLines(ch.extraHeaders ?? {}),
     modelsText: ch.models.join('\n'),
     priority: ch.priority,
@@ -665,6 +688,8 @@ async function submit(): Promise<void> {
       weight: Number(form.weight),
       timeoutMs: Number(form.timeoutMs),
       proxyId: form.proxyId || null,
+      usageAdapter: form.usageAdapter || '',
+      usageUrl: form.usageUrl.trim(),
       status: form.status,
       note: form.note
     }
@@ -743,6 +768,10 @@ function latencyOk(ch: Channel): boolean {
 }
 
 onMounted(async () => {
+  // 这三个都是「打开弹窗时才需要」的辅助数据，与主列表并行加载即可
+  void loadGatewayDefaults()
+  void loadProxies()
+  void loadUsageAdapters()
   await load()
   await loadRoutes()
 })
@@ -1235,6 +1264,11 @@ onMounted(async () => {
       </div>
 
       <div class="form-row">
+        <div class="field">
+          <label>{{ t('usage.adapterField') }}</label>
+          <PSelect v-model="form.usageAdapter" :options="usageAdapterOptions" />
+          <span class="hint">{{ t('usage.adapterHint') }}</span>
+        </div>
         <div class="field">
           <label>{{ t('channels.timeout') }}</label>
           <input v-model.number="form.timeoutMs" type="number" min="1000" />

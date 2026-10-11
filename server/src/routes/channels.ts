@@ -24,6 +24,7 @@ import {
   withStreamUsage
 } from '../services/proxy.js'
 import { getSetting } from '../services/settings.js'
+import { getUsageSnapshot, invalidateUsageCache } from '../services/usageFetch.js'
 import { getProxyTarget } from '../services/proxies.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import type { ProxyTarget } from '../services/proxyAgent.js'
@@ -244,6 +245,10 @@ const channelShape = {
   apiKey: z.string(),
   /** 选用的 HTTP 代理；null/空 = 直连 */
   proxyId: z.string().uuid().nullable().optional(),
+  /** 余额/用量适配器 id；'' = 不提供余额 */
+  usageAdapter: z.string().max(64),
+  /** 余额接口 base 覆盖；'' = 用 adapter 默认 */
+  usageUrl: z.string().max(500),
   models: z.array(z.string().min(1)),
   priority: z.coerce.number().int().min(1).max(9999),
   weight: z.coerce.number().int().min(1).max(1000),
@@ -279,6 +284,9 @@ function withCreateDefaults(b: CreateInput) {
     modelOverrides: b.modelOverrides ?? {},
     // 代理：显式给了就用，没给则直连（与既有渠道行为一致）
     proxyId: b.proxyId ?? null,
+    // 余额适配器：默认空 = 不提供余额（不改变既有行为）
+    usageAdapter: b.usageAdapter ?? '',
+    usageUrl: b.usageUrl ?? '',
     apiKey: b.apiKey ?? '',
     models: b.models ?? [],
     priority: b.priority ?? 100,
@@ -355,8 +363,8 @@ channelRoutes.post('/', requireAdmin, async (c) => {
     `insert into channels
        (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
         model_overrides, api_key_cipher, proxy_id, models, priority, weight, timeout_ms,
-        status, note)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning *`,
+        status, note, usage_adapter, usage_url)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning *`,
     [
       body.name,
       body.baseUrl,
@@ -373,9 +381,18 @@ channelRoutes.post('/', requireAdmin, async (c) => {
       body.weight,
       body.timeoutMs,
       body.status,
-      body.note
+      body.note,
+      body.usageAdapter ?? '',
+      body.usageUrl ?? ''
     ]
   )
+  await recordAudit(c, 'channel.create', { type: 'channel', id: row!.id }, {
+    name: row!.name,
+    baseUrl: row!.base_url,
+    protocol: row!.protocol,
+    usageAdapter: row!.usage_adapter
+  })
+
   return c.json({ channel: toChannelDto(row!, maskOf(row!)) }, 201)
 })
 
@@ -422,6 +439,8 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        timeout_ms     = coalesce($15, timeout_ms),
        status         = coalesce($16, status),
        note           = coalesce($17, note),
+       usage_adapter  = coalesce($18, usage_adapter),
+       usage_url      = coalesce($19, usage_url),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -443,17 +462,40 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       body.weight ?? null,
       body.timeoutMs ?? null,
       body.status ?? null,
-      body.note ?? null
+      body.note ?? null,
+      body.usageAdapter ?? null,
+      body.usageUrl ?? null
     ]
   )
+  // 只记「改了哪些字段」，不记值 —— 其中可能有密钥
+  await recordAudit(c, 'channel.update', { type: 'channel', id }, {
+    name: row!.name,
+    changedFields: Object.keys(body)
+  })
+
+  // 适配器 / 地址 / 密钥变了，旧快照就是错的口径 —— 必须清掉
+  if (
+    body.usageAdapter !== undefined ||
+    body.usageUrl !== undefined ||
+    body.apiKey !== undefined ||
+    body.clearApiKey ||
+    body.baseUrl !== undefined
+  ) {
+    await invalidateUsageCache(id)
+  }
+
   return c.json({ channel: toChannelDto(row!, maskOf(row!)) })
 })
 
 channelRoutes.delete('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
-  const current = await one('select id from channels where id = $1', [id])
+  const current = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!current) throw notFound('渠道不存在')
   await query('delete from channels where id = $1', [id])
+
+  await recordAudit(c, 'channel.delete', { type: 'channel', id }, { name: current.name })
+  await invalidateUsageCache(id)
+
   return c.json({ ok: true })
 })
 
@@ -488,6 +530,17 @@ channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
   })
 
   return c.json({ key, name: ch.name, baseUrl: ch.base_url })
+})
+
+/**
+ * 单个渠道的余额 / 用量快照（管理面，仅管理员）。
+ * 走缓存；`?refresh=1` 强制刷新（管理员不受 key 的 usage_refresh 限制）。
+ */
+channelRoutes.get('/:id/usage', requireAdmin, async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const force = c.req.query('refresh') === '1'
+  const snapshot = await getUsageSnapshot(id, { force })
+  return c.json(snapshot)
 })
 
 /** 连通性测试：拉取模型列表，并把最近一次结果（延迟/成败）落库供面板展示 */

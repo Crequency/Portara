@@ -1,0 +1,319 @@
+<script setup lang="ts">
+/**
+ * 余额用量页（仅管理员）。
+ *
+ * 上游的余额接口各说各话（金额 / 额度窗口 / 账期累计），
+ * 服务端已归一化成统一快照，这里只负责呈现。
+ */
+import { computed, onMounted, ref } from 'vue'
+import { api, ApiError, type Channel, type UsageSnapshot, type User } from '../api'
+import Modal from '../components/Modal.vue'
+import PInfo from '../components/PInfo.vue'
+import { formatCompact, formatNumber, formatTime } from '../format'
+import { useI18n } from '../i18n'
+import { toast } from '../toast'
+
+const props = defineProps<{ user?: User }>()
+
+const { t } = useI18n()
+
+const snapshots = ref<UsageSnapshot[]>([])
+const channels = ref<Channel[]>([])
+const loading = ref(true)
+const refreshing = ref(false)
+
+const rawOpen = ref(false)
+const rawTarget = ref<UsageSnapshot | null>(null)
+
+/** 页内概览：按币种汇总金额余额 + 汇总窗口超限数 */
+const summary = computed(() => {
+  const byCurrency = new Map<string, number>()
+  let okCount = 0
+  let failCount = 0
+  let exceeded = 0
+  let inferred = 0
+
+  for (const s of snapshots.value) {
+    if (s.ok) okCount += 1
+    else failCount += 1
+    for (const b of s.balances) {
+      byCurrency.set(b.currency, (byCurrency.get(b.currency) ?? 0) + b.remaining)
+    }
+    for (const w of s.windows) {
+      if (w.exceeded) exceeded += 1
+      if (w.inferred) inferred += 1
+    }
+  }
+  return {
+    byCurrency: [...byCurrency.entries()],
+    okCount,
+    failCount,
+    exceeded,
+    inferred,
+    total: snapshots.value.length
+  }
+})
+
+/** 该渠道是否配了适配器（用于「未配置」提示） */
+const configuredChannelIds = computed(() => new Set(channels.value.filter((c) => c.usageAdapter).map((c) => c.id)))
+
+async function load(force = false): Promise<void> {
+  loading.value = true
+  try {
+    const [u, c] = await Promise.all([
+      api.get<{ providers: UsageSnapshot[] }>('/api/usage' + (force ? '?refresh=1' : '')),
+      api.get<{ channels: Channel[] }>('/api/channels')
+    ])
+    snapshots.value = u.providers
+    channels.value = c.channels
+  } catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('usage.error'))
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshAll(): Promise<void> {
+  refreshing.value = true
+  try {
+    await load(true)
+    toast.success(t('usage.refreshAll'))
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function refreshOne(s: UsageSnapshot): Promise<void> {
+  try {
+    const next = await api.post<UsageSnapshot>('/api/usage/refresh', { channelId: s.channelId })
+    const i = snapshots.value.findIndex((x) => x.channelId === s.channelId)
+    if (i >= 0) snapshots.value[i] = next
+  } catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('usage.error'))
+  }
+}
+
+function openRaw(s: UsageSnapshot): void {
+  rawTarget.value = s
+  rawOpen.value = true
+}
+
+/** 窗口进度条的百分比（total 为 0 时按 0 处理，避免除零） */
+function windowPercent(w: { used: number; total: number }): number {
+  if (!w.total || w.total <= 0) return 0
+  return Math.min(100, Math.round((w.used / w.total) * 100))
+}
+
+/** 窗口名称本地化：形如 `MiniMax-M*:interval` 要拆出模型名 */
+function windowLabel(key: string): string {
+  const base = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key
+  const model = key.includes(':') ? key.slice(0, key.indexOf(':')) : ''
+  const map: Record<string, string> = {
+    fiveHour: t('usage.windowFiveHour'),
+    weekly: t('usage.windowWeekly'),
+    monthly: t('usage.windowMonthly'),
+    interval: t('usage.windowInterval')
+  }
+  const label = map[base] ?? base
+  return model ? `${model} · ${label}` : label
+}
+
+function money(v: number, unit: 'currency' | 'credits', currency: string): string {
+  const n = v.toLocaleString('en-US', { maximumFractionDigits: 4 })
+  return unit === 'credits' ? `${n} ${currency}` : `${n} ${currency}`
+}
+
+onMounted(() => void load())
+</script>
+
+<template>
+  <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
+
+  <div v-else class="stack">
+    <!-- 页内概览 -->
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">{{ t('usage.title') }}</div>
+          <div class="dim" style="font-size: 12px">{{ t('usage.sub') }}</div>
+        </div>
+        <div class="row">
+          <button class="btn btn-sm" :disabled="refreshing" @click="refreshAll">
+            {{ refreshing ? t('usage.refreshing') : t('usage.refreshAll') }}
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-4">
+        <div class="stat">
+          <div class="stat-label">{{ t('usage.adapters') }}</div>
+          <div class="stat-value">{{ summary.total }}</div>
+          <div class="stat-hint">
+            {{ summary.okCount }} ok · {{ summary.failCount }} {{ t('usage.error') }}
+          </div>
+        </div>
+        <div
+          v-for="[currency, amount] in summary.byCurrency"
+          :key="currency"
+          class="stat"
+        >
+          <div class="stat-label">{{ t('usage.remaining') }} · {{ currency }}</div>
+          <div class="stat-value">{{ amount.toLocaleString('en-US', { maximumFractionDigits: 4 }) }}</div>
+        </div>
+        <div v-if="summary.exceeded > 0" class="stat">
+          <div class="stat-label">{{ t('usage.exceeded') }}</div>
+          <div class="stat-value delta-slow">{{ summary.exceeded }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 未配置任何适配器 -->
+    <div v-if="snapshots.length === 0" class="card">
+      <div class="empty">{{ t('usage.notConfigured') }}</div>
+      <div class="dim" style="text-align: center; font-size: 12px">
+        {{ t('usage.notConfiguredHint') }}
+      </div>
+    </div>
+
+    <!-- 每个渠道一张卡 -->
+    <div v-for="s in snapshots" :key="s.channelId" class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title row" style="gap: 8px">
+            {{ s.channelName }}
+            <span class="tag">{{ s.adapter }}</span>
+            <span v-if="s.cached" class="badge badge-off">{{ t('usage.cached') }}</span>
+          </div>
+          <div class="dim" style="font-size: 11.5px">
+            {{ t('usage.fetchedAt') }} {{ formatTime(s.fetchedAt) }}
+          </div>
+        </div>
+        <button class="btn btn-sm" @click="refreshOne(s)">{{ t('common.refresh') }}</button>
+      </div>
+
+      <!-- 失败 -->
+      <div v-if="!s.ok" class="alert">
+        <b>{{ t('usage.error') }}：</b>{{ s.error }}
+        <div v-if="s.adapter" class="dim" style="font-size: 12px; margin-top: 4px">
+          <button class="btn btn-ghost btn-sm" @click="openRaw(s)">{{ t('usage.viewRaw') }}</button>
+        </div>
+      </div>
+
+      <template v-else>
+        <div v-if="s.stale" class="alert">{{ t('usage.stale') }}</div>
+
+        <!-- 金额余额 -->
+        <div v-if="s.balances.length > 0" class="grid grid-3" style="margin-bottom: 14px">
+          <div v-for="b in s.balances" :key="b.currency" class="stat">
+            <div class="stat-label">{{ t('usage.balance') }} · {{ b.currency }}</div>
+            <div class="stat-value">{{ money(b.remaining, b.unit, b.currency) }}</div>
+            <div class="stat-hint">
+              <template v-if="b.granted !== undefined">
+                {{ t('usage.granted') }} {{ formatNumber(b.granted) }}
+              </template>
+              <template v-if="b.toppedUp !== undefined">
+                · {{ t('usage.toppedUp') }} {{ formatNumber(b.toppedUp) }}
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- 额度窗口 -->
+        <div v-if="s.windows.length > 0" style="margin-bottom: 14px">
+          <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
+          <div class="form-grid" style="gap: 10px">
+            <div v-for="w in s.windows" :key="w.key">
+              <div class="row-between" style="font-size: 12.5px">
+                <span class="row" style="gap: 5px">
+                  {{ windowLabel(w.key) }}
+                  <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
+                  <span v-if="w.inferred" class="tag" style="color: var(--warn)">
+                    {{ t('usage.inferred') }}
+                  </span>
+                </span>
+                <span class="nowrap" :class="{ 'delta-slow': w.exceeded }">
+                  {{ t('usage.used') }} {{ formatNumber(Math.round(w.used)) }} /
+                  {{ formatNumber(Math.round(w.total)) }}
+                  <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
+                  <span v-if="w.resetAt" class="dim">· {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}</span>
+                </span>
+              </div>
+              <div style="height: 5px; background: var(--bg-elev-2); border-radius: 3px; margin-top: 5px">
+                <div
+                  :style="{
+                    width: windowPercent(w) + '%',
+                    height: '100%',
+                    background: w.exceeded ? 'var(--danger)' : 'var(--accent)',
+                    borderRadius: '3px'
+                  }"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 账期累计 -->
+        <div v-if="s.period" class="grid grid-4">
+          <div class="stat">
+            <div class="stat-label">{{ t('usage.requests') }}</div>
+            <div class="stat-value">{{ formatNumber(s.period.requests) }}</div>
+            <div class="stat-hint">
+              {{ t('usage.successRate') }}
+              {{ s.period.successRate === undefined ? '—' : s.period.successRate.toFixed(2) + '%' }}
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">{{ t('usage.tokens') }}</div>
+            <div class="stat-value">
+              {{ formatCompact(s.period.tokensIn) }} / {{ formatCompact(s.period.tokensOut) }}
+            </div>
+            <div class="stat-hint">in / out</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">{{ t('usage.cost') }}</div>
+            <div class="stat-value">{{ formatNumber(s.period.cost) }}</div>
+            <div class="stat-hint">{{ s.period.costCurrency ?? '' }}</div>
+          </div>
+          <div v-if="s.plan" class="stat">
+            <div class="stat-label">{{ t('usage.plan') }}</div>
+            <div class="stat-value row" style="gap: 5px; font-size: 15px">
+              {{ s.plan.id }}
+              <PInfo v-if="s.plan.inferred" :text="t('usage.inferredHint')" />
+            </div>
+            <div class="stat-hint">
+              {{ s.plan.status }} · {{ t('usage.renewAt') }} {{ formatTime(s.plan.renewAt ?? null) }}
+            </div>
+          </div>
+        </div>
+
+        <div v-if="s.warnings.length > 0" style="margin-top: 12px">
+          <div v-for="(w, i) in s.warnings" :key="i" class="dim" style="font-size: 12px">
+            · {{ w }}
+          </div>
+        </div>
+
+        <div style="margin-top: 10px">
+          <button class="btn btn-ghost btn-sm" @click="openRaw(s)">{{ t('usage.viewRaw') }}</button>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <Modal v-if="rawOpen && rawTarget" :title="t('usage.rawTitle')" wide @close="rawOpen = false">
+    <div class="dim" style="font-size: 12px; margin-bottom: 8px">
+      {{ rawTarget.channelName }} · {{ rawTarget.adapter }}
+    </div>
+    <pre class="code-box" style="max-height: 420px; overflow: auto; white-space: pre-wrap">{{
+      JSON.stringify(rawTarget.raw ?? {}, null, 2)
+    }}</pre>
+    <div class="modal-foot">
+      <button class="btn" @click="rawOpen = false">{{ t('common.close') }}</button>
+    </div>
+  </Modal>
+</template>
+
+<style scoped>
+.delta-slow {
+  color: var(--danger);
+}
+</style>

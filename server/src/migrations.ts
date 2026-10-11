@@ -270,5 +270,27 @@ export const migrations: { id: string; sql: string }[] = [
       alter table channels
         add column if not exists proxy_id uuid references proxies(id) on delete set null;
     `
+  },
+  {
+    id: '012_usage_adapters',
+    sql: `
+      -- 余额 / 用量适配器（渠道级）。
+      --
+      -- usage_adapter = '' 表示该渠道不提供余额（**默认，不改变既有行为**）。
+      -- 每个厂商的余额接口没有标准协议，故由 adapter 决定端点与解析方式。
+      alter table channels add column if not exists usage_adapter text not null default '';
+      -- 可选覆盖：留空则用 adapter 的默认路径（自建 / 反代场景）
+      alter table channels add column if not exists usage_url text not null default '';
+
+      -- Key 的余额读取权限。默认**全部拒绝**（安全默认）：
+      -- 余额信息能反映账户资金状况，不该默认对所有 key 开放。
+      alter table api_keys add column if not exists usage_allow boolean not null default false;
+      -- 可见渠道范围；空数组 = 可见所有已配置 adapter 的渠道
+      -- （与既有 model_allow 的「空 = 不限制」语义保持一致）
+      alter table api_keys add column if not exists usage_channels text[] not null default '{}';
+      -- 是否允许 ?refresh=1 强制刷新。默认不允许：
+      -- 否则等于给了调用方一个反复打上游的开关。
+      alter table api_keys add column if not exists usage_refresh boolean not null default false;
+    `
   }
 ]

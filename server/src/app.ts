@@ -13,6 +13,8 @@ import { logRoutes } from './routes/logs.js'
 import { modelRouteRoutes } from './routes/modelRoutes.js'
 import { proxyRoutes } from './routes/proxies.js'
 import { settingsRoutes } from './routes/settings.js'
+import { usageRoutes } from './routes/usage.js'
+import { usageAdminRoutes } from './routes/usageAdmin.js'
 import { userRoutes } from './routes/users.js'
 import { v1Routes } from './routes/v1.js'
 import { serveWebDist } from './static.js'
@@ -109,10 +111,15 @@ export function createApp(): Hono {
   app.route('/api/audit', auditRoutes)
   app.route('/api/model-routes', modelRouteRoutes)
   app.route('/api/settings', settingsRoutes)
+  app.route('/api', usageAdminRoutes) // /api/usage、/api/usage/adapters
   app.route('/api/proxies', proxyRoutes)
   app.route('/api', logRoutes) // /api/logs、/api/stats/*
 
-  // ---- 数据面（OpenAI 兼容）----
+  // ---- 数据面 ----
+  // 注意顺序：`/v1/usage` 必须在 `/v1` **之前**挂载。
+  // v1Routes 有兜底捕获（未知 /v1/* 路径一律 404），挂在它后面会被吞掉。
+  app.route('/v1/usage', usageRoutes)
+  // OpenAI 兼容（对话、模型列表等）
   app.route('/v1', v1Routes)
 
   return app

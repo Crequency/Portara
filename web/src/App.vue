@@ -16,6 +16,7 @@ import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import SettingsView from './views/SettingsView.vue'
+import UsageView from './views/UsageView.vue'
 import UsersView from './views/UsersView.vue'
 
 const { t } = useI18n()
@@ -50,6 +51,7 @@ const NAV = [
   { id: 'chat', icon: 'M4 5h16v11H8l-4 4z', adminOnly: true },
   { id: 'users', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
   { id: 'logs', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false },
+  { id: 'usage', icon: 'M4 19V9M9 19V5M14 19v-7M19 19v-4', adminOnly: true },
   { id: 'proxies', icon: 'M4 7h16v10H4zM8 11a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0M13 11h4M8 15h9', adminOnly: true },
   { id: 'settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4Z', adminOnly: true }
 ] as const
@@ -73,6 +75,8 @@ const currentView = computed(() => {
       return UsersView
     case 'logs':
       return LogsView
+    case 'usage':
+      return UsageView
     case 'proxies':
       return ProxiesView
     case 'settings':

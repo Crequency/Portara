@@ -22,6 +22,12 @@ const createSchema = z.object({
   userId: z.string().optional().nullable(),
   channelId: z.string().optional().nullable(),
   modelAllow: z.array(z.string().min(1)).default([]),
+  /** 能否读取余额/用量；默认 false（余额反映资金状况，不默认开放） */
+  usageAllow: z.boolean().default(false),
+  /** 可见渠道范围；空数组 = 全部已配置余额适配器的渠道 */
+  usageChannels: z.array(z.string().min(1)).default([]),
+  /** 能否 ?refresh=1 强制刷新；默认 false（否则等于给了个打上游的开关） */
+  usageRefresh: z.boolean().default(false),
   rpmLimit: z.coerce.number().int().min(0).max(1_000_000).default(60),
   quotaTokens: z.coerce.number().int().min(0).default(0),
   expiresAt: z.string().optional().nullable()
@@ -32,6 +38,9 @@ const updateSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   channelId: z.string().optional().nullable(),
   modelAllow: z.array(z.string().min(1)).optional(),
+  usageAllow: z.boolean().optional(),
+  usageChannels: z.array(z.string().min(1)).optional(),
+  usageRefresh: z.boolean().optional(),
   rpmLimit: z.coerce.number().int().min(0).max(1_000_000).optional(),
   quotaTokens: z.coerce.number().int().min(0).optional(),
   expiresAt: z.string().optional().nullable()
@@ -98,8 +107,9 @@ keyRoutes.post('/', async (c) => {
 
   const row = await one<ApiKeyRow>(
     `insert into api_keys
-       (name, key_prefix, key_hash, key_cipher, user_id, channel_id, model_allow, rpm_limit, quota_tokens, expires_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+       (name, key_prefix, key_hash, key_cipher, user_id, channel_id, model_allow, rpm_limit,
+        quota_tokens, expires_at, usage_allow, usage_channels, usage_refresh)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning *`,
     [
       body.name,
       prefix,
@@ -111,7 +121,10 @@ keyRoutes.post('/', async (c) => {
       body.modelAllow,
       body.rpmLimit,
       body.quotaTokens,
-      body.expiresAt ? new Date(body.expiresAt) : null
+      body.expiresAt ? new Date(body.expiresAt) : null,
+      body.usageAllow,
+      body.usageChannels,
+      body.usageRefresh
     ]
   )
 
@@ -142,7 +155,10 @@ keyRoutes.patch('/:id', async (c) => {
        model_allow  = coalesce($5, model_allow),
        rpm_limit    = coalesce($6, rpm_limit),
        quota_tokens = coalesce($7, quota_tokens),
-       expires_at   = $8
+       expires_at   = $8,
+       usage_allow    = coalesce($9,  usage_allow),
+       usage_channels = coalesce($10, usage_channels),
+       usage_refresh  = coalesce($11, usage_refresh)
      where id = $1
      returning *`,
     [
@@ -157,7 +173,10 @@ keyRoutes.patch('/:id', async (c) => {
         ? current.expires_at
         : body.expiresAt
           ? new Date(body.expiresAt)
-          : null
+          : null,
+      body.usageAllow ?? null,
+      body.usageChannels ?? null,
+      body.usageRefresh ?? null
     ]
   )
   return c.json({ apiKey: toApiKeyDto((await loadKeyWithOwner(id)) ?? row!) })
