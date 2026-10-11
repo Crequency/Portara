@@ -118,6 +118,30 @@ function windowLabel(key: string): string {
   return model ? `${model} · ${label}` : label
 }
 
+/**
+ * 网关自身的余额 API 地址。
+ *
+ * 用 `location.origin` —— 那正是**管理员此刻访问网关的地址**，
+ * 直接复制就能用（局域网 / 反代域名都自动正确）。
+ */
+const apiBase = computed(() => `${location.origin}/v1/usage`)
+/** 拿一个已配适配器的渠道做「单个渠道」示例 */
+const sampleChannelId = computed(() => snapshots.value[0]?.channelId ?? '{渠道 id}')
+
+const curlExample = computed(
+  () =>
+    `curl -H "Authorization: Bearer <你的网关密钥>" \\\n  ${apiBase.value}`
+)
+
+async function copyApi(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success(t('usage.apiCopied'))
+  } catch {
+    toast.error(t('toast.copyFailed'))
+  }
+}
+
 function money(v: number, unit: 'currency' | 'credits', currency: string): string {
   const n = v.toLocaleString('en-US', { maximumFractionDigits: 4 })
   return unit === 'credits' ? `${n} ${currency}` : `${n} ${currency}`
@@ -130,6 +154,59 @@ onMounted(() => void load())
   <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
 
   <div v-else class="stack">
+    <!-- 网关自身的余额 API（供程序调用） -->
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">{{ t('usage.apiTitle') }}</div>
+          <div class="dim" style="font-size: 12px">{{ t('usage.apiHint') }}</div>
+        </div>
+        <span class="dim" style="font-size: 11.5px">{{ t('usage.apiAuthHint') }}</span>
+      </div>
+
+      <div class="form-grid" style="gap: 8px">
+        <div class="row" style="gap: 8px">
+          <span class="tag" style="min-width: 74px; justify-content: center">GET</span>
+          <span class="dim" style="font-size: 12px; min-width: 72px">{{ t('usage.apiList') }}</span>
+          <code class="mono api-url">{{ apiBase }}</code>
+          <button
+            class="btn btn-sm btn-icon"
+            :title="t('usage.copyUrl')"
+            @click="copyApi(apiBase)"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5.5" y="5.5" width="8" height="9" rx="1.5" />
+              <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v7A1.5 1.5 0 0 0 4 12.5h1.5" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="row" style="gap: 8px">
+          <span class="tag" style="min-width: 74px; justify-content: center">GET</span>
+          <span class="dim" style="font-size: 12px; min-width: 72px">{{ t('usage.apiSingle') }}</span>
+          <code class="mono api-url">{{ apiBase }}/{{ sampleChannelId }}</code>
+          <button
+            class="btn btn-sm btn-icon"
+            :title="t('usage.copyUrl')"
+            @click="copyApi(`${apiBase}/${sampleChannelId}`)"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5.5" y="5.5" width="8" height="9" rx="1.5" />
+              <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v7A1.5 1.5 0 0 0 4 12.5h1.5" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="row">
+          <button class="btn btn-ghost btn-sm" @click="copyApi(curlExample)">
+            {{ t('usage.copyCurl') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 页内概览 -->
     <div class="card">
       <div class="card-head">

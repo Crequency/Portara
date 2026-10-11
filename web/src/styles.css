@@ -242,6 +242,19 @@ a { color: var(--accent); text-decoration: none; }
   overflow: auto;
 }
 
+/* 余额页顶部展示的 API 地址：可选中、可换行，不撑破卡片 */
+.api-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
 /* 居中的表格列（表头与单元格都要加） */
 table .col-center { text-align: center; }
 

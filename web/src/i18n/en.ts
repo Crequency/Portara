@@ -559,7 +559,15 @@ export const en = {
     error: 'Error',
     warnings: 'Warnings',
     viewRaw: 'View raw response',
-    rawTitle: 'Raw upstream response'
+    rawTitle: 'Raw upstream response',
+    apiTitle: 'Balance API',
+    apiHint: 'For programmatic use. The key must have "can read balance"; ?refresh=1 additionally needs "can force refresh".',
+    apiList: 'All channels',
+    apiSingle: 'Single channel',
+    apiAuthHint: 'Auth: Authorization: Bearer <your gateway key>',
+    copyUrl: 'Copy URL',
+    copyCurl: 'Copy curl example',
+    apiCopied: 'Copied',
   },
   toast: {
     copied: 'Copied to clipboard',

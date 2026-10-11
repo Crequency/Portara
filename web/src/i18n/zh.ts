@@ -559,7 +559,15 @@ export const zh = {
     error: '错误',
     warnings: '提醒',
     viewRaw: '查看原始响应',
-    rawTitle: '上游原始响应'
+    rawTitle: '上游原始响应',
+    apiTitle: '余额 API',
+    apiHint: '供程序调用。需要该密钥已开启「可读取余额」；带 ?refresh=1 还需要「可强制刷新」。',
+    apiList: '全部渠道',
+    apiSingle: '单个渠道',
+    apiAuthHint: '鉴权：Authorization: Bearer <你的网关密钥>',
+    copyUrl: '复制地址',
+    copyCurl: '复制 curl 示例',
+    apiCopied: '已复制',
   },
   toast: {
     copied: '已复制到剪贴板',
