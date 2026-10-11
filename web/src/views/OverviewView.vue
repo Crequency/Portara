@@ -38,6 +38,64 @@ const granularity = ref<'hour' | 'day'>('hour')
 const recent = ref<RequestLog[]>([])
 const loading = ref(true)
 
+/**
+ * 记住上次用的统计粒度（按浏览器，localStorage）。
+ *
+ * 为什么值得记：概览是每次进来第一眼看的东西，而"我习惯看 7 天"
+ * 这件事几乎不会变 —— 每次都要点一下是纯粹的重复劳动。
+ *
+ * 自定义范围也一并存：只存 preset='custom' 而不存区间，
+ * 恢复时会得到一个空范围，反而更糟。
+ */
+const RANGE_KEY = 'portara.overview.range'
+
+interface StoredRange {
+  preset: RangePreset
+  from?: string
+  to?: string
+}
+
+const VALID_PRESETS: RangePreset[] = ['today', '7d', '30d', 'custom']
+
+function loadStoredRange(): StoredRange | null {
+  try {
+    const raw = localStorage.getItem(RANGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as StoredRange
+    if (!parsed || !VALID_PRESETS.includes(parsed.preset)) return null
+    // 自定义必须带完整区间，否则宁可不恢复（避免打开一个空范围）
+    if (parsed.preset === 'custom' && (!parsed.from || !parsed.to)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function persistRange(): void {
+  try {
+    const data: StoredRange = { preset: preset.value }
+    if (preset.value === 'custom' && appliedCustom.value) {
+      data.from = appliedCustom.value.from
+      data.to = appliedCustom.value.to
+    }
+    localStorage.setItem(RANGE_KEY, JSON.stringify(data))
+  } catch {
+    /* 隐私模式下 localStorage 可能不可用 —— 记不住偏好不该影响功能 */
+  }
+}
+
+/** 启动时恢复上次的粒度（必须在首次 load 之前调用） */
+function restoreRange(): void {
+  const saved = loadStoredRange()
+  if (!saved) return
+  preset.value = saved.preset
+  if (saved.preset === 'custom' && saved.from && saved.to) {
+    customFrom.value = saved.from
+    customTo.value = saved.to
+    appliedCustom.value = { from: saved.from, to: saved.to }
+  }
+}
+
 const presets = computed<{ id: RangePreset; label: string }[]>(() => [
   { id: 'today', label: t('overview.today') },
   { id: '7d', label: t('overview.d7') },
@@ -222,6 +280,7 @@ async function load(): Promise<void> {
 
 function choosePreset(id: RangePreset): void {
   preset.value = id
+  persistRange()
   if (id === 'custom') {
     const now = new Date()
     const before = new Date(now.getTime() - 24 * 3600_000)
@@ -246,6 +305,7 @@ function applyCustom(): void {
     return
   }
   appliedCustom.value = { from: customFrom.value, to: customTo.value }
+  persistRange()
   void load()
 }
 
@@ -254,6 +314,8 @@ function go(id: string): void {
 }
 
 onMounted(() => {
+  // 先恢复上次的粒度，再加载 —— 否则首屏会先按默认粒度拉一次
+  restoreRange()
   void loadUsage()
   void load()
 })
