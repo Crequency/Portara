@@ -5,16 +5,25 @@ import {
   type RangePreset,
   type RequestLog,
   type SeriesPoint,
+  type UsageSnapshot,
   type StatsOverview,
   type StatsSeries,
   type User
 } from '../api'
-import { formatCompact, formatLatency, formatNumber, formatPercent, formatTime } from '../format'
+import {
+  formatCompact,
+  formatLatency,
+  formatNumber,
+  formatPercent,
+  formatTime,
+  quotaColor,
+  quotaPercent
+} from '../format'
 import { useI18n } from '../i18n'
 import { CLIENT_TZ, tzQueryParam } from '../time'
 import { toast } from '../toast'
 
-defineProps<{ user?: User }>()
+const props = defineProps<{ user?: User }>()
 
 const { t } = useI18n()
 
@@ -89,6 +98,60 @@ const topBlocks = computed(() => [
   { key: 'channels' as const, title: t('overview.topChannels'), rows: stats.value?.topChannels ?? [] },
   { key: 'keys' as const, title: t('overview.topKeys'), rows: stats.value?.topKeys ?? [] }
 ])
+
+// ---------------------------------------------------------------- 余额用量（概览）
+
+/**
+ * 余额快照。**只保留请求成功的** —— 概览是摘要，
+ * 失败详情在「余额用量」页看；但失败数量会以一行小字提示，不静默吞掉。
+ */
+const usageSnapshots = ref<UsageSnapshot[]>([])
+const usageOk = computed(() => usageSnapshots.value.filter((s) => s.ok))
+const usageFailedCount = computed(
+  () => usageSnapshots.value.length - usageOk.value.length
+)
+
+const isAdmin = computed(() => props.user?.role === 'admin')
+
+/** 该渠道最"紧"的窗口（已用百分比最高）—— 概览只展示这一个重点 */
+function tightestWindow(s: UsageSnapshot) {
+  if (!s.windows || s.windows.length === 0) return null
+  return [...s.windows].sort(
+    (a, b) => quotaPercent(b.used, b.total) - quotaPercent(a.used, a.total)
+  )[0]!
+}
+
+/**
+ * 窗口键 → 界面文案。
+ * 不能直接显示原始键名（fiveHour/monthly 会以英文混进中文界面）；
+ * MiniMax 的键形如 `MiniMax-M*:interval`，只取冒号后的部分。
+ */
+function windowLabel(key: string): string {
+  const base = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key
+  const map: Record<string, string> = {
+    fiveHour: t('usage.windowFiveHour'),
+    weekly: t('usage.windowWeekly'),
+    monthly: t('usage.windowMonthly'),
+    interval: t('usage.windowInterval')
+  }
+  return map[base] ?? base
+}
+
+/** 渠道的主余额（金额或 credits） */
+function primaryBalance(s: UsageSnapshot) {
+  return s.balances && s.balances.length > 0 ? s.balances[0]! : null
+}
+
+async function loadUsage(): Promise<void> {
+  if (!isAdmin.value) return
+  try {
+    const res = await api.get<{ providers: UsageSnapshot[] }>('/api/usage')
+    usageSnapshots.value = res.providers
+  } catch {
+    // 概览是次要信息，拿不到就不显示这张卡，不打扰用户
+    usageSnapshots.value = []
+  }
+}
 
 /** 按指定依据排序并取前 5 */
 function sortedTop(key: 'models' | 'channels' | 'keys'): {
@@ -177,7 +240,14 @@ function applyCustom(): void {
   void load()
 }
 
-onMounted(load)
+function go(id: string): void {
+  location.hash = '#/' + id
+}
+
+onMounted(() => {
+  void loadUsage()
+  void load()
+})
 </script>
 
 <template>
@@ -385,6 +455,84 @@ onMounted(load)
               />
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 余额用量：多渠道合并成一张卡，只显示请求成功的，只给重点 -->
+    <div v-if="isAdmin" class="card">
+      <div class="card-head">
+        <div class="card-title">{{ t('overview.usageTitle') }}</div>
+        <button class="btn btn-sm" @click="go('usage')">{{ t('overview.usageMore') }} →</button>
+      </div>
+
+      <div v-if="usageOk.length === 0" class="empty">
+        <template v-if="usageSnapshots.length > 0">{{ t('overview.usageAllFailed') }}</template>
+        <template v-else>
+          {{ t('overview.usageNone') }}
+          <div class="dim" style="font-size: 12px; margin-top: 6px">
+            {{ t('overview.usageNoneHint') }}
+          </div>
+        </template>
+      </div>
+
+      <div v-else class="form-grid" style="gap: 12px">
+        <div
+          v-for="s in usageOk"
+          :key="s.channelId"
+          class="row row-wrap"
+          style="gap: 10px; font-size: 12.5px"
+        >
+          <span style="min-width: 190px">{{ s.channelName }}</span>
+          <span class="tag">{{ s.adapter }}</span>
+
+          <span class="spacer" />
+
+          <!-- 金额余额（DeepSeek / Moonshot 这类） -->
+          <span v-if="primaryBalance(s)" class="mono nowrap">
+            {{
+              primaryBalance(s)!.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 })
+            }}
+            <span class="dim">{{ primaryBalance(s)!.currency }}</span>
+          </span>
+
+          <!-- 最紧的那条额度窗口（CommandCode / MiniMax 这类） -->
+          <template v-if="tightestWindow(s)">
+            <span class="nowrap" style="min-width: 150px; text-align: right">
+              {{ windowLabel(tightestWindow(s)!.key) }}
+              <span
+                :style="{
+                  color: quotaColor(
+                    quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total),
+                    tightestWindow(s)!.exceeded
+                  )
+                }"
+              >
+                {{ quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total) }}%
+              </span>
+            </span>
+            <span
+              style="width: 90px; height: 5px; background: var(--bg-elev-2); border-radius: 3px"
+            >
+              <span
+                :style="{
+                  display: 'block',
+                  width:
+                    quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total) + '%',
+                  height: '100%',
+                  background: quotaColor(
+                    quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total),
+                    tightestWindow(s)!.exceeded
+                  ),
+                  borderRadius: '3px'
+                }"
+              />
+            </span>
+          </template>
+        </div>
+
+        <div v-if="usageFailedCount > 0" class="dim" style="font-size: 11.5px">
+          {{ t('overview.usageFailed', { n: usageFailedCount }) }}
         </div>
       </div>
     </div>
