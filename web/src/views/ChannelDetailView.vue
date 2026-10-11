@@ -25,7 +25,15 @@ import {
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
-import { formatCompact, formatLatency, formatNumber, formatPercent, formatTime } from '../format'
+import {
+  formatCompact,
+  formatLatency,
+  formatNumber,
+  formatPercent,
+  formatTime,
+  quotaColor,
+  quotaPercent
+} from '../format'
 import { useI18n } from '../i18n'
 import { CLIENT_TZ, tzQueryParam } from '../time'
 import { toast } from '../toast'
@@ -113,8 +121,7 @@ async function loadUsage(force = false): Promise<void> {
 }
 
 function windowPercent(w: { used: number; total: number }): number {
-  if (!w.total || w.total <= 0) return 0
-  return Math.min(100, Math.round((w.used / w.total) * 100))
+  return quotaPercent(w.used, w.total)
 }
 
 function windowLabel(key: string): string {
@@ -530,6 +537,9 @@ onMounted(loadChannel)
                 </span>
                 <span class="nowrap">
                   {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
+                  <span :style="{ color: quotaColor(windowPercent(w), w.exceeded) }">
+                    ({{ windowPercent(w) }}%)
+                  </span>
                   <span v-if="w.resetAt" class="dim">· {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}</span>
                 </span>
               </div>
@@ -538,7 +548,7 @@ onMounted(loadChannel)
                   :style="{
                     width: windowPercent(w) + '%',
                     height: '100%',
-                    background: w.exceeded ? 'var(--danger)' : 'var(--accent)',
+                    background: quotaColor(windowPercent(w), w.exceeded),
                     borderRadius: '3px'
                   }"
                 />

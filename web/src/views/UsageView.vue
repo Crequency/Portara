@@ -9,7 +9,13 @@ import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, type Channel, type UsageSnapshot, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
-import { formatCompact, formatNumber, formatTime } from '../format'
+import {
+  formatCompact,
+  formatNumber,
+  formatTime,
+  quotaColor,
+  quotaPercent
+} from '../format'
 import { useI18n } from '../i18n'
 import { toast } from '../toast'
 
@@ -98,10 +104,9 @@ function openRaw(s: UsageSnapshot): void {
   rawOpen.value = true
 }
 
-/** 窗口进度条的百分比（total 为 0 时按 0 处理，避免除零） */
+/** 窗口进度条的百分比与颜色（颜色逻辑与渠道详情页共用） */
 function windowPercent(w: { used: number; total: number }): number {
-  if (!w.total || w.total <= 0) return 0
-  return Math.min(100, Math.round((w.used / w.total) * 100))
+  return quotaPercent(w.used, w.total)
 }
 
 /** 窗口名称本地化：形如 `MiniMax-M*:interval` 要拆出模型名 */
@@ -311,6 +316,9 @@ onMounted(() => void load())
                 <span class="nowrap" :class="{ 'delta-slow': w.exceeded }">
                   {{ t('usage.used') }} {{ formatNumber(Math.round(w.used)) }} /
                   {{ formatNumber(Math.round(w.total)) }}
+                  <span :style="{ color: quotaColor(windowPercent(w), w.exceeded) }">
+                    ({{ windowPercent(w) }}%)
+                  </span>
                   <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
                   <span v-if="w.resetAt" class="dim">· {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}</span>
                 </span>
@@ -320,7 +328,7 @@ onMounted(() => void load())
                   :style="{
                     width: windowPercent(w) + '%',
                     height: '100%',
-                    background: w.exceeded ? 'var(--danger)' : 'var(--accent)',
+                    background: quotaColor(windowPercent(w), w.exceeded),
                     borderRadius: '3px'
                   }"
                 />
