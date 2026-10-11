@@ -242,6 +242,70 @@ a { color: var(--accent); text-decoration: none; }
   overflow: auto;
 }
 
+/*
+ * 概览页的余额用量卡：宽屏是「内部小卡片横向排列」，窄屏回落成列表。
+ *
+ * 用 auto-fit 而不是 auto-fill：渠道少时（常见只有三四个）
+ * 空轨道会被折叠，卡片自动撑满整行，不会右边留一片空白。
+ */
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.usage-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+}
+
+.usage-cell-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.usage-cell-balance {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.usage-windows { display: flex; flex-direction: column; gap: 7px; }
+.usage-window-track {
+  height: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 3px;
+  margin-top: 4px;
+}
+
+/*
+ * 窄屏：不再分栏，每个渠道压成紧凑一行（即改造前的列表样式）。
+ * 窗口按已用百分比降序排过，所以「只留第一条」就是「只显示最紧的那条」。
+ */
+@media (max-width: 700px) {
+  .usage-grid { grid-template-columns: 1fr; gap: 8px; }
+  .usage-cell {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 8px 10px;
+  }
+  .usage-cell-name { flex: 1 1 100%; }
+  .usage-cell-balance { margin-left: auto; }
+  .usage-windows { flex: 1 1 100%; }
+  .usage-window:not(:first-child) { display: none; }
+}
+
 /* 余额页顶部展示的 API 地址：可选中、可换行，不撑破卡片 */
 .api-url {
   flex: 1 1 auto;

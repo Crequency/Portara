@@ -113,12 +113,21 @@ const usageFailedCount = computed(
 
 const isAdmin = computed(() => props.user?.role === 'admin')
 
-/** 该渠道最"紧"的窗口（已用百分比最高）—— 概览只展示这一个重点 */
-function tightestWindow(s: UsageSnapshot) {
-  if (!s.windows || s.windows.length === 0) return null
-  return [...s.windows].sort(
+/**
+ * 窗口按**已用百分比降序**：最紧的排第一。
+ *
+ * 这样窄屏只要隐藏第一条之后的窗口，就自动等价于「只显示最紧的那条」——
+ * 不必为两种布局各写一套 DOM。
+ */
+function sortedWindows(s: UsageSnapshot) {
+  return [...(s.windows ?? [])].sort(
     (a, b) => quotaPercent(b.used, b.total) - quotaPercent(a.used, a.total)
-  )[0]!
+  )
+}
+
+/** 该渠道最"紧"的窗口（已用百分比最高） */
+function tightestWindow(s: UsageSnapshot) {
+  return sortedWindows(s)[0] ?? null
 }
 
 /**
@@ -476,64 +485,54 @@ onMounted(() => {
         </template>
       </div>
 
-      <div v-else class="form-grid" style="gap: 12px">
-        <div
-          v-for="s in usageOk"
-          :key="s.channelId"
-          class="row row-wrap"
-          style="gap: 10px; font-size: 12.5px"
-        >
-          <span style="min-width: 190px">{{ s.channelName }}</span>
-          <span class="tag">{{ s.adapter }}</span>
-
-          <span class="spacer" />
+      <div v-else class="usage-grid">
+        <div v-for="s in usageOk" :key="s.channelId" class="usage-cell">
+          <div class="row" style="gap: 7px; min-width: 0">
+            <span class="usage-cell-name">{{ s.channelName }}</span>
+            <span class="tag">{{ s.adapter }}</span>
+          </div>
 
           <!-- 金额余额（DeepSeek / Moonshot 这类） -->
-          <span v-if="primaryBalance(s)" class="mono nowrap">
+          <div v-if="primaryBalance(s)" class="mono usage-cell-balance">
             {{
               primaryBalance(s)!.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 })
             }}
             <span class="dim">{{ primaryBalance(s)!.currency }}</span>
-          </span>
+          </div>
 
-          <!-- 最紧的那条额度窗口（CommandCode / MiniMax 这类） -->
-          <template v-if="tightestWindow(s)">
-            <span class="nowrap" style="min-width: 150px; text-align: right">
-              {{ windowLabel(tightestWindow(s)!.key) }}
-              <span
-                :style="{
-                  color: quotaColor(
-                    quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total),
-                    tightestWindow(s)!.exceeded
-                  )
-                }"
-              >
-                {{ quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total) }}%
-              </span>
-            </span>
-            <span
-              style="width: 90px; height: 5px; background: var(--bg-elev-2); border-radius: 3px"
-            >
-              <span
-                :style="{
-                  display: 'block',
-                  width:
-                    quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total) + '%',
-                  height: '100%',
-                  background: quotaColor(
-                    quotaPercent(tightestWindow(s)!.used, tightestWindow(s)!.total),
-                    tightestWindow(s)!.exceeded
-                  ),
-                  borderRadius: '3px'
-                }"
-              />
-            </span>
-          </template>
+          <!-- 额度窗口：宽屏全列，窄屏只留最紧的那条 -->
+          <div v-if="sortedWindows(s).length" class="usage-windows">
+            <div v-for="w in sortedWindows(s)" :key="w.key" class="usage-window">
+              <div class="row-between" style="font-size: 11.5px; gap: 8px">
+                <span class="nowrap">{{ windowLabel(w.key) }}</span>
+                <span
+                  class="nowrap"
+                  :style="{ color: quotaColor(quotaPercent(w.used, w.total), w.exceeded) }"
+                >
+                  {{ quotaPercent(w.used, w.total) }}%
+                </span>
+              </div>
+              <div class="usage-window-track">
+                <div
+                  :style="{
+                    width: quotaPercent(w.used, w.total) + '%',
+                    height: '100%',
+                    background: quotaColor(quotaPercent(w.used, w.total), w.exceeded),
+                    borderRadius: '3px'
+                  }"
+                />
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
 
-        <div v-if="usageFailedCount > 0" class="dim" style="font-size: 11.5px">
-          {{ t('overview.usageFailed', { n: usageFailedCount }) }}
-        </div>
+      <div
+        v-if="usageFailedCount > 0"
+        class="dim"
+        style="font-size: 11.5px; margin-top: 10px"
+      >
+        {{ t('overview.usageFailed', { n: usageFailedCount }) }}
       </div>
     </div>
 
