@@ -35,6 +35,7 @@ import {
   quotaPercent
 } from '../format'
 import { useI18n } from '../i18n'
+import { loadRangePreference, saveRangePreference } from '../rangePreference'
 import { CLIENT_TZ, tzQueryParam } from '../time'
 import { toast } from '../toast'
 
@@ -59,6 +60,14 @@ const revealError = ref('')
 const revealing = ref(false)
 
 const isAdmin = (): boolean => props.user?.role === 'admin'
+
+/** 记住上次用的统计粒度（键与概览页**不同**，两处记忆彼此独立） */
+const RANGE_KEY = 'portara.channelDetail.range'
+
+function restoreRange(): void {
+  const saved = loadRangePreference(RANGE_KEY)
+  if (saved) preset.value = saved.preset
+}
 
 const rangeOptions = computed(() => [
   { value: 'today', label: t('overview.today') },
@@ -179,6 +188,8 @@ async function loadChannel(): Promise<void> {
     loading.value = false
     return
   }
+  // 先恢复上次的粒度，再加载 —— 否则首屏会先按默认拉一次
+  restoreRange()
   await loadStats()
   void loadProxyLabel()
   void loadUsage()
@@ -334,7 +345,10 @@ function back(): void {
   location.hash = '#/channels'
 }
 
-watch(preset, () => void loadStats())
+watch(preset, () => {
+  saveRangePreference(RANGE_KEY, preset.value)
+  void loadStats()
+})
 onMounted(loadChannel)
 </script>
 
