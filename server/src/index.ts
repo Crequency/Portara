@@ -5,6 +5,7 @@ import { closeDb, runMigrations } from './db.js'
 import { env, printStartupWarnings } from './env.js'
 import { closeRedis, redis } from './redis.js'
 import { getSettings, purgeOldLogs } from './services/settings.js'
+import { pruneSessions } from './services/sessions.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -73,6 +74,20 @@ async function main(): Promise<void> {
     }
   }
   setInterval(() => void sweepLogs(), LOG_SWEEP_INTERVAL_MS).unref()
+
+  /**
+   * 清理过期 / 早已作废的会话记录。
+   * 与日志清理同一个周期 —— 表本身很小，不值得单独起一个定时器。
+   */
+  const sweepSessions = async (): Promise<void> => {
+    try {
+      const deleted = await pruneSessions()
+      if (deleted > 0) console.log(`[portara] 已清理 ${deleted} 条过期会话`)
+    } catch (err) {
+      console.warn('[portara] 清理过期会话失败：', err instanceof Error ? err.message : String(err))
+    }
+  }
+  setInterval(() => void sweepSessions(), LOG_SWEEP_INTERVAL_MS).unref()
 
   const app = createApp()
   const server = serve(

@@ -369,7 +369,10 @@ function startServer() {
       // 独立 schema：与开发数据彻底隔离
       PORTARA_DB_SCHEMA: SMOKE_SCHEMA,
       REDIS_URL: process.env.REDIS_URL ?? 'redis://127.0.0.1:52745',
-      PORTARA_COOKIE_SECURE: 'false'
+      PORTARA_COOKIE_SECURE: 'false',
+      // 宽限窗口设为 2 秒：冒烟要同时验证「宽限内放行」与「宽限外判重放」，
+      // 用默认的 30 秒会让测试白等半分钟
+      PORTARA_REFRESH_GRACE_SECONDS: '2'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   })
@@ -2654,8 +2657,122 @@ async function main() {
       await apiCall('DELETE', `/api/channels/${id}`)
     }
 
+    // ---------------------------------------------------------- 会话与 refresh token
+    section('㉛ 会话：refresh token 轮换与重用检测')
+
+    const jarOf = (res) => {
+      const raw = res.headers.getSetCookie?.() ?? []
+      return {
+        raw,
+        cookie: raw.map((c) => c.split(';')[0]).join('; '),
+        pick: (name) => {
+          const line = raw.find((c) => c.startsWith(name + '='))
+          return line ? line.split(';')[0].split('=').slice(1).join('=') : ''
+        },
+        attr: (name) => raw.find((c) => c.startsWith(name + '=')) ?? ''
+      }
+    }
+    const authPost = async (path, cookie, body) => {
+      const r = await fetch(`${BASE}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+        body: body ? JSON.stringify(body) : undefined
+      })
+      return { status: r.status, body: await r.json().catch(() => null), jar: jarOf(r) }
+    }
+
+    const sLogin = await authPost('/api/auth/login', null, {
+      username: ADMIN_USER,
+      password: ADMIN_PASS
+    })
+    check('登录同时下发 access 与 refresh 两条 Cookie', () => {
+      assert.equal(sLogin.status, 200)
+      assert.ok(sLogin.jar.pick('portara_session'), '缺少 access cookie')
+      assert.ok(sLogin.jar.pick('portara_refresh'), '缺少 refresh cookie')
+    })
+    check('access token 是短时效的（15 分钟）', () => {
+      const a = sLogin.jar.attr('portara_session')
+      assert.match(a, /Max-Age=900/)
+      assert.match(a, /HttpOnly/)
+      assert.match(a, /Path=\//)
+    })
+    check('refresh cookie 限定作用域到 /api/auth（不跟业务请求走）', () => {
+      const r = sLogin.jar.attr('portara_refresh')
+      assert.match(r, /Path=\/api\/auth/)
+      assert.match(r, /Max-Age=2592000/) // 30 天
+      assert.match(r, /HttpOnly/)
+    })
+    check('响应带 expiresIn 供前端排主动续期', () => assert.equal(sLogin.body.expiresIn, 900))
+
+    const sMe = await fetch(`${BASE}/api/auth/me`, { headers: { cookie: sLogin.jar.cookie } })
+    check('access token 可用于业务接口', () => assert.equal(sMe.status, 200))
+
+    // 轮换
+    const sRef = await authPost('/api/auth/refresh', sLogin.jar.cookie)
+    check('刷新成功且 refresh token 已轮换', () => {
+      assert.equal(sRef.status, 200)
+      const next = sRef.jar.pick('portara_refresh')
+      assert.ok(next && next !== sLogin.jar.pick('portara_refresh'), 'refresh token 未轮换')
+      assert.ok(sRef.jar.pick('portara_session'), '未下发新的 access token')
+    })
+
+    // 宽限窗口内重放 → 放行（保护多标签页并发）
+    const sGrace = await authPost(
+      '/api/auth/refresh',
+      'portara_refresh=' + sLogin.jar.pick('portara_refresh')
+    )
+    check('宽限窗口内重放旧令牌 → 放行（多标签页并发不会自我踢出）', () =>
+      assert.equal(sGrace.status, 200))
+
+    // 越过宽限窗口后重放 → 判重放并整族作废
+    await new Promise((r) => setTimeout(r, 2500))
+    const sReuse = await authPost(
+      '/api/auth/refresh',
+      'portara_refresh=' + sRef.jar.pick('portara_refresh')
+    )
+    check('越过宽限窗口重放 → 401 并提示令牌被重复使用', () => {
+      assert.equal(sReuse.status, 401)
+      assert.match(sReuse.body.error.message, /重复使用|重新登录/)
+    })
+    const sAfterReuse = await authPost(
+      '/api/auth/refresh',
+      'portara_refresh=' + sGrace.jar.pick('portara_refresh')
+    )
+    check('整族作废：最新那条令牌也一并失效', () => assert.equal(sAfterReuse.status, 401))
+
+    // 登出
+    const sLogin2 = await authPost('/api/auth/login', null, {
+      username: ADMIN_USER,
+      password: ADMIN_PASS
+    })
+    const sLogout = await authPost('/api/auth/logout', sLogin2.jar.cookie)
+    check('登出作废整条链，旧 refresh 不能再换新', async () => {
+      assert.equal(sLogout.status, 200)
+    })
+    const sAfterLogout = await authPost(
+      '/api/auth/refresh',
+      'portara_refresh=' + sLogin2.jar.pick('portara_refresh')
+    )
+    check('登出后 refresh 失效', () => assert.equal(sAfterLogout.status, 401))
+
+    check('没有 refresh cookie 时刷新 → 401', async () => {
+      const r = await authPost('/api/auth/refresh', null)
+      assert.equal(r.status, 401)
+    })
+
+    // 冒烟只走 HTTP，没有数据库连接 —— 所以这里验证令牌本身的强度，
+    // 「库里只存哈希」由服务端代码与人工查库保证（token_hash 是 64 位 hex）
+    check('refresh token 是高熵随机串（32 字节 base64url）', () => {
+      const line = sLogin2.jar.raw.find((x) => x.startsWith('portara_refresh='))
+      const plain = line.split(';')[0].split('=').slice(1).join('=')
+      assert.match(plain, /^[A-Za-z0-9_-]{43}$/, `不像 32 字节 base64url：${plain.slice(0, 12)}…`)
+    })
+    check('两次登录的 refresh token 不同（不是固定值）', () => {
+      assert.notEqual(sLogin.jar.pick('portara_refresh'), sLogin2.jar.pick('portara_refresh'))
+    })
+
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉛ 密钥不泄漏到日志')
+    section('㉜ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2667,7 +2784,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉜ 清理测试数据')
+    section('㉝ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

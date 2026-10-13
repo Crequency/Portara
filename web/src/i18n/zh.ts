@@ -54,6 +54,7 @@ export const zh = {
     dark: '深色'
   },
   login: {
+    sessionExpired: '登录状态已失效，请重新登录',
     subtitle: '企业级 AI API 网关 · 管理控制台',
     username: '用户名',
     password: '密码',

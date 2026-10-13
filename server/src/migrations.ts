@@ -292,5 +292,40 @@ export const migrations: { id: string; sql: string }[] = [
       -- 否则等于给了调用方一个反复打上游的开关。
       alter table api_keys add column if not exists usage_refresh boolean not null default false;
     `
+  },
+  {
+    id: '013_sessions',
+    sql: `
+      -- 可撤销的登录会话（refresh token 轮换链）。
+      --
+      -- 为什么需要这张表：access token 是**无状态** JWT，签发后无法收回。
+      -- 要支持「登出即刻失效 / 改密踢掉其它设备 / 检测令牌重用」，
+      -- 就必须有一份服务端记录。
+      --
+      -- 只存 refresh token 的**哈希**：它是 32 字节高熵随机串，
+      -- 用 SHA-256 即可（不像密码需要慢哈希 —— 没有字典可猜）。
+      create table if not exists sessions (
+        id             uuid primary key default gen_random_uuid(),
+        user_id        uuid not null references users(id) on delete cascade,
+        -- 同一次登录产生的整条轮换链共用一个 family_id。
+        -- 检测到令牌重用时按 family 整族作废，把攻击者与用户一起踢出去，
+        -- 用户重新登录即可 —— 而攻击者手里的旧链全部失效。
+        family_id      uuid not null,
+        token_hash     text not null unique,
+        created_at     timestamptz not null default now(),
+        last_used_at   timestamptz not null default now(),
+        expires_at     timestamptz not null,
+        revoked_at     timestamptz,
+        -- 'rotated' | 'logout' | 'reuse_detected' | 'password_changed' | 'user_disabled'
+        revoked_reason text not null default '',
+        user_agent     text not null default '',
+        ip             text not null default ''
+      );
+
+      create index if not exists sessions_user_idx    on sessions (user_id);
+      create index if not exists sessions_family_idx  on sessions (family_id);
+      -- 定期清理过期会话用
+      create index if not exists sessions_expires_idx on sessions (expires_at);
+    `
   }
 ]

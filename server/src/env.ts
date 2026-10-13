@@ -42,6 +42,20 @@ function loadMasterKey(): Buffer {
   return buf
 }
 
+/** access TTL；顺带对已废弃的 PORTARA_SESSION_TTL_HOURS 给出提示 */
+function loadAccessTtlMinutes(): number {
+  if (
+    process.env.PORTARA_ACCESS_TTL_MINUTES === undefined &&
+    process.env.PORTARA_SESSION_TTL_HOURS !== undefined
+  ) {
+    warnings.push(
+      'PORTARA_SESSION_TTL_HOURS 已被 PORTARA_ACCESS_TTL_MINUTES 取代（access token 现在' +
+        '应当是短时效的，长效交给 refresh token），该值将被忽略'
+    )
+  }
+  return num(process.env.PORTARA_ACCESS_TTL_MINUTES, 15)
+}
+
 function loadSessionSecret(): string {
   const raw = process.env.PORTARA_SESSION_SECRET?.trim()
   if (!raw) {
@@ -72,7 +86,23 @@ export const env = {
   masterKey: loadMasterKey(),
   sessionSecret: loadSessionSecret(),
   cookieSecure: process.env.PORTARA_COOKIE_SECURE === 'true',
-  sessionTtlHours: num(process.env.PORTARA_SESSION_TTL_HOURS, 12),
+  /**
+   * access token 有效期（分钟）。
+   *
+   * **故意很短**：access token 是无状态 JWT、签发后收不回来，
+   * 所以它的暴露窗口必须小；长效靠 refresh token（可撤销、会轮换）。
+   */
+  accessTtlMinutes: loadAccessTtlMinutes(),
+  /**
+   * 轮换宽限窗口（秒）。
+   *
+   * 多标签页并发刷新时，后者会拿到"刚被轮换掉"的令牌 ——
+   * 若严格判为重放，用户会被自己踢下线。窗口内改走同族继任者。
+   * 真正的重放攻击发生在令牌泄露很久之后，不在这个窗口内。
+   */
+  refreshGraceSeconds: num(process.env.PORTARA_REFRESH_GRACE_SECONDS, 30),
+  /** refresh token 有效期（天）。这才是"记住我"的时长。 */
+  refreshTtlDays: num(process.env.PORTARA_REFRESH_TTL_DAYS, 30),
 
   adminUsername: process.env.PORTARA_ADMIN_USERNAME ?? 'admin',
   adminPassword: process.env.PORTARA_ADMIN_PASSWORD ?? '',

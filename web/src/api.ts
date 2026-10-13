@@ -9,7 +9,77 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/**
+ * 单飞：并发的 401 只触发**一次**刷新。
+ * 不加这个，一个页面同时发五个请求就会打五次刷新接口 ——
+ * 而刷新是**轮换**的，五次里有四次会拿到已作废的令牌。
+ */
+let refreshInFlight: Promise<boolean> | null = null
+
+/** 主动续期的定时器 */
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 会话彻底失效时的回调（由 App.vue 注册 → 回到登录页） */
+let sessionExpiredHandler: (() => void) | null = null
+
+export function setSessionExpiredHandler(fn: (() => void) | null): void {
+  sessionExpiredHandler = fn
+}
+
+/** 这些路径本身不参与"401 就续期"的兜底，否则会递归 */
+const AUTH_PATHS = ['/api/auth/login', '/api/auth/refresh', '/api/auth/logout']
+
+/**
+ * 在 access token 过期**之前**主动续期。
+ *
+ * 没有它也能工作（401 时兜底续期），但那样每隔 15 分钟就会有
+ * 一个请求先失败再重试 —— 用户偶尔会看到一闪而过的错误。
+ */
+export function scheduleRefresh(expiresInSec: number): void {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  // 提前 20% 续期，但不早于 30 秒、不晚于 2 分钟
+  const lead = Math.max(30, Math.min(120, expiresInSec * 0.2))
+  const delayMs = Math.max(5, expiresInSec - lead) * 1000
+  refreshTimer = setTimeout(() => void ensureRefreshed(), delayMs)
+}
+
+export function cancelScheduledRefresh(): void {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = null
+}
+
+async function doRefresh(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' })
+    if (!res.ok) return false
+    const data = (await res.json().catch(() => null)) as { expiresIn?: number } | null
+    if (typeof data?.expiresIn === 'number') scheduleRefresh(data.expiresIn)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 刷新会话；并发调用共享同一次请求 */
+export function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = doRefresh().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+function ensureRefreshed(): Promise<boolean> {
+  return refreshSession()
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  retried = false
+): Promise<T> {
   const res = await fetch(path, {
     method,
     credentials: 'same-origin',
@@ -28,6 +98,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   if (!res.ok) {
+    // access token 过期（15 分钟）是**常态**，不是错误：
+    // 静默续期后重试一次，调用方完全无感。
+    if (res.status === 401 && !retried && !AUTH_PATHS.includes(path)) {
+      if (await ensureRefreshed()) {
+        return request<T>(method, path, body, true)
+      }
+      // 续期也失败 → 会话真的没了，交给上层回登录页
+      sessionExpiredHandler?.()
+    }
+
     const errObj = (data as { error?: { message?: string; code?: string } } | null)?.error
     throw new ApiError(
       res.status,
@@ -35,6 +115,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       errObj?.code
     )
   }
+
+  // 登录 / 刷新 / 改密的响应带 expiresIn —— 顺手排下一次主动续期，
+  // 调用方不用关心这件事
+  const expiresIn = (data as { expiresIn?: number } | null)?.expiresIn
+  if (typeof expiresIn === 'number') scheduleRefresh(expiresIn)
 
   return data as T
 }

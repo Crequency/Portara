@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue'
-import { api, type User } from './api'
+import {
+  api,
+  cancelScheduledRefresh,
+  setSessionExpiredHandler,
+  type User
+} from './api'
 import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
 import { LOCALES, locale, setLocale, useI18n } from './i18n'
 import { loadMeta, meta, siteName } from './meta'
 import { THEME_MODES, setThemeMode, themeMode } from './theme'
+import { toast } from './toast'
 import ChannelDetailView from './views/ChannelDetailView.vue'
 import ChannelsView from './views/ChannelsView.vue'
 import ChatView from './views/ChatView.vue'
@@ -143,6 +149,16 @@ onMounted(async () => {
   }
 })
 
+// 会话彻底失效（refresh 也失败）→ 直接回登录页。
+// 没有这个回调，用户会在各个页面看到零散的 401 错误提示，
+// 却不知道自己已经掉线了。
+setSessionExpiredHandler(() => {
+  if (user.value) {
+    user.value = null
+    toast.error(t('auth.sessionExpired'))
+  }
+})
+
 function onLoggedIn(u: User): void {
   user.value = u
   location.hash = '#/overview'
@@ -153,6 +169,7 @@ async function logout(): Promise<void> {
   try {
     await api.post('/api/auth/logout')
   } finally {
+    cancelScheduledRefresh()
     user.value = null
   }
 }

@@ -8,6 +8,13 @@ import { forbidden, unauthorized } from '../lib/http.js'
 import type { ApiKeyRow, UserRow } from '../types.js'
 
 export const SESSION_COOKIE = 'portara_session'
+/**
+ * refresh token 的 Cookie 名。
+ *
+ * 与 access 分开是刻意的：它的 path 限定为 `/api/auth`，
+ * 只在刷新时发送，不跟着每个业务请求走 —— 减少暴露面。
+ */
+export const REFRESH_COOKIE = 'portara_refresh'
 
 declare module 'hono' {
   interface ContextVariableMap {

@@ -54,6 +54,7 @@ export const en = {
     dark: 'Dark'
   },
   login: {
+    sessionExpired: 'Your session expired, please sign in again',
     subtitle: 'Enterprise AI API Gateway · Console',
     username: 'Username',
     password: 'Password',
