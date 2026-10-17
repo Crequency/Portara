@@ -32,45 +32,26 @@ var client = new OpenAIClient(
     new OpenAIClientOptions { Endpoint = new Uri("http://portara.internal/v1") });
 ```
 
-## 当前能力（原型，M1 已完成）
+## 当前能力
 
-| 能力 | 状态 |
+M1 已完成；下表按领域归并，细项见决策记录（内部资料）。
+
+| 领域 | 能力 |
 | --- | --- |
-| 管理员登录（JWT + HttpOnly Cookie） | ✅ |
-| 用户管理（管理员 / 操作员、启用禁用、改密） | ✅ |
-| 上游渠道配置（增删改查、密钥 AES-256-GCM 加密、连通性测试 + 延迟展示） | ✅ |
-| 模型列表 API 路径可配置 + **从 API 自动获取模型与上下文长度**（含复制原始响应体） | ✅ |
-| **渠道详情子页面**（单击渠道进入：配置 / 用量 / 模型明细 / 映射 / 最近请求） | ✅ |
-| **Anthropic 协议代理**（OpenAI 请求 ↔ Anthropic 上游，含流式逐事件翻译） | ✅ |
-| 渠道协议支持 **混杂模式**（逐模型指定协议与 Base URL） | ✅ |
-| `/v1/models` 支持 `?filter=mirror-only\|origin-only` | ✅ |
-| **厂商会话头注入**（opencode-go 的 `x-opencode-session` 按会话派生，含消毒与稳定兜底） | ✅ |
-| **系统设置页面**（仅管理员：网关名称、时区、直连测试开关、日志保留、表单默认值） | ✅ |
-| **时区**：日志一律 UTC 存储；查询与展示按请求方（浏览器）时区，网关时区作默认 | ✅ |
-| **代理配置**（仅管理员）：HTTP 代理库 + 渠道可选是否走代理 + **多选批量**延迟对比 | ✅ |
-| **聚合余额/用量**：厂商适配器 + 缓存 + `/v1/usage` + 逐 key 权限与可见范围 | ✅ |
-| 余额页顶部展示网关余额 API（含地址与 curl 一键复制） | ✅ |
-| **会话**：access 15 分钟 + refresh 30 天，轮换 + 重用检测 + 前端无感续期 | ✅ |
-| 概览页合并余额卡（**响应式**：宽屏小卡横排多条进度条 / 窄屏列表，只显示获取成功的） | ✅ |
-| `/v1/models` **透传上下文长度等元信息**（含别名条目） | ✅ |
-| 对话测试**直连模式同样记账**，并在概览中与网关流量区分 | ✅ |
-| API 密钥派发（一次性明文、哈希存储、轮换、吊销） | ✅ |
-| 查看完整 Key（仅管理员 + 风险提示 + 审计留痕，见 D-013） | ✅ |
-| 查看上游渠道 API Key（仅管理员 + 审计留痕，见 D-022） | ✅ |
-| 对话测试支持**批量模型测试**（多选 + 有限并发 + 聚合结果） | ✅ |
-| 对话测试页（仅管理员；可选「网关自身测试」或「上游渠道直连测试」） | ✅ |
-| 渠道协议与厂商兼容（OpenAI 兼容 / OpenCode）+ 自定义固定请求头 | ✅ |
-| **模型映射**（网关模型 ID → 上游模型；一个 ID 负载均衡到多渠道多模型） | ✅ |
-| 映射列表可折叠分组（按前缀）+ **以 JSON 整体编辑** | ✅ |
-| 密钥归属（非管理员只见自己的，管理员可见全部并显示所有者） | ✅ |
-| 概览统计粒度（今日 / 近 7 天 / 近一个月 / 自定义） | ✅ |
-| 请求代理转发（`/v1/chat/completions` 非流式 + SSE 流式透传） | ✅ |
-| 速率限制（RPM，Redis 原子计数） | ✅ |
-| Token 配额（用尽返回 402） | ✅ |
-| 模型白名单（越权返回 403） | ✅ |
-| 请求日志与用量统计 | ✅ |
-| 管理面板（Vue 3，单端口托管） | ✅ |
-| 多上游智能路由、熔断、内容安全、语义缓存 | ⏳ 见 [roadmap](.develop/docs/02-roadmap.md) |
+| **会话** | 管理员登录；access 15 分钟 + refresh 30 天，轮换 + 重用检测 + 前端无感续期（D-051） |
+| **用户** | 管理员 / 操作员两种角色；启用禁用、改密；不允许禁用最后一个管理员 |
+| **上游渠道** | 增删改查；密钥 AES-256-GCM 加密；连通性测试与**延迟展示**；详情子页面（配置 / 用量 / 模型明细 / 映射 / 最近请求） |
+| **模型发现** | 模型列表 API 路径可配置；从 API 自动获取模型与上下文长度（含复制原始响应体）；`GET /v1/models` 聚合且透传元信息，支持 `?filter=mirror-only\|origin-only` |
+| **协议** | OpenAI 兼容与 Anthropic 双协议，含流式逐事件翻译；渠道支持**混杂模式**（逐模型指定协议与 Base URL）；厂商兼容规则（如 opencode-go 的 `x-opencode-session`，含消毒与稳定兜底）与自定义固定请求头 |
+| **模型映射** | 网关模型 ID → (渠道, 上游模型)；一个 ID 可负载均衡到多渠道多模型；按前缀批量生成、列表可折叠分组、可 JSON 整体编辑 |
+| **密钥治理** | 派发（一次性明文、哈希存储）、轮换、吊销；归属隔离（非管理员只见自己名下）；管理员可查看完整 Key（风险提示 + 审计，见 D-013） |
+| **请求治理** | 模型白名单（403）、速率限制（RPM，Redis 原子计数）、Token 配额（402）；密钥可设过期时间 |
+| **余额用量** | 厂商适配器（DeepSeek / Moonshot / CommandCode / MiniMax）+ 缓存防限频；`GET /v1/usage` 聚合接口（逐 Key 权限与可见渠道范围）；独立余额页（含 API 地址一键复制）+ 概览响应式合并卡 |
+| **可观测** | 请求日志与用量统计；概览 Top 排行（按次数/用量切换）与趋势；粒度可选今日 / 7 天 / 30 天 / 自定义并**记住上次选择**；审计日志 |
+| **时区** | 日志一律 UTC 存储；查询与展示按请求方（浏览器）时区，网关时区作默认 |
+| **网络** | HTTP 代理库；渠道可选是否走代理；多选批量延迟对比（代理 vs 直连） |
+| **面板** | Vue 3 单端口托管；手写 CSS 无 UI 框架；中英双语、明暗主题 |
+| **规划中** | 多上游智能路由、熔断、内容安全、语义缓存 —— 见 [roadmap](.develop/docs/02-roadmap.md) |
 
 ## 快速开始
 
@@ -155,32 +136,28 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | `POST /v1/completions` | 文本补全 |
 | `POST /v1/embeddings` | 向量化 |
 | `POST /v1/responses` | Responses API 透传 |
-| `GET /v1/models` | 聚合各启用渠道声明的模型 |
+| `GET /v1/models` | 聚合各启用渠道声明的模型；`?filter=mirror-only\|origin-only` |
+| `GET /v1/usage` | 全部渠道的余额/用量（需该 Key 开启「可读取余额」） |
+| `GET /v1/usage/{渠道 id}` | 单个渠道；`?refresh=1` 需另开「可强制刷新」 |
 | 其他 `/v1/*` | 通用透传（同样经过鉴权、限流、计量） |
 
-### 控制面（管理面板使用）
+### 控制面（管理面板使用，`/api/*`）
 
-| 端点 | 说明 |
+| 领域 | 端点 |
 | --- | --- |
-| `POST /api/auth/login` `logout` `GET /api/auth/me` | 会话 |
-| `GET/POST/PATCH/DELETE /api/users[/:id]` | 用户管理（写操作需管理员） |
-| `GET/POST/PATCH/DELETE /api/channels[/:id]` | 渠道管理（`GET /:id` 为单渠道详情） |
-| `POST /api/channels/:id/test` | 上游连通性测试（按渠道配置的模型列表路径，并记录延迟） |
-| `POST /api/channels/fetch-models` | 用临时配置拉取模型列表（新建时） |
-| `POST /api/channels/:id/fetch-models` | 用已存密钥拉取模型列表（编辑时） |
-| `POST /api/channels/:id/chat` | **直连上游**的对话测试（仅管理员，绕过网关治理） |
-| `GET /api/channels/:id/reveal` | 查看上游密钥明文（**仅管理员**，必写审计） |
-| `GET/POST/PATCH/DELETE /api/keys[/:id]`、`POST /api/keys/:id/rotate` | 密钥 |
-| `GET /api/keys/:id/reveal` | 查看完整密钥（**仅管理员**，必写审计） |
-| `GET /api/audit` | 审计日志查询（仅管理员） |
-| `GET/POST/PATCH/DELETE /api/model-routes[/:id]` | 模型映射 CRUD |
-| `POST /api/model-routes/batch` | 批量映射：给渠道的一批模型统一加前缀 |
-| `POST /api/model-routes/purge` | 按别名整组删除 |
-| `POST /api/model-routes/import` | 以 JSON 整体编辑（`replace` 全量替换 / `merge` 仅合并） |
-| `GET /api/logs` | 请求日志 |
-| `GET /api/stats/overview?range=today\|7d\|30d\|custom[&from=&to=][&channelId=]` | 区间统计 + Top 排行（可按渠道过滤） |
-| `GET /api/stats/series?range=…` | 趋势序列（≤48 小时按小时，否则按天） |
-| `GET /healthz` `GET /readyz` | 存活 / 就绪（就绪会检查 PG 与 Redis） |
+| 会话 | `POST /api/auth/{login,refresh,logout,password}` · `GET /api/auth/me` |
+| 用户 | `GET/POST/PATCH/DELETE /api/users[/:id]` |
+| 渠道 | `GET/POST/PATCH/DELETE /api/channels[/:id]` · `POST /:id/test` · `POST /:id/chat`（直连上游）· `GET /:id/reveal` · `GET /:id/usage` · `POST /fetch-models`、`POST /:id/fetch-models` |
+| 密钥 | `GET/POST/PATCH/DELETE /api/keys[/:id]` · `POST /:id/rotate` · `GET /:id/reveal` |
+| 模型映射 | `GET/POST/PATCH/DELETE /api/model-routes[/:id]` · `POST /batch` · `POST /purge` · `POST /import` |
+| 代理 | `GET/POST/PATCH/DELETE /api/proxies[/:id]` · `GET /:id/reveal` · `POST /latency-test` |
+| 余额 | `GET /api/usage` · `GET /api/usage/adapters` · `POST /api/usage/{refresh,invalidate,invalidate-all}` |
+| 设置 | `GET/PATCH /api/settings` · `POST /api/settings/purge-logs` |
+| 日志与统计 | `GET /api/logs` · `GET /api/stats/{overview,series}?range=today\|7d\|30d\|custom[&from=&to=][&channelId=][&tz=]` |
+| 审计 | `GET /api/audit`（仅管理员） |
+| 运维 | `GET /healthz` · `GET /readyz`（就绪会检查 PG 与 Redis） |
+
+写操作按领域各自要求管理员或归属校验，详见各路由文件。
 
 ## 架构
 
@@ -206,14 +183,24 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 
 ```
 Portara/
-├── server/                # Hono 应用（API + 数据面 + 托管前端产物）
-│   ├── src/routes/        # auth / users / channels / keys / logs / v1
-│   ├── src/services/      # routing（选路）/ limits（限流配额）/ proxy / logger
-│   ├── src/lib/           # crypto / http
+├── server/src/
+│   ├── routes/            # auth / users / channels / keys / modelRoutes /
+│   │                      # proxies / settings / usage(+usageAdmin) / logs / audit / v1
+│   ├── services/          # routing 选路 · limits 限流配额 · relay 协议规划 ·
+│   │                      # anthropic 翻译 · proxy 请求头 · proxyAgent 代理连接 ·
+│   │                      # vendorRules 厂商规则 · usage 余额适配器 · sessions 会话 ·
+│   │                      # channels 渠道密钥 · settings / logger / audit / models
+│   ├── lib/               # crypto · http · dotenv
 │   └── tests/             # node:test 单元测试
-├── web/                   # Vue 3 管理面板
-├── scripts/smoke.mjs      # 端到端冒烟
-├── deploy 见 docker-compose.yml / Dockerfile
+├── web/src/
+│   ├── views/             # 每个页面一个 .vue（概览 / 渠道 / 详情 / 密钥 / 日志 / 余额 …）
+│   ├── components/        # PSelect · PCombobox · PCheckbox · PInfo · Modal · LogoMark
+│   ├── i18n/              # 中英文案（zh.ts / en.ts）
+│   └── styles.css         # 手写 CSS（无 UI 框架）
+├── scripts/
+│   ├── smoke.mjs          # 端到端冒烟（独立 schema + 伪上游）
+│   └── brand.mjs          # 由 web/src/logo.json 生成站点图标
+├── docker-compose.yml / Dockerfile
 └── .develop/docs/         # 愿景、技术选型、开发路线
 ```
 
@@ -224,7 +211,7 @@ Portara/
 | 登录口令 | `scrypt` + 随机盐 + `timingSafeEqual` |
 | 客户端 API Key | SHA-256 哈希（鉴权用）+ AES-256-GCM 密文（供管理员查看，见下）+ 展示前缀 |
 | 上游渠道密钥 | AES-256-GCM 信封加密，主密钥来自 `PORTARA_MASTER_KEY` |
-| 管理会话 | HS256 JWT，HttpOnly + SameSite=Lax |
+| 管理会话 | access：HS256 JWT（15 分钟）；refresh：32 字节随机串（30 天），两者均为 HttpOnly + SameSite=Lax。refresh 存哈希、每次刷新轮换、可撤销，详见 D-051 |
 | 日志 | 密钥一律不落日志；请求/响应**正文默认不留存** |
 
 > **关于「查看 Key」的权衡（DECISIONS D-013）**：为了支持管理员在面板上查看并

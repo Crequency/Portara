@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
-import { decryptSecret, encryptSecret, maskSecret } from '../lib/crypto.js'
+import { encryptSecret, maskSecret } from '../lib/crypto.js'
 import { ApiError, badRequest, clientIp, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
@@ -17,14 +17,14 @@ import {
 import { buildModelsUrl, parseModelsResponse, type ModelInfo } from '../services/models.js'
 import {
   buildUpstreamHeaders,
-  buildUpstreamUrl,
+  sessionEchoOf,
   parseJsonSafe,
   isVendorPreset,
-  sanitizeExtraHeaders,
-  withStreamUsage
+  sanitizeExtraHeaders
 } from '../services/proxy.js'
 import { getSetting } from '../services/settings.js'
 import { getUsageSnapshot, invalidateUsageCache } from '../services/usageFetch.js'
+import { decryptChannelKey, tryDecryptChannelKey } from '../services/channels.js'
 import { getProxyTarget } from '../services/proxies.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import type { ProxyTarget } from '../services/proxyAgent.js'
@@ -189,14 +189,7 @@ channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')
 
-  let upstreamKey = ''
-  if (ch.api_key_cipher) {
-    try {
-      upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
-    } catch {
-      throw badRequest('该渠道的密钥无法解密，请重新填写')
-    }
-  }
+  const upstreamKey = decryptChannelKey(ch)
 
   const result = await fetchModelsFor({
     baseUrl: ch.base_url,
@@ -323,12 +316,9 @@ function validateChannelInput(input: {
 }
 
 function maskOf(ch: ChannelRow): string {
-  if (!ch.api_key_cipher) return ''
-  try {
-    return maskSecret(decryptSecret(ch.api_key_cipher, env.masterKey))
-  } catch {
-    return '（密文无法解密，请重新填写）'
-  }
+  const key = tryDecryptChannelKey(ch)
+  if (key === null) return '（密文无法解密，请重新填写）'
+  return key ? maskSecret(key) : ''
 }
 
 channelRoutes.get('/', async (c) => {
@@ -512,10 +502,8 @@ channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
     throw new ApiError(409, 'channel_key_empty', '该渠道没有配置上游密钥')
   }
 
-  let key: string
-  try {
-    key = decryptSecret(ch.api_key_cipher, env.masterKey)
-  } catch {
+  const key = tryDecryptChannelKey(ch)
+  if (key === null) {
     throw new ApiError(
       500,
       'channel_key_decrypt_failed',
@@ -557,11 +545,8 @@ channelRoutes.post('/:id/test', async (c) => {
     )
   }
 
-  let upstreamKey = ''
-  if (ch.api_key_cipher) {
-    try {
-      upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
-    } catch {
+  const upstreamKey = tryDecryptChannelKey(ch)
+  if (upstreamKey === null) {
       await record(0, false)
       return c.json({
         ok: false,
@@ -570,7 +555,6 @@ channelRoutes.post('/:id/test', async (c) => {
         models: [],
         message: '密钥无法解密，请重新填写'
       })
-    }
   }
 
   const result = await fetchModelsFor({
@@ -631,14 +615,7 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
 
   const model = typeof payload.model === 'string' ? payload.model : ''
 
-  let upstreamKey = ''
-  if (ch.api_key_cipher) {
-    try {
-      upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
-    } catch {
-      throw badRequest('该渠道的密钥无法解密，请重新填写')
-    }
-  }
+  const upstreamKey = decryptChannelKey(ch)
 
   /**
    * 直连测试同样要**按有效协议**发请求 —— 否则给 Anthropic 协议的模型发
@@ -684,10 +661,7 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     payload,
     contentEncoding: c.req.header('content-encoding')
   })
-  // 回显实际生效的会话头 —— 否则「注入的值对不对」只能靠翻上游日志
-  const sessionEcho: Record<string, string> = upstreamHeaders.session
-    ? { 'x-portara-session': upstreamHeaders.session.value }
-    : {}
+  const sessionEcho = sessionEchoOf(upstreamHeaders.session)
 
   let res: Response
   try {

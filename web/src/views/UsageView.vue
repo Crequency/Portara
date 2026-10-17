@@ -5,8 +5,9 @@
  * 上游的余额接口各说各话（金额 / 额度窗口 / 账期累计），
  * 服务端已归一化成统一快照，这里只负责呈现。
  */
+import { toastError } from '../error'
 import { computed, onMounted, ref } from 'vue'
-import { api, ApiError, type Channel, type UsageSnapshot, type User } from '../api'
+import { api, type UsageSnapshot, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
 import {
@@ -24,7 +25,6 @@ const props = defineProps<{ user?: User }>()
 const { t } = useI18n()
 
 const snapshots = ref<UsageSnapshot[]>([])
-const channels = ref<Channel[]>([])
 const loading = ref(true)
 const refreshing = ref(false)
 
@@ -60,20 +60,15 @@ const summary = computed(() => {
   }
 })
 
-/** 该渠道是否配了适配器（用于「未配置」提示） */
-const configuredChannelIds = computed(() => new Set(channels.value.filter((c) => c.usageAdapter).map((c) => c.id)))
-
 async function load(force = false): Promise<void> {
   loading.value = true
   try {
-    const [u, c] = await Promise.all([
-      api.get<{ providers: UsageSnapshot[] }>('/api/usage' + (force ? '?refresh=1' : '')),
-      api.get<{ channels: Channel[] }>('/api/channels')
-    ])
+    const u = await api.get<{ providers: UsageSnapshot[] }>(
+      '/api/usage' + (force ? '?refresh=1' : '')
+    )
     snapshots.value = u.providers
-    channels.value = c.channels
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('usage.error'))
+    toastError(err, t('usage.error'))
   } finally {
     loading.value = false
   }
@@ -95,7 +90,7 @@ async function refreshOne(s: UsageSnapshot): Promise<void> {
     const i = snapshots.value.findIndex((x) => x.channelId === s.channelId)
     if (i >= 0) snapshots.value[i] = next
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('usage.error'))
+    toastError(err, t('usage.error'))
   }
 }
 

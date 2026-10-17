@@ -238,6 +238,15 @@ export interface UpstreamHeaders {
   session: InjectedSession | null
 }
 
+/**
+ * 回显本次实际生效的会话头。
+ *
+ * 不把注入结果告诉调用方的话，「值对不对」只能靠翻上游日志。
+ */
+export function sessionEchoOf(session: InjectedSession | null): Record<string, string> {
+  return session ? { 'x-portara-session': session.value } : {}
+}
+
 /** Anthropic 要求显式声明 API 版本 */
 export const ANTHROPIC_VERSION = '2023-06-01'
 

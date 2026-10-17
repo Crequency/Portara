@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorText, toastError } from '../error'
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   api,
@@ -98,7 +99,7 @@ async function revealChannelKey(ch: Channel): Promise<void> {
     const res = await api.get<{ key: string }>('/api/channels/' + ch.id + '/reveal')
     revealedKey.value = res.key
   } catch (err) {
-    revealError.value = err instanceof ApiError ? err.message : t('channels.revealKeyFailed')
+    revealError.value = errorText(err, t('channels.revealKeyFailed'))
   } finally {
     revealing.value = false
   }
@@ -369,7 +370,7 @@ async function submitRoute(): Promise<void> {
     showRouteForm.value = false
     await loadRoutes()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('mapping.saveFailed'))
+    toastError(err, t('mapping.saveFailed'))
   } finally {
     savingRoute.value = false
   }
@@ -381,7 +382,7 @@ async function removeRoute(r: ModelRoute): Promise<void> {
     toast.success(t('mapping.deleted'))
     await loadRoutes()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('mapping.deleteFailed'))
+    toastError(err, t('mapping.deleteFailed'))
   }
 }
 
@@ -392,7 +393,7 @@ async function purgeAlias(alias: string, n: number): Promise<void> {
     toast.success(t('mapping.deleted'))
     await loadRoutes()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('mapping.deleteFailed'))
+    toastError(err, t('mapping.deleteFailed'))
   }
 }
 
@@ -430,7 +431,7 @@ async function submitBatch(): Promise<void> {
     showBatchForm.value = false
     await loadRoutes()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('mapping.batchFailed'))
+    toastError(err, t('mapping.batchFailed'))
   } finally {
     savingRoute.value = false
   }
@@ -611,7 +612,7 @@ async function fetchModelsFromApi(): Promise<void> {
         : t('channels.fetchOkNoCtx', { n: res.models.length })
     )
   } catch (err) {
-    const message = err instanceof ApiError ? err.message : t('channels.fetchFailed')
+    const message = errorText(err, t('channels.fetchFailed'))
     fetchState.value = { ok: false, message, warnings: [] }
     toast.error(message)
   } finally {
@@ -707,7 +708,7 @@ async function submit(): Promise<void> {
     showForm.value = false
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('channels.saveFailed'))
+    toastError(err, t('channels.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -731,7 +732,7 @@ async function test(ch: Channel, opts: { silent?: boolean } = {}): Promise<void>
       status: 0,
       latencyMs: 0,
       models: [],
-      message: err instanceof ApiError ? err.message : t('channels.testFailed')
+      message: errorText(err, t('channels.testFailed'))
     }
     ch.lastLatencyMs = 0
     ch.lastTestAt = new Date().toISOString()
@@ -747,7 +748,7 @@ async function remove(ch: Channel): Promise<void> {
     toast.success(t('channels.deleted'))
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('channels.deleteFailed'))
+    toastError(err, t('channels.deleteFailed'))
   }
 }
 

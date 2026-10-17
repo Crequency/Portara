@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { errorText, toastError } from '../error'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api, ApiError, type ApiKey, type Channel, type User } from '../api'
+import { api, type ApiKey, type Channel, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PCheckbox from '../components/PCheckbox.vue'
 import PSelect from '../components/PSelect.vue'
@@ -169,7 +170,7 @@ async function submit(): Promise<void> {
     toast.success(t('keys.created'))
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('keys.createFailed'))
+    toastError(err, t('keys.createFailed'))
   } finally {
     saving.value = false
   }
@@ -184,7 +185,7 @@ async function reveal(k: ApiKey): Promise<void> {
     const res = await api.get<{ key: string }>('/api/keys/' + k.id + '/reveal')
     revealedKey.value = res.key
   } catch (err) {
-    revealError.value = err instanceof ApiError ? err.message : t('keys.revealFailed')
+    revealError.value = errorText(err, t('keys.revealFailed'))
   } finally {
     revealing.value = false
   }
@@ -206,7 +207,7 @@ async function rotate(k: ApiKey): Promise<void> {
     toast.success(t('keys.rotated'))
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('keys.rotateFailed'))
+    toastError(err, t('keys.rotateFailed'))
   }
 }
 
@@ -217,7 +218,7 @@ async function toggle(k: ApiKey): Promise<void> {
     })
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('keys.opFailed'))
+    toastError(err, t('keys.opFailed'))
   }
 }
 
@@ -228,7 +229,7 @@ async function remove(k: ApiKey): Promise<void> {
     toast.success(t('keys.deleted'))
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('keys.deleteFailed'))
+    toastError(err, t('keys.deleteFailed'))
   }
 }
 

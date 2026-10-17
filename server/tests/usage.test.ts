@@ -118,10 +118,12 @@ test('originOf 取 scheme+host（余额端点不能用完整 base 拼）', () =>
 })
 
 test('endpointUrl 支持 usage_url 覆盖', () => {
-  const a = getUsageAdapter('deepseek')!
-  assert.equal(endpointUrl(a, 'https://api.deepseek.com', '/user/balance'), 'https://api.deepseek.com/user/balance')
   assert.equal(
-    endpointUrl(a, 'https://api.deepseek.com', '/user/balance', 'https://mirror.example.com/'),
+    endpointUrl('https://api.deepseek.com', '/user/balance'),
+    'https://api.deepseek.com/user/balance'
+  )
+  assert.equal(
+    endpointUrl('https://api.deepseek.com', '/user/balance', 'https://mirror.example.com/'),
     'https://mirror.example.com/user/balance'
   )
 })

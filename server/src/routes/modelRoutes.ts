@@ -1,4 +1,3 @@
-import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, pool, query } from '../db.js'

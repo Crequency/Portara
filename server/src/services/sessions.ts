@@ -210,12 +210,3 @@ export async function pruneSessions(): Promise<number> {
   return rows.length
 }
 
-/** 当前仍有效的会话数（面板用得上，暂未接界面） */
-export async function countActiveSessions(userId: string): Promise<number> {
-  const row = await one<{ n: string }>(
-    `select count(*)::text as n from sessions
-      where user_id = $1 and revoked_at is null and expires_at > now()`,
-    [userId]
-  )
-  return Number(row?.n ?? 0)
-}

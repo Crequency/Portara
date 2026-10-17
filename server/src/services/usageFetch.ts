@@ -9,9 +9,8 @@
  * 比"上游抖了一下，面板就整片报错"有用得多。
  */
 import { one, query } from '../db.js'
-import { env } from '../env.js'
-import { decryptSecret } from '../lib/crypto.js'
 import { redis } from '../redis.js'
+import { tryDecryptChannelKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
@@ -148,14 +147,8 @@ export async function getUsageSnapshot(
 
 /** 真正去打上游并解析 */
 async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<UsageSnapshot> {
-  let apiKey = ''
-  if (ch.api_key_cipher) {
-    try {
-      apiKey = decryptSecret(ch.api_key_cipher, env.masterKey)
-    } catch {
-      return errorSnapshot(ch, '渠道密钥无法解密，请重新填写')
-    }
-  }
+  const apiKey = tryDecryptChannelKey(ch)
+  if (apiKey === null) return errorSnapshot(ch, '渠道密钥无法解密，请重新填写')
 
   const proxy = await getProxyTarget(ch.proxy_id)
   const timeoutMs = Math.min(ch.timeout_ms, 30_000)
@@ -167,7 +160,7 @@ async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<Usa
   // 并行拉取：各端点相互独立，串行会白白等好几倍时间
   const results = await Promise.all(
     adapter.endpoints.map(async (ep) => {
-      const url = endpointUrl(adapter, ch.base_url, ep.path, ch.usage_url)
+      const url = endpointUrl(ch.base_url, ep.path, ch.usage_url)
       const headers: Record<string, string> = { accept: 'application/json' }
       if (adapter.auth === 'bearer' && apiKey) headers.authorization = `Bearer ${apiKey}`
       if (adapter.auth === 'x-api-key' && apiKey) headers['x-api-key'] = apiKey

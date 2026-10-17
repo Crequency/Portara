@@ -6,8 +6,9 @@
  *   ① 维护 HTTP 代理库（增删改查 + 查看密码，留审计）
  *   ② 延迟测试：对同一渠道分别测「直连」与「走代理」，给管理员一个可比的数据
  */
+import { errorText, toastError } from '../error'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api, ApiError, type Channel, type ProxyConfig, type User } from '../api'
+import { api, type Channel, type ProxyConfig, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PCheckbox from '../components/PCheckbox.vue'
 import PSelect from '../components/PSelect.vue'
@@ -121,7 +122,7 @@ async function load(): Promise<void> {
       channels.value.some((c) => c.id === id)
     )
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('proxies.loadFailed'))
+    toastError(err, t('proxies.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -170,7 +171,7 @@ async function submit(): Promise<void> {
     showForm.value = false
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('proxies.saveFailed'))
+    toastError(err, t('proxies.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -184,7 +185,7 @@ async function remove(p: ProxyConfig): Promise<void> {
     toast.success(t('proxies.deletedUnbound', { n: res.unboundChannels.length }))
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('proxies.saveFailed'))
+    toastError(err, t('proxies.saveFailed'))
   }
 }
 
@@ -198,7 +199,7 @@ async function revealPassword(p: ProxyConfig): Promise<void> {
     const res = await api.get<{ password: string }>('/api/proxies/' + p.id + '/reveal')
     revealedPassword.value = res.password
   } catch (err) {
-    revealError.value = err instanceof ApiError ? err.message : t('proxies.saveFailed')
+    revealError.value = errorText(err, t('proxies.saveFailed'))
   } finally {
     revealing.value = false
   }
@@ -256,7 +257,7 @@ async function runLatencyTest(): Promise<void> {
       results.value.push({
         channelId,
         channelName: name,
-        error: err instanceof ApiError ? err.message : t('proxies.latencyFailed')
+        error: errorText(err, t('proxies.latencyFailed'))
       })
     }
     progress.value.done += 1

@@ -3,6 +3,7 @@ import { createApp, VERSION } from './app.js'
 import { ensureAdmin } from './bootstrap.js'
 import { closeDb, runMigrations } from './db.js'
 import { env, printStartupWarnings } from './env.js'
+import { closeProxyAgents } from './services/proxyAgent.js'
 import { closeRedis, redis } from './redis.js'
 import { getSettings, purgeOldLogs } from './services/settings.js'
 import { pruneSessions } from './services/sessions.js'
@@ -103,7 +104,9 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     console.log(`\n[portara] 收到 ${signal}，正在关闭…`)
     server.close(() => {
-      void Promise.allSettled([closeRedis(), closeDb()]).then(() => {
+      // 代理连接池也要关：undici 的 Agent 会保持长连接，
+      // 不关的话进程退出前会多挂一会儿
+      void Promise.allSettled([closeRedis(), closeDb(), closeProxyAgents()]).then(() => {
         console.log('[portara] 已关闭')
         process.exit(0)
       })

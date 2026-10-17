@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { errorText } from '../error'
 import { ref } from 'vue'
 import LogoMark from '../components/LogoMark.vue'
-import { api, ApiError, type User } from '../api'
+import { api, type User } from '../api'
 import { useI18n } from '../i18n'
 
 const { t } = useI18n()
@@ -23,7 +24,7 @@ async function submit(): Promise<void> {
     })
     emit('logged-in', res.user)
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : t('login.failed')
+    error.value = errorText(err, t('login.failed'))
   } finally {
     busy.value = false
   }

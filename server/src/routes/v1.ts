@@ -1,20 +1,18 @@
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { query } from '../db.js'
-import { env } from '../env.js'
-import { decryptSecret } from '../lib/crypto.js'
 import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
+import { tryDecryptChannelKey } from '../services/channels.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import {
   buildUpstreamHeaders,
-  buildUpstreamUrl,
+  sessionEchoOf,
   extractUsage,
   parseJsonSafe,
-  SseUsageScanner,
-  withStreamUsage
+  SseUsageScanner
 } from '../services/proxy.js'
 import { checkRateLimit, quotaExceeded } from '../services/ratelimit.js'
 import {
@@ -110,26 +108,42 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     source: 'gateway'
   }
 
-  // ① 模型白名单
-  if (key.model_allow.length > 0 && model && !key.model_allow.includes(model)) {
+  /**
+   * 早退：记一条零用量的日志，再返回 OpenAI 风格的错误。
+   *
+   * 被拒的请求同样要留痕 —— 否则「为什么这个 key 老是 403」只能靠猜。
+   * 日志里的 error 比返回给调用方的 message 更简短：前者给运维看，后者给调用方看。
+   */
+  const rejectEarly = (opts: {
+    status: Parameters<typeof openaiError>[1]
+    logError: string
+    message: string
+    type: string
+    code: string
+  }): Response => {
     fireAndForgetLog({
       ...baseLog,
-      statusCode: 403,
+      statusCode: opts.status,
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
       estimated: false,
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
-      error: `模型 ${model} 不在允许列表`
+      error: opts.logError
     })
-    return openaiError(
-      c,
-      403,
-      `模型「${model}」不在该 API Key 的允许列表内`,
-      'invalid_request_error',
-      'model_not_allowed'
-    )
+    return openaiError(c, opts.status, opts.message, opts.type, opts.code)
+  }
+
+  // ① 模型白名单
+  if (key.model_allow.length > 0 && model && !key.model_allow.includes(model)) {
+    return rejectEarly({
+      status: 403,
+      logError: `模型 ${model} 不在允许列表`,
+      message: `模型「${model}」不在该 API Key 的允许列表内`,
+      type: 'invalid_request_error',
+      code: 'model_not_allowed'
+    })
   }
 
   // ② 速率限制
@@ -138,24 +152,13 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     c.header('retry-after', String(rl.retryAfterSec))
     c.header('x-ratelimit-limit-requests', String(rl.limit))
     c.header('x-ratelimit-remaining-requests', '0')
-    fireAndForgetLog({
-      ...baseLog,
-      statusCode: 429,
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      estimated: false,
-      latencyMs: Date.now() - startedAt,
-      ttftMs: null,
-      error: `超出速率限制（${rl.limit}/分钟）`
+    return rejectEarly({
+      status: 429,
+      logError: `超出速率限制（${rl.limit}/分钟）`,
+      message: `超出速率限制：${rl.limit} 次/分钟`,
+      type: 'rate_limit_error',
+      code: 'rate_limit_exceeded'
     })
-    return openaiError(
-      c,
-      429,
-      `超出速率限制：${rl.limit} 次/分钟`,
-      'rate_limit_error',
-      'rate_limit_exceeded'
-    )
   }
   c.header('x-ratelimit-limit-requests', String(rl.limit))
   c.header('x-ratelimit-remaining-requests', String(Math.max(0, rl.remaining)))
@@ -163,41 +166,25 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   // ③ 配额预检
   const usageInfo = await loadKeyUsage(key.id)
   if (usageInfo && quotaExceeded(usageInfo.usedTokens, usageInfo.quotaTokens)) {
-    fireAndForgetLog({
-      ...baseLog,
-      statusCode: 402,
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      estimated: false,
-      latencyMs: Date.now() - startedAt,
-      ttftMs: null,
-      error: 'Token 配额已用尽'
+    return rejectEarly({
+      status: 402,
+      logError: 'Token 配额已用尽',
+      message: `Token 配额已用尽（${usageInfo.usedTokens}/${usageInfo.quotaTokens}）`,
+      type: 'insufficient_quota',
+      code: 'quota_exceeded'
     })
-    return openaiError(
-      c,
-      402,
-      `Token 配额已用尽（${usageInfo.usedTokens}/${usageInfo.quotaTokens}）`,
-      'insufficient_quota',
-      'quota_exceeded'
-    )
   }
 
   // ④ 选路
   const pick = await selectTarget(key, model)
   if (!pick.ok) {
-    fireAndForgetLog({
-      ...baseLog,
-      statusCode: 503,
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      estimated: false,
-      latencyMs: Date.now() - startedAt,
-      ttftMs: null,
-      error: pick.message
+    return rejectEarly({
+      status: 503,
+      logError: pick.message,
+      message: pick.message,
+      type: 'api_error',
+      code: pick.code
     })
-    return openaiError(c, 503, pick.message, 'api_error', pick.code)
   }
   const channel = pick.target.channel
   const upstreamModel = pick.target.upstreamModel
@@ -209,13 +196,9 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
 
   // ⑤ 上游密钥
-  let upstreamKey = ''
-  if (channel.api_key_cipher) {
-    try {
-      upstreamKey = decryptSecret(channel.api_key_cipher, env.masterKey)
-    } catch {
-      return openaiError(c, 500, '上游渠道密钥无法解密，请在管理面板重新填写', 'api_error', 'channel_key_error')
-    }
+  const upstreamKey = tryDecryptChannelKey(channel)
+  if (upstreamKey === null) {
+    return openaiError(c, 500, '上游渠道密钥无法解密，请在管理面板重新填写', 'api_error', 'channel_key_error')
   }
 
   // ⑥ 命中模型映射时，把网关受理的 model 改写成上游真实 model
@@ -264,10 +247,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       contentEncoding: c.req.header('content-encoding')
     }
   )
-  // 回显实际生效的会话头（如 opencode-go 的 x-opencode-session）
-  const sessionEcho: Record<string, string> = upstreamHeaders.session
-    ? { 'x-portara-session': upstreamHeaders.session.value }
-    : {}
+  const sessionEcho = sessionEchoOf(upstreamHeaders.session)
 
   let res: Response
   try {

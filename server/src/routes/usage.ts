@@ -23,13 +23,6 @@ export const usageRoutes = new Hono()
 
 usageRoutes.use('*', apiKeyAuth)
 
-/**
- * 强制刷新的最小间隔。
- * 即便 key 有 `usage_refresh` 权限，也不能无限打上游 ——
- * 间隔内的重复请求直接返回缓存。
- */
-const MIN_FORCE_INTERVAL_MS = 10_000
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** 该 key 是否可见某渠道 */

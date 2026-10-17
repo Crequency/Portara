@@ -1,5 +1,3 @@
-import { env } from './env.js'
-
 /**
  * 数据库迁移。SQL 内联为 TS 字符串，避免 tsc 构建时漏拷 .sql 文件。
  * 已执行的迁移记录在 schema_migrations，**只增不改**。

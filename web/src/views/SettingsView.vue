@@ -8,6 +8,7 @@
  * 原则：**每一项都必须真的生效**。若某个开关只是存进库里不影响行为，
  * 那它就不该出现在这里。
  */
+import { toastError } from '../error'
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, type GatewaySettings } from '../api'
 import PCheckbox from '../components/PCheckbox.vue'
@@ -66,7 +67,7 @@ async function load(): Promise<void> {
     if (err instanceof ApiError && err.status === 403) {
       denied.value = true
     } else {
-      toast.error(err instanceof ApiError ? err.message : t('settings.loadFailed'))
+      toastError(err, t('settings.loadFailed'))
     }
   } finally {
     loading.value = false
@@ -94,7 +95,7 @@ async function save(): Promise<void> {
     await loadMeta()
     toast.success(t('settings.saved'))
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('settings.saveFailed'))
+    toastError(err, t('settings.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -109,7 +110,7 @@ async function purgeNow(): Promise<void> {
     )
     toast.success(res.message)
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('settings.saveFailed'))
+    toastError(err, t('settings.saveFailed'))
   } finally {
     purging.value = false
   }

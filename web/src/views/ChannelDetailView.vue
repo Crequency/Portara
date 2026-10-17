@@ -5,10 +5,10 @@
  * 聚合四块信息：基本配置 / 用量统计 / 模型列表（含上下文长度）/ 映射与最近请求。
  * 数据全部走既有接口，仅统计与映射按 channelId 过滤。
  */
+import { errorText, toastError } from '../error'
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   api,
-  ApiError,
   type Channel,
   type ChannelTestResult,
   type ModelMeta,
@@ -226,7 +226,7 @@ async function testChannel(): Promise<void> {
     if (res.ok) toast.success(ch.name + ' · ' + res.latencyMs + 'ms')
     else toast.error(ch.name + ' · ' + res.message)
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('channels.testFailed'))
+    toastError(err, t('channels.testFailed'))
   } finally {
     testing.value = false
   }
@@ -243,7 +243,7 @@ async function revealKey(): Promise<void> {
     const res = await api.get<{ key: string }>('/api/channels/' + ch.id + '/reveal')
     revealedKey.value = res.key
   } catch (err) {
-    revealError.value = err instanceof ApiError ? err.message : t('channels.revealKeyFailed')
+    revealError.value = errorText(err, t('channels.revealKeyFailed'))
   } finally {
     revealing.value = false
   }
@@ -335,7 +335,7 @@ async function saveOverride(): Promise<void> {
     overrideOpen.value = false
     await loadChannel()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('channelDetail.overrideFailed'))
+    toastError(err, t('channelDetail.overrideFailed'))
   } finally {
     savingOverride.value = false
   }

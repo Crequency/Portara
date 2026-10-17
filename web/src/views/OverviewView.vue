@@ -145,10 +145,6 @@ function sortedWindows(s: UsageSnapshot) {
   )
 }
 
-/** 该渠道最"紧"的窗口（已用百分比最高） */
-function tightestWindow(s: UsageSnapshot) {
-  return sortedWindows(s)[0] ?? null
-}
 
 /**
  * 窗口键 → 界面文案。

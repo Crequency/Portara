@@ -9,11 +9,12 @@ import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret, encryptSecret } from '../lib/crypto.js'
-import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
+import { badRequest, notFound, parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { buildUpstreamHeaders, buildUpstreamUrl, parseJsonSafe } from '../services/proxy.js'
 import { upstreamFetch, type ProxyTarget } from '../services/proxyAgent.js'
+import { decryptChannelKey } from '../services/channels.js'
 import { getProxyTarget } from '../services/proxies.js'
 import { toProxyDto, type ChannelRow, type ProxyRow } from '../types.js'
 
@@ -206,14 +207,7 @@ proxyRoutes.post('/latency-test', async (c) => {
   const proxy = await getProxyTarget(body.proxyId)
   if (!proxy) throw badRequest('代理不存在或已停用')
 
-  let upstreamKey = ''
-  if (ch.api_key_cipher) {
-    try {
-      upstreamKey = decryptSecret(ch.api_key_cipher, env.masterKey)
-    } catch {
-      throw badRequest('该渠道的密钥无法解密，请重新填写')
-    }
-  }
+  const upstreamKey = decryptChannelKey(ch)
 
   const url = buildUpstreamUrl(ch.base_url, ch.models_path ?? '/models')
   const headers = buildUpstreamHeaders(upstreamKey, 'application/json', {

@@ -443,7 +443,6 @@ export function originOf(baseUrl: string): string {
 
 /** 组装某个端点的完整 URL（`usage_url` 覆盖时按覆盖值 + 端点路径） */
 export function endpointUrl(
-  adapter: UsageAdapter,
   baseUrl: string,
   path: string,
   override?: string

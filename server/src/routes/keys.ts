@@ -5,7 +5,7 @@ import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret, encryptSecret, generateApiKey } from '../lib/crypto.js'
 import { ApiError, badRequest, forbidden, notFound, parseJson } from '../lib/http.js'
-import { requireAdmin, requireAuth } from '../middleware/auth.js'
+import { requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { toApiKeyDto, type ApiKeyRow } from '../types.js'
 

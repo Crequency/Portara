@@ -9,8 +9,9 @@
  *
  * 不做会话管理：每次进入即新会话，刷新即清空；明文密钥只在本页内存中。
  */
+import { errorText } from '../error'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { api, ApiError, type ApiKey, type Channel, type User } from '../api'
+import { api, type ApiKey, type Channel, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PCheckbox from '../components/PCheckbox.vue'
 import PCombobox from '../components/PCombobox.vue'
@@ -156,7 +157,7 @@ async function loadModels(): Promise<void> {
       model.value = models.value[0]!
     }
   } catch (err) {
-    keyError.value = err instanceof ApiError ? err.message : t('keys.revealFailed')
+    keyError.value = errorText(err, t('keys.revealFailed'))
   } finally {
     loadingModels.value = false
   }

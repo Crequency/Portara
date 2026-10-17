@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { toastError } from '../error'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api, ApiError, type User } from '../api'
+import { api, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatTime } from '../format'
@@ -97,7 +98,7 @@ async function submit(): Promise<void> {
     showForm.value = false
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('users.saveFailed'))
+    toastError(err, t('users.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -110,7 +111,7 @@ async function remove(u: User): Promise<void> {
     toast.success(t('users.deleted'))
     await load()
   } catch (err) {
-    toast.error(err instanceof ApiError ? err.message : t('users.deleteFailed'))
+    toastError(err, t('users.deleteFailed'))
   }
 }
 
