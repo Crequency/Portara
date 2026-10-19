@@ -746,7 +746,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 /* ---------------------------------------------------------------- 图表 */
 
 /* 用量趋势：每个时段两根柱 —— 蓝=请求量，绿=Token 用量 */
-.chart-wrap { display: flex; flex-direction: column; gap: 8px; }
+.chart-wrap { display: flex; flex-direction: column; gap: 14px; }
 
 .chart-legend {
   display: flex;
@@ -776,13 +776,27 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 }
 
 /* 两轴共用同一组网格线，各自标注自己的量纲（量级差得远，不能共用一根轴） */
-.chart-axis { position: relative; width: 46px; }
-.axis-label {
-  position: absolute;
+.chart-axis { position: relative; }
+
+/*
+ * 刻度与量尺必须共享同一套字体度量 —— 否则量尺（默认字号）比真实刻度宽，
+ * 撑出来的轴宽就又白留了一截。
+ */
+.axis-label,
+.axis-measure {
   font-size: 10px;
   line-height: 1;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+/*
+ * 量尺：所有刻度叠在同一个网格单元里 —— 宽度取最宽的那个，高度只有一行。
+ * 比「挑一个最长的字符串当量尺」可靠（长度不等于宽度）。
+ */
+.axis-measure { visibility: hidden; display: grid; }
+.axis-measure > span { grid-area: 1 / 1; }
+.axis-label {
+  position: absolute;
   /* 让文字垂直居中对齐到网格线 */
   transform: translateY(50%);
 }

@@ -467,6 +467,15 @@ onMounted(() => {
         <div class="chart-body">
           <!-- 左轴：请求量 -->
           <div class="chart-axis chart-axis-left">
+            <!--
+              隐形量尺：把所有刻度叠在同一个网格单元里，宽度自然取最宽的那个。
+              不能只拿「最大刻度」当量尺 —— 它不一定最宽
+              （`1.6B` 里的点比数字窄，实际比 `800M` 窄）。
+              写死宽度（曾是 46px）则会在窄刻度旁留一大片空白，白吃绘图区宽度。
+            -->
+            <span class="axis-measure" aria-hidden="true">
+              <span v-for="tk in reqTicks" :key="tk.pct">{{ tk.label }}</span>
+            </span>
             <span
               v-for="tk in reqTicks"
               :key="'r' + tk.pct"
@@ -513,6 +522,14 @@ onMounted(() => {
 
           <!-- 右轴：Token 用量 -->
           <div class="chart-axis chart-axis-right">
+            <!--
+              隐形量尺：让轴宽**恰好等于最宽的刻度**。
+              写死宽度（曾是 46px）会在窄刻度（如「0」）旁留下一大片空白，
+              白白吃掉绘图区宽度。
+            -->
+            <span class="axis-measure" aria-hidden="true">
+              <span v-for="tk in tokTicks" :key="tk.pct">{{ tk.label }}</span>
+            </span>
             <span
               v-for="tk in tokTicks"
               :key="'t' + tk.pct"
