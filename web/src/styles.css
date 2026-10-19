@@ -746,7 +746,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 /* ---------------------------------------------------------------- 图表 */
 
 /* 用量趋势：每个时段两根柱 —— 蓝=请求量，绿=Token 用量 */
-.chart-wrap { display: flex; flex-direction: column; gap: 7px; }
+.chart-wrap { display: flex; flex-direction: column; gap: 8px; }
 
 .chart-legend {
   display: flex;
@@ -756,29 +756,76 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   color: var(--text-dim);
 }
 .legend-item { display: inline-flex; align-items: center; gap: 5px; }
-.legend-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.legend-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
 .legend-dot-req { background: var(--accent); }
 .legend-dot-tok { background: var(--success); }
+.legend-dot-err { background: var(--danger); }
 
-.chart {
-  display: flex;
-  align-items: flex-end;
+/*
+ * 图表布局：左轴 | 绘图区 | 右轴，日期独占第二行。
+ *
+ * 用 grid 而不是两个独立 flex 行 —— 日期行必须与绘图区**逐列严格对齐**，
+ * 两套 flex 各自算间距迟早会差一两个像素。
+ */
+.chart-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: 158px auto;
+  column-gap: 7px;
+  row-gap: 5px;
+}
+
+/* 两轴共用同一组网格线，各自标注自己的量纲（量级差得远，不能共用一根轴） */
+.chart-axis { position: relative; width: 46px; }
+.chart-axis:first-child { text-align: right; }
+.chart-axis:last-of-type { text-align: left; }
+.axis-label {
+  position: absolute;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  /* 让文字垂直居中对齐到网格线 */
+  transform: translateY(50%);
+}
+.axis-req { color: var(--accent); }
+.axis-tok { color: var(--success); }
+
+.chart-plot { position: relative; min-width: 0; }
+.chart-gridline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+/*
+ * 柱区与日期行用同一套 grid，因此列宽与间距完全一致。
+ * 关键：允许列被压缩（minmax(0,1fr)）——
+ * flex 项默认 min-width:auto 会被 `white-space: nowrap` 的日期撑开，
+ * 30 天时标签总宽超过容器就必然冒出横向滚动条。
+ */
+.chart-cols {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 6px;
-  height: 150px;
-  padding-top: 4px;
-  overflow-x: auto;
 }
 
 .chart-col {
-  flex: 1 1 0;
-  min-width: 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
-  height: 100%;
   justify-content: flex-end;
+  height: 100%;
+  min-width: 0;
+  border-radius: 3px;
+  transition: background 0.12s;
 }
+.chart-col.is-hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
 
 .chart-bars {
   flex: 1 1 auto;
@@ -792,34 +839,85 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 .chart-bar {
   flex: 1 1 0;
-  max-width: 22px;
+  min-width: 0;
+  max-width: 20px;
   border-radius: 3px 3px 0 0;
   min-height: 2px;
 }
-
 .chart-bar-req {
   background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 28%, transparent));
 }
-
 .chart-bar-tok {
   background: linear-gradient(180deg, var(--success), color-mix(in srgb, var(--success) 28%, transparent));
 }
-
-/* 该时段有失败请求：请求量柱转红，另在标签旁点一个红点 */
+/* 该时段有失败请求：请求量柱转红 */
 .chart-bar-err {
   background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 28%, transparent));
 }
-.chart-err-dot { color: var(--danger); margin-left: 2px; }
 
-.chart-label { font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+.chart-labels {
+  grid-column: 2;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.chart-label-slot { min-width: 0; text-align: center; }
+.chart-label {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 抽掉的标签留位不显示，保证剩余标签仍落在正确的列上 */
+.chart-label.is-hidden { visibility: hidden; }
+.chart-err-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--danger);
+  vertical-align: middle;
+}
+
 .chart-value {
   display: flex;
   gap: 6px;
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .cv-req { color: var(--accent); }
 .cv-tok { color: var(--success); }
+
+/* 悬浮详情：跟随光标，position:fixed 因此不受卡片裁剪影响 */
+.chart-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-100%);
+  pointer-events: none;
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+  font-size: 12px;
+}
+.chart-tip-day {
+  font-weight: 600;
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+}
+.chart-tip-err { color: var(--danger); }
 
 /* ---------------------------------------------------------------- 工具 */
 

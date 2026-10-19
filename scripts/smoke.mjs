@@ -19,12 +19,36 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const API_PORT = Number(process.env.SMOKE_API_PORT ?? 52750)
-const MOCK_PORT = API_PORT + 1
+
+/**
+ * 探测一个空闲端口。
+ *
+ * 以前这里写死 52750/52751/52752 —— 一旦别的会话（或别的项目）占了其中一个，
+ * 冒烟就以 `EADDRINUSE` 直接崩掉，而且报错信息看不出是端口撞车。
+ * 现在按需探测；`SMOKE_API_PORT` 仍可显式指定起点。
+ */
+function canListen(port) {
+  return new Promise((resolve) => {
+    const probe = createServer()
+    probe.once('error', () => resolve(false))
+    probe.once('listening', () => probe.close(() => resolve(true)))
+    probe.listen(port, '127.0.0.1')
+  })
+}
+
+async function findFreePort(from) {
+  for (let port = from; port < from + 100; port++) {
+    if (await canListen(port)) return port
+  }
+  throw new Error(`在 ${from}..${from + 100} 之间找不到空闲端口`)
+}
+
+const API_PORT = await findFreePort(Number(process.env.SMOKE_API_PORT ?? 52750))
+const MOCK_PORT = await findFreePort(API_PORT + 1)
 const BASE = `http://127.0.0.1:${API_PORT}`
 const MOCK = `http://127.0.0.1:${MOCK_PORT}`
 /** 伪正向代理的端口；用于验证「渠道走代理」确实生效 */
-const PROXY_PORT = API_PORT + 2
+const PROXY_PORT = await findFreePort(MOCK_PORT + 1)
 /** 被代理转发的请求（绝对 URI + 代理认证头），用于断言流量真的过代理了 */
 const proxiedRequests = []
 

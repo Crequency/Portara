@@ -96,7 +96,6 @@ export const en = {
     trend: 'Usage trend',
     legendRequests: 'Requests',
     legendTokens: 'Tokens',
-    dualScale: 'Each series is scaled to its own peak',
     resources: 'Channels {active}/{total} · Active keys {keys} · Users {users}',
     topModels: 'Top models',
     topChannels: 'Top channels',

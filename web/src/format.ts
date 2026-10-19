@@ -13,11 +13,20 @@ export function formatNumber(n: number | null | undefined): string {
   return n.toLocaleString('en-US')
 }
 
+/**
+ * 紧凑计数：1.2k / 375M / 1.1B。
+ *
+ * 整数不补 `.0` —— 刻度线上出现 `375.0M` 只是噪音；
+ * 超过十亿要进位到 B，否则会是 `1125.0M` 这种读不出量级的写法。
+ */
 export function formatCompact(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
+  const abs = Math.abs(n)
+  const [div, suffix]: [number, string] =
+    abs >= 1e9 ? [1e9, 'B'] : abs >= 1e6 ? [1e6, 'M'] : abs >= 1e3 ? [1e3, 'k'] : [1, '']
+  if (div === 1) return String(Math.round(n))
+  const v = n / div
+  return `${Number.isInteger(v) ? v : v.toFixed(1)}${suffix}`
 }
 
 export function formatLatency(ms: number | null | undefined): string {
