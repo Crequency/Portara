@@ -871,9 +871,30 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .chart-bar-tok {
   background: linear-gradient(180deg, var(--success), color-mix(in srgb, var(--success) 28%, transparent));
 }
-/* 该时段有失败请求：请求量柱转红 */
-.chart-bar-err {
-  background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 28%, transparent));
+/*
+ * 请求量柱的槽：蓝色是总量，红色段从底部叠加上去表示失败量。
+ * 两者共用同一根轴（请求量轴），所以比例天然一致。
+ */
+.chart-bar-stack {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 20px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+.chart-bar-stack .chart-bar { width: 100%; }
+.chart-bar-fail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /*
+   * 单独给一段更实的红：这一段经常只有 2-3px 高（失败占比很小），
+   * 沿用其它柱那种「向下渐隐」的渐变会淡到读不出来。
+   */
+  background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 72%, transparent));
 }
 
 .chart-labels {

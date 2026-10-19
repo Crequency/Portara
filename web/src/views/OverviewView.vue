@@ -462,6 +462,9 @@ onMounted(() => {
           <span class="legend-item">
             <i class="legend-dot legend-dot-tok" />{{ t('overview.legendTokens') }}
           </span>
+          <span class="legend-item">
+            <i class="legend-dot legend-dot-err" />{{ t('overview.legendFailures') }}
+          </span>
         </div>
 
         <div class="chart-body">
@@ -506,11 +509,22 @@ onMounted(() => {
                   <span class="cv-tok">{{ formatCompact(p.tokens) }}</span>
                 </div>
                 <div class="chart-bars">
-                  <div
-                    class="chart-bar chart-bar-req"
-                    :class="{ 'chart-bar-err': p.errors > 0 }"
-                    :style="{ height: barHeight(p.requests, reqAxisMax) }"
-                  />
+                  <!--
+                    请求量柱：底部的红色段是失败量，其余是成功量。
+                    以前是「有失败就把整根柱染红」—— 而几乎每天都有失败，
+                    结果是图例里的蓝色根本看不到，图例与图形自相矛盾。
+                  -->
+                  <div class="chart-bar-stack">
+                    <div
+                      class="chart-bar chart-bar-req"
+                      :style="{ height: barHeight(p.requests, reqAxisMax) }"
+                    />
+                    <div
+                      v-if="p.errors > 0"
+                      class="chart-bar chart-bar-fail"
+                      :style="{ height: barHeight(p.errors, reqAxisMax) }"
+                    />
+                  </div>
                   <div
                     class="chart-bar chart-bar-tok"
                     :style="{ height: barHeight(p.tokens, tokAxisMax) }"

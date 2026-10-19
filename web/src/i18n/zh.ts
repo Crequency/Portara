@@ -96,6 +96,7 @@ export const zh = {
     trend: '用量趋势',
     legendRequests: '请求量',
     legendTokens: 'Token 用量',
+    legendFailures: '失败请求',
     resources: '渠道 {active}/{total} · 有效密钥 {keys} · 用户 {users}',
     topModels: 'Top 模型',
     topChannels: 'Top 渠道',
