@@ -777,8 +777,6 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 /* 两轴共用同一组网格线，各自标注自己的量纲（量级差得远，不能共用一根轴） */
 .chart-axis { position: relative; width: 46px; }
-.chart-axis:first-child { text-align: right; }
-.chart-axis:last-of-type { text-align: left; }
 .axis-label {
   position: absolute;
   font-size: 10px;
@@ -788,6 +786,15 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   /* 让文字垂直居中对齐到网格线 */
   transform: translateY(50%);
 }
+/*
+ * 必须显式给水平偏移，不能靠 `text-align` ——
+ * absolute + `left: auto` 时用的是「静态位置」，而静态位置**会**被 text-align 影响：
+ * 左轴写了 text-align:right，盒子就被推到包含块右边缘（= 轴的右边界），
+ * 再向右画进绘图区。右对齐的是盒子，不是盒内的文字。
+ * 所以左轴锚右边界、右轴锚左边界，各自向中间的空档生长。
+ */
+.chart-axis-left .axis-label { right: 0; }
+.chart-axis-right .axis-label { left: 0; }
 .axis-req { color: var(--accent); }
 .axis-tok { color: var(--success); }
 

@@ -466,7 +466,7 @@ onMounted(() => {
 
         <div class="chart-body">
           <!-- 左轴：请求量 -->
-          <div class="chart-axis">
+          <div class="chart-axis chart-axis-left">
             <span
               v-for="tk in reqTicks"
               :key="'r' + tk.pct"
@@ -512,7 +512,7 @@ onMounted(() => {
           </div>
 
           <!-- 右轴：Token 用量 -->
-          <div class="chart-axis">
+          <div class="chart-axis chart-axis-right">
             <span
               v-for="tk in tokTicks"
               :key="'t' + tk.pct"
