@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   api,
   type RangePreset,
@@ -148,11 +148,21 @@ function moveCol(e: MouseEvent): void {
   }
 }
 
+/**
+ * 悬浮卡的位置。
+ *
+ * 右侧放不下就**翻到光标左侧** —— 之前是把它往左夹到 `innerWidth - 200`，
+ * 结果 `position: fixed` 的收缩宽度被这剩下的 200px 卡住，
+ * 内容一长（加了 M 单位括号之后）就折行。
+ * 夹取只能保证不越界，不能保证内容排得开。
+ */
+const TIP_RESERVE_WIDTH = 280
+
 const tipStyle = computed(() => {
   const h = hovered.value
   if (!h) return {}
-  const width = 200
-  const left = Math.max(8, Math.min(h.x + 14, window.innerWidth - width - 8))
+  const fitsRight = h.x + 14 + TIP_RESERVE_WIDTH <= window.innerWidth - 8
+  const left = fitsRight ? h.x + 14 : Math.max(8, h.x - TIP_RESERVE_WIDTH - 14)
   return { left: `${left}px`, top: `${Math.max(8, h.y - 12)}px` }
 })
 
@@ -205,15 +215,35 @@ const usageFailedCount = computed(
 const isAdmin = computed(() => props.user?.role === 'admin')
 
 /**
- * 窗口按**已用百分比降序**：最紧的排第一。
+ * 窗口按**时间跨度升序**：5 小时 → 每周 → 每月。
  *
- * 这样窄屏只要隐藏第一条之后的窗口，就自动等价于「只显示最紧的那条」——
- * 不必为两种布局各写一套 DOM。
+ * 这是人读限额的自然顺序。注意排序**不能**再兼职"窄屏留哪一条"——
+ * 两件事要求相反（显示由短到长，窄屏要留最紧的），
+ * 所以窄屏的选择改用 `is-tightest` 标记，见模板。
  */
-function sortedWindows(s: UsageSnapshot) {
-  return [...(s.windows ?? [])].sort(
+const WINDOW_SPAN: Record<string, number> = {
+  interval: 0, // MiniMax 的「当前周期」，跨度与 5 小时同类
+  fiveHour: 0,
+  weekly: 1,
+  monthly: 2
+}
+
+function windowSpanRank(key: string): number {
+  const base = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key
+  return WINDOW_SPAN[base] ?? 99
+}
+
+function orderedWindows(s: UsageSnapshot) {
+  return [...(s.windows ?? [])].sort((a, b) => windowSpanRank(a.key) - windowSpanRank(b.key))
+}
+
+/** 已用百分比最高的那条窗口键 —— 窄屏只显示它 */
+function tightestWindowKey(s: UsageSnapshot): string {
+  const list = s.windows ?? []
+  if (list.length === 0) return ''
+  return [...list].sort(
     (a, b) => quotaPercent(b.used, b.total) - quotaPercent(a.used, a.total)
-  )
+  )[0]!.key
 }
 
 
@@ -247,6 +277,55 @@ async function loadUsage(): Promise<void> {
     // 概览是次要信息，拿不到就不显示这张卡，不打扰用户
     usageSnapshots.value = []
   }
+}
+
+// ---------------------------------------------------------------- Token 总量
+
+/** `1.6B` + `1,638M`：大数先给 B，紧跟着的 M 才是人能对上号的量级 */
+const tokenTotals = computed(() => {
+  const n = stats.value?.totals.tokens ?? 0
+  return {
+    main: formatCompact(n),
+    alt: n >= 1e9 ? `${formatNumber(Math.round(n / 1e6))}M` : ''
+  }
+})
+
+const tokenStatEl = ref<HTMLElement | null>(null)
+const tokenStatWidth = ref(0)
+
+/**
+ * 量文字宽度用 canvas。
+ *
+ * 不用「先渲染、溢出就收起来」那套：它让"是否显示"与"容器宽度"互相依赖，
+ * 收起后内容变短、又可能重新放得下，容易来回抖。这里状态是单向的：
+ * 宽度 → 是否放得下。
+ */
+/** 量文字宽度；`scale` 用于对照值那种更小的字号（0.62em，见 .stat-alt） */
+function measureTextWidth(text: string, el: HTMLElement | null, scale = 1): number {
+  if (!el) return 0
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (!ctx) return 0
+  const cs = getComputedStyle(el)
+  const size = parseFloat(cs.fontSize) * scale
+  ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${size}px ${cs.fontFamily}`
+  return ctx.measureText(text).width
+}
+
+const tokenAltVisible = computed(() => {
+  if (!tokenTotals.value.alt) return false
+  // 还没量到宽度时先显示，避免首帧闪一下
+  if (tokenStatWidth.value <= 0) return true
+  // 主值与对照值字号不同（对照值是 0.62em），分开量才准
+  const mainW = measureTextWidth(tokenTotals.value.main, tokenStatEl.value)
+  const altW = measureTextWidth(` (${tokenTotals.value.alt})`, tokenStatEl.value, 0.62)
+  return mainW + altW <= tokenStatWidth.value
+})
+
+let tokenStatObserver: ResizeObserver | null = null
+
+/** 悬浮卡里的 Token：附一个 M/B 单位的简略值，省得去数位数 */
+function tokenShortform(n: number): string {
+  return n >= 1e6 ? formatCompact(n) : ''
 }
 
 /** 按指定依据排序并取前 5 */
@@ -347,7 +426,19 @@ onMounted(() => {
   restoreRange()
   void loadUsage()
   void load()
+
+  // 卡片宽度变化时重新判断「M 对照值」放不放得下
+  const el = tokenStatEl.value
+  if (el) {
+    tokenStatWidth.value = el.clientWidth
+    tokenStatObserver = new ResizeObserver((entries) => {
+      tokenStatWidth.value = entries[0]?.contentRect.width ?? 0
+    })
+    tokenStatObserver.observe(el)
+  }
 })
+
+onBeforeUnmount(() => tokenStatObserver?.disconnect())
 </script>
 
 <template>
@@ -417,7 +508,10 @@ onMounted(() => {
       </div>
       <div class="stat">
         <div class="stat-label">{{ t('overview.tokens') }}</div>
-        <div class="stat-value">{{ formatCompact(stats?.totals.tokens) }}</div>
+        <!-- 达到 B 量级时补一个 M 单位的对照值；放不下就只留 B -->
+        <div ref="tokenStatEl" class="stat-value">
+          {{ tokenTotals.main }}<span v-if="tokenAltVisible" class="stat-alt"> ({{ tokenTotals.alt }})</span>
+        </div>
         <div class="stat-hint">
           {{ t('overview.inTokens') }} {{ formatCompact(stats?.totals.promptTokens) }} ·
           {{ t('overview.outTokens') }} {{ formatCompact(stats?.totals.completionTokens) }}
@@ -574,6 +668,9 @@ onMounted(() => {
         <div class="chart-tip-row">
           <i class="legend-dot legend-dot-tok" />{{ t('overview.legendTokens') }}
           <span class="spacer" />{{ formatNumber(hovered.p.tokens) }}
+          <span v-if="tokenShortform(hovered.p.tokens)" class="dim chart-tip-alt">
+            ({{ tokenShortform(hovered.p.tokens) }})
+          </span>
         </div>
         <div v-if="hovered.p.errors > 0" class="chart-tip-row chart-tip-err">
           <i class="legend-dot legend-dot-err" />{{ t('overview.failed') }}
@@ -675,8 +772,13 @@ onMounted(() => {
           </div>
 
           <!-- 额度窗口：宽屏全列，窄屏只留最紧的那条 -->
-          <div v-if="sortedWindows(s).length" class="usage-windows">
-            <div v-for="w in sortedWindows(s)" :key="w.key" class="usage-window">
+          <div v-if="orderedWindows(s).length" class="usage-windows">
+            <div
+              v-for="w in orderedWindows(s)"
+              :key="w.key"
+              class="usage-window"
+              :class="{ 'is-tightest': w.key === tightestWindowKey(s) }"
+            >
               <div class="row-between" style="font-size: 11.5px; gap: 8px">
                 <span class="nowrap">{{ windowLabel(w.key) }}</span>
                 <span

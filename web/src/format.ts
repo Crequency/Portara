@@ -26,7 +26,9 @@ export function formatCompact(n: number | null | undefined): string {
     abs >= 1e9 ? [1e9, 'B'] : abs >= 1e6 ? [1e6, 'M'] : abs >= 1e3 ? [1e3, 'k'] : [1, '']
   if (div === 1) return String(Math.round(n))
   const v = n / div
-  return `${Number.isInteger(v) ? v : v.toFixed(1)}${suffix}`
+  // 四舍五入后可能正好是整数（697.98 → 698.0），此时也别留 `.0`
+  const text = v.toFixed(1).replace(/\.0$/, '')
+  return `${text}${suffix}`
 }
 
 export function formatLatency(ms: number | null | undefined): string {

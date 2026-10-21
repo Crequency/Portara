@@ -242,6 +242,17 @@ a { color: var(--accent); text-decoration: none; }
   overflow: auto;
 }
 
+/* Token 统计卡里「M 单位对照值」的字号：比主值小，但仍与主值同基线 */
+.stat-alt {
+  font-size: 0.62em;
+  font-weight: 500;
+  color: var(--text-dim);
+  letter-spacing: 0;
+}
+
+/* 悬浮卡里的 Token 简略值 */
+.chart-tip-alt { font-size: 11px; }
+
 /*
  * 概览页的余额用量卡：宽屏是「内部小卡片横向排列」，窄屏回落成列表。
  *
@@ -303,7 +314,11 @@ a { color: var(--accent); text-decoration: none; }
   .usage-cell-name { flex: 1 1 100%; }
   .usage-cell-balance { margin-left: auto; }
   .usage-windows { flex: 1 1 100%; }
-  .usage-window:not(:first-child) { display: none; }
+  /*
+   * 窗口已按**时间跨度**排序（5h → 周 → 月），所以窄屏不能靠「第一条」选重点；
+   * 用 is-tightest 标记（已用百分比最高）单独点名。
+   */
+  .usage-window:not(.is-tightest) { display: none; }
 }
 
 /* 余额页顶部展示的 API 地址：可选中、可换行，不撑破卡片 */
@@ -951,6 +966,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   font-weight: 600;
   margin-bottom: 6px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .chart-tip-row {
   display: flex;
@@ -958,6 +974,8 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   gap: 6px;
   line-height: 1.7;
   font-variant-numeric: tabular-nums;
+  /* 绝不折行：宁可整卡翻到光标另一侧，也不要把「Token 用量」拆成两行 */
+  white-space: nowrap;
 }
 .chart-tip-err { color: var(--danger); }
 

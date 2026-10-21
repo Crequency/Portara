@@ -30,6 +30,14 @@ test('formatCompact 整数不补 .0（刻度线上的 375.0M 只是噪音）', (
   assert.equal(formatCompact(2_000), '2k')
 })
 
+test('formatCompact 四舍五入到整数时同样不留 .0', () => {
+  // 697.978818M 保留一位是 "698.0" —— 尾巴上的 .0 一样是噪音
+  assert.equal(formatCompact(697_978_818), '698M')
+  assert.equal(formatCompact(1_049_999), '1M')
+  // 真正的小数仍保留一位
+  assert.equal(formatCompact(1_250_000), '1.3M')
+})
+
 test('formatCompact 超过十亿进位到 B（否则会成为 1125.0M）', () => {
   assert.equal(formatCompact(1_125_000_000), '1.1B')
   assert.equal(formatCompact(1_500_000_000), '1.5B')
