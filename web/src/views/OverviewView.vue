@@ -324,7 +324,9 @@ const tokenAltVisible = computed(() => {
   if (tokenStatWidth.value <= 0) return true
   // 主值与对照值字号不同（对照值是 0.62em），分开量才准
   const mainW = measureTextWidth(tokenTotals.value.main, tokenStatEl.value)
-  const altW = measureTextWidth(tokenTotals.value.alt, tokenStatEl.value, TOKEN_ALT_SCALE)
+  // 带一个前导空格来量：.stat-alt 的 margin-left 是 0.25em，
+  // 而一个空格在这个字号下正好也是 0.25em 左右 —— 用同一套度量，避免各算各的
+  const altW = measureTextWidth(' ' + tokenTotals.value.alt, tokenStatEl.value, TOKEN_ALT_SCALE)
   return mainW + altW <= tokenStatWidth.value
 })
 
@@ -518,7 +520,7 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <!-- 达到 B 量级时补一个 M 单位的对照值；放不下就只留 B -->
         <div ref="tokenStatEl" class="stat-value stat-value-pair">
           <span>{{ tokenTotals.main }}</span>
-          <span v-if="tokenAltVisible" class="stat-alt">({{ tokenTotals.alt }})</span>
+          <span v-if="tokenAltVisible" class="stat-alt">{{ tokenTotals.alt }}</span>
         </div>
         <div class="stat-hint">
           {{ t('overview.inTokens') }} {{ formatCompact(stats?.totals.promptTokens) }} ·

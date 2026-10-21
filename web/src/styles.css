@@ -243,21 +243,27 @@ a { color: var(--accent); text-decoration: none; }
 }
 
 /*
- * Token 统计卡的「主值 + M 对照值」。
+ * Token 统计卡的「主值 + M 对照值」，两个字号的**底边**要对齐。
  *
- * 用 flex 的 align-items: flex-end 让两者**底边对齐**；字号比 0.75
- * （0.62 时差距太大，看着像脚注而不是同一个数）。
- * line-height 收紧，否则小字的行盒会带来额外空白，底边对齐后反而更偏高。
+ * 不能用 flex 的 align-items: flex-end —— 它对齐的是**行盒**底，
+ * 而行盒包含字体的下降区；两种字号的下降区深度不同（25px 的行盒 38.75px
+ * vs 18.75px 的行盒 19.7px），结果字形被往下推（实测基线低 6.5px）。
+ *
+ * 基线对齐（行内元素默认）是起点，但**底边并不自动齐平**：
+ * 千分位逗号本身有下沉。实测（canvas 同基线绘制 + 扫描墨迹最底行）：
+ * 主值「9.8B」墨迹底在基线下 0.38px，对照「9,764M」在基线下 2.13px，
+ * 相差 1.75px → 抬升 1.75 / 18.75px = 0.0933em。
+ *
+ * 这个值是**量出来的，不是猜的**；字号比或格式（是否带括号）一变就要重量。
  */
-.stat-value-pair {
-  display: flex;
-  align-items: flex-end;
-  gap: 5px;
-}
+.stat-value-pair { display: block; }
 .stat-alt {
   font-size: 0.75em;
   font-weight: 500;
   line-height: 1.05;
+  vertical-align: 0.093em;
+  /* 两个单位之间的间距；用 em（相对自身字号），与宽度测量用的前导空格一致 */
+  margin-left: 0.5em;
   color: var(--text-dim);
   letter-spacing: 0;
 }
