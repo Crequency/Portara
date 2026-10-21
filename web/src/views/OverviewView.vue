@@ -300,7 +300,14 @@ const tokenStatWidth = ref(0)
  * 收起后内容变短、又可能重新放得下，容易来回抖。这里状态是单向的：
  * 宽度 → 是否放得下。
  */
-/** 量文字宽度；`scale` 用于对照值那种更小的字号（0.62em，见 .stat-alt） */
+/**
+ * 对照值的字号比例。
+ * **必须与 CSS 里 .stat-alt 的 font-size 一致** —— 否则量出来的宽度与真实渲染对不上，
+ * 「放不下就收起」的判定就会失准。
+ */
+const TOKEN_ALT_SCALE = 0.75
+
+/** 量文字宽度；`scale` 用于对照值那种更小的字号 */
 function measureTextWidth(text: string, el: HTMLElement | null, scale = 1): number {
   if (!el) return 0
   const ctx = document.createElement('canvas').getContext('2d')
@@ -317,7 +324,7 @@ const tokenAltVisible = computed(() => {
   if (tokenStatWidth.value <= 0) return true
   // 主值与对照值字号不同（对照值是 0.62em），分开量才准
   const mainW = measureTextWidth(tokenTotals.value.main, tokenStatEl.value)
-  const altW = measureTextWidth(` (${tokenTotals.value.alt})`, tokenStatEl.value, 0.62)
+  const altW = measureTextWidth(tokenTotals.value.alt, tokenStatEl.value, TOKEN_ALT_SCALE)
   return mainW + altW <= tokenStatWidth.value
 })
 
@@ -509,8 +516,9 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
       <div class="stat">
         <div class="stat-label">{{ t('overview.tokens') }}</div>
         <!-- 达到 B 量级时补一个 M 单位的对照值；放不下就只留 B -->
-        <div ref="tokenStatEl" class="stat-value">
-          {{ tokenTotals.main }}<span v-if="tokenAltVisible" class="stat-alt"> ({{ tokenTotals.alt }})</span>
+        <div ref="tokenStatEl" class="stat-value stat-value-pair">
+          <span>{{ tokenTotals.main }}</span>
+          <span v-if="tokenAltVisible" class="stat-alt">({{ tokenTotals.alt }})</span>
         </div>
         <div class="stat-hint">
           {{ t('overview.inTokens') }} {{ formatCompact(stats?.totals.promptTokens) }} ·

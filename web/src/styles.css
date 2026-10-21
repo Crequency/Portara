@@ -242,10 +242,22 @@ a { color: var(--accent); text-decoration: none; }
   overflow: auto;
 }
 
-/* Token 统计卡里「M 单位对照值」的字号：比主值小，但仍与主值同基线 */
+/*
+ * Token 统计卡的「主值 + M 对照值」。
+ *
+ * 用 flex 的 align-items: flex-end 让两者**底边对齐**；字号比 0.75
+ * （0.62 时差距太大，看着像脚注而不是同一个数）。
+ * line-height 收紧，否则小字的行盒会带来额外空白，底边对齐后反而更偏高。
+ */
+.stat-value-pair {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+}
 .stat-alt {
-  font-size: 0.62em;
+  font-size: 0.75em;
   font-weight: 500;
+  line-height: 1.05;
   color: var(--text-dim);
   letter-spacing: 0;
 }
