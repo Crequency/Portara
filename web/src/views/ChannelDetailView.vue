@@ -10,6 +10,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   api,
   type Channel,
+  type ChannelAccount,
   type ChannelTestResult,
   type ModelMeta,
   type ModelOverride,
@@ -147,6 +148,109 @@ function windowLabel(key: string): string {
 /** 该渠道选用的代理（详情页只读展示；改在编辑弹窗里改） */
 const proxyName = ref('')
 const proxyAddress = ref('')
+
+// ---------------------------------------------------------------- 上游账户
+
+/** 编辑中的账户；id 为空表示新建 */
+const accountForm = ref<{
+  id: string
+  name: string
+  apiKey: string
+  priority: number
+  weight: number
+  status: 'active' | 'disabled'
+  note: string
+} | null>(null)
+const accountSaving = ref(false)
+/** 正在显示的账户明文（仅管理员） */
+const accountReveal = ref<{ name: string; key: string } | null>(null)
+
+/** 冷却剩余秒数；0 表示可用 */
+function cooldownLeft(a: ChannelAccount): number {
+  if (!a.cooldownUntil) return 0
+  return Math.max(0, Math.round((new Date(a.cooldownUntil).getTime() - Date.now()) / 1000))
+}
+
+function openAccountForm(account?: ChannelAccount): void {
+  accountForm.value = account
+    ? {
+        id: account.id,
+        name: account.name,
+        apiKey: '',
+        priority: account.priority,
+        weight: account.weight,
+        status: account.status,
+        note: account.note
+      }
+    : { id: '', name: '', apiKey: '', priority: 100, weight: 1, status: 'active', note: '' }
+}
+
+async function saveAccount(): Promise<void> {
+  const ch = channel.value
+  const f = accountForm.value
+  if (!ch || !f) return
+  if (!f.name.trim()) {
+    toast.error(t('channels.nameRequired'))
+    return
+  }
+  accountSaving.value = true
+  try {
+    const body = {
+      name: f.name.trim(),
+      // 留空表示不改密钥（新建时留空 = 该账户暂时没有密钥）
+      ...(f.apiKey.trim() ? { apiKey: f.apiKey.trim() } : {}),
+      priority: Number(f.priority),
+      weight: Number(f.weight),
+      status: f.status,
+      note: f.note.trim()
+    }
+    if (f.id) await api.patch(`/api/channels/${ch.id}/accounts/${f.id}`, body)
+    else await api.post(`/api/channels/${ch.id}/accounts`, body)
+    accountForm.value = null
+    await loadChannel()
+    toast.success(t('channels.saved'))
+  } catch (err) {
+    toastError(err, t('channels.saveFailed'))
+  } finally {
+    accountSaving.value = false
+  }
+}
+
+async function removeAccount(a: ChannelAccount): Promise<void> {
+  const ch = channel.value
+  if (!ch) return
+  if (!confirm(t('channels.accountDeleteConfirm', { name: a.name }))) return
+  try {
+    await api.del(`/api/channels/${ch.id}/accounts/${a.id}`)
+    await loadChannel()
+    toast.success(t('common.deleted'))
+  } catch (err) {
+    toastError(err, t('channels.deleteFailed'))
+  }
+}
+
+async function revealAccountKey(a: ChannelAccount): Promise<void> {
+  const ch = channel.value
+  if (!ch) return
+  try {
+    const r = await api.get<{ key: string }>(`/api/channels/${ch.id}/accounts/${a.id}/reveal`)
+    accountReveal.value = { name: a.name, key: r.key }
+  } catch (err) {
+    toastError(err, t('channels.revealKeyFailed'))
+  }
+}
+
+async function resetAccountHealth(a: ChannelAccount): Promise<void> {
+  const ch = channel.value
+  if (!ch) return
+  try {
+    await api.post(`/api/channels/${ch.id}/accounts/${a.id}/reset-health`)
+    await loadChannel()
+    toast.success(t('channels.accountHealthReset'))
+  } catch (err) {
+    toastError(err, t('channels.saveFailed'))
+  }
+}
 
 async function loadProxyLabel(): Promise<void> {
   const id = channel.value?.proxyId
@@ -448,6 +552,52 @@ onMounted(loadChannel)
       </div>
     </div>
 
+    <!-- 上游账户：同一渠道的多把 Key，按优先级/权重轮转 + 故障转移 -->
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">
+          {{ t('channels.accounts') }}
+          <span class="tag">{{ channel.accounts.length }}</span>
+        </div>
+        <button class="btn btn-sm" @click="openAccountForm()">
+          ＋ {{ t('channels.addAccount') }}
+        </button>
+      </div>
+
+      <div class="acct-list">
+        <div v-for="a in channel.accounts" :key="a.id" class="acct-row">
+          <span class="acct-name">{{ a.name }}</span>
+          <span class="tag">
+            {{ a.status === 'active' ? t('common.enabled') : t('common.disabled') }}
+          </span>
+          <span v-if="cooldownLeft(a) > 0" class="badge badge-warn">
+            {{ t('channels.accountCooling', { n: cooldownLeft(a) }) }}
+          </span>
+          <span class="mono dim acct-key">{{ a.apiKeyMasked || t('channels.accountNoKey') }}</span>
+          <span class="dim acct-meta">
+            {{ t('channels.accountPriority', { p: a.priority, w: a.weight }) }}
+          </span>
+          <span class="spacer" />
+          <button class="btn btn-sm" :disabled="!a.hasKey" @click="revealAccountKey(a)">
+            {{ t('channels.revealKey') }}
+          </button>
+          <button class="btn btn-sm" @click="openAccountForm(a)">{{ t('common.edit') }}</button>
+          <button
+            v-if="cooldownLeft(a) > 0"
+            class="btn btn-sm"
+            @click="resetAccountHealth(a)"
+          >
+            {{ t('channels.accountReset') }}
+          </button>
+          <button class="btn btn-sm" @click="removeAccount(a)">{{ t('common.delete') }}</button>
+        </div>
+      </div>
+
+      <div v-if="channel.accounts.length > 1" class="dim acct-hint">
+        {{ t('channels.accountsHint') }}
+      </div>
+    </div>
+
     <!-- 用量统计 -->
     <div class="card">
       <div class="card-head">
@@ -532,7 +682,72 @@ onMounted(loadChannel)
               <div class="stat-hint">
                 <template v-if="b.granted !== undefined">
                   {{ t('usage.granted') }} {{ formatNumber(b.granted) }}
-                </template>
+                
+  <!-- 账户表单 -->
+  <Modal
+    v-if="accountForm"
+    :title="accountForm.id ? t('channels.accountEditTitle') : t('channels.accountCreateTitle')"
+    @close="accountForm = null"
+  >
+    <div class="field">
+      <label>{{ t('common.name') }}</label>
+      <input v-model="accountForm.name" maxlength="64" />
+    </div>
+    <div class="field">
+      <label>{{ t('channels.upstreamKey') }}</label>
+      <input
+        v-model="accountForm.apiKey"
+        type="password"
+        autocomplete="off"
+        :placeholder="accountForm.id ? t('channels.accountKeyHint') : ''"
+      />
+    </div>
+    <div class="form-row">
+      <div class="field">
+        <label>{{ t('channels.priority') }}</label>
+        <input v-model.number="accountForm.priority" type="number" min="0" max="10000" />
+      </div>
+      <div class="field">
+        <label>{{ t('channels.weight') }}</label>
+        <input v-model.number="accountForm.weight" type="number" min="1" max="1000" />
+      </div>
+      <div class="field">
+        <label>{{ t('common.status') }}</label>
+        <PSelect
+          v-model="accountForm.status"
+          :options="[
+            { value: 'active', label: t('common.enabled') },
+            { value: 'disabled', label: t('common.disabled') }
+          ]"
+        />
+      </div>
+    </div>
+    <div class="field">
+      <label>{{ t('common.note') }}</label>
+      <input v-model="accountForm.note" maxlength="500" />
+    </div>
+    <div class="modal-foot">
+      <button class="btn" @click="accountForm = null">{{ t('common.cancel') }}</button>
+      <button class="btn btn-primary" :disabled="accountSaving" @click="saveAccount">
+        {{ accountSaving ? t('common.saving') : t('common.save') }}
+      </button>
+    </div>
+  </Modal>
+
+  <!-- 账户密钥明文（必留审计） -->
+  <Modal
+    v-if="accountReveal"
+    :title="t('channels.accountSecretTitle') + ' · ' + accountReveal.name"
+    @close="accountReveal = null"
+  >
+    <div class="alert">{{ t('channels.revealKeyWarning') }}</div>
+    <div class="mono key-reveal">{{ accountReveal.key }}</div>
+    <div class="modal-foot">
+      <button class="btn" @click="accountReveal = null">{{ t('common.close') }}</button>
+    </div>
+  </Modal>
+
+</template>
                 <template v-if="b.toppedUp !== undefined">
                   · {{ t('usage.toppedUp') }} {{ formatNumber(b.toppedUp) }}
                 </template>

@@ -107,7 +107,13 @@ onMounted(load)
             <tr>
               <td class="nowrap dim">{{ formatTime(log.ts) }}</td>
               <td>{{ log.apiKeyName || '—' }}</td>
-              <td>{{ log.channelName || '—' }}</td>
+              <td>
+                {{ log.channelName || '—' }}
+                <!-- 哪个上游账户服务的：同一个渠道多把 Key 时，这是唯一能区分的线索 -->
+                <div v-if="log.accountName" class="dim" style="font-size: 11px">
+                  {{ log.accountName }}
+                </div>
+              </td>
               <td class="mono dim">{{ log.path }}</td>
               <td class="mono">{{ log.model || '—' }}</td>
               <td>

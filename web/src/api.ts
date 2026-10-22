@@ -240,6 +240,26 @@ export interface User {
   lastLoginAt: string | null
 }
 
+/** 渠道下的一个上游账户（只给掩码，明文要靠 reveal 单独请求） */
+export interface ChannelAccount {
+  id: string
+  name: string
+  status: 'active' | 'disabled'
+  priority: number
+  weight: number
+  note: string
+  apiKeyMasked: string
+  hasKey: boolean
+  usageAdapter: string
+  usageUrl: string
+  /** 冷却截止时间；非空表示当前不可用 */
+  cooldownUntil: string | null
+  lastError: string
+  consecutiveFailures: number
+  lastUsedAt: string | null
+  createdAt: string
+}
+
 export interface Channel {
   id: string
   name: string
@@ -256,6 +276,8 @@ export interface Channel {
   usageAdapter: string
   /** 余额接口 base 覆盖 */
   usageUrl: string
+  /** 该渠道的上游账户（至少一个） */
+  accounts: ChannelAccount[]
   baseUrl: string
   apiKeyMasked: string
   hasApiKey: boolean
@@ -342,6 +364,9 @@ export interface ApiKey {
 }
 
 export interface RequestLog {
+  channelId: string | null
+  accountId: string | null
+  accountName: string
   id: string
   ts: string
   apiKeyName: string
