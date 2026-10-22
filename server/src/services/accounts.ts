@@ -109,7 +109,13 @@ export async function pickAccounts(
   return ordered.slice(0, limit)
 }
 
-/** 标记一次成功：清掉冷却与失败计数（自动恢复） */
+/**
+ * 标记一次成功：清掉冷却与失败计数（自动恢复）。
+ *
+ * 这是**转发热路径**上的调用，所以用条件更新把它压成"多数情况不写"：
+ * 只有当账户处于异常态、或 `last_used_at` 已经陈旧时才真的 UPDATE。
+ * 否则每个请求都要多一次行更新 —— 那是实打实的开销。
+ */
 export async function markAccountSuccess(accountId: string): Promise<void> {
   await query(
     `update channel_accounts
@@ -118,10 +124,19 @@ export async function markAccountSuccess(accountId: string): Promise<void> {
             consecutive_failures = 0,
             last_used_at = now(),
             updated_at = now()
-      where id = $1`,
+      where id = $1
+        and (
+          cooldown_until is not null
+          or consecutive_failures > 0
+          or last_used_at is null
+          or last_used_at < now() - interval '1 minute'
+        )`,
     [accountId]
   )
 }
+
+/** 一次请求最多尝试几个账户（故障转移上限） */
+export const MAX_ACCOUNT_ATTEMPTS = Math.max(1, Number(process.env.PORTARA_MAX_ACCOUNT_ATTEMPTS ?? 3))
 
 /** 标记一次失败：进冷却并累计失败次数 */
 export async function markAccountFailure(

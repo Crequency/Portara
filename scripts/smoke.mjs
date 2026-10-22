@@ -314,6 +314,12 @@ function startMockUpstream() {
         } catch {
           /* 忽略 */
         }
+        // 供「不可重试错误不该换号」的断言使用：这类错误换账户也一样失败
+        if (String(body.model ?? '').includes('bad-request')) {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { message: 'model rejected', type: 'invalid_request_error' } }))
+          return
+        }
         const id = `chatcmpl-${RUN}`
 
         if (body.stream === true) {
@@ -2831,6 +2837,95 @@ async function main() {
       { cookie: operatorCookie, keepSession: true }
     )
     check('操作员不能新建账户（403）', () => assert.equal(acctDenied.status, 403))
+
+
+    // ---- 故障转移：优先级最高的账户密钥失效 → 自动换到下一个
+    const foChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-fo-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 951
+    })
+    const foChannelId = foChannel.body.channel.id
+    const foBad = await apiCall('POST', `/api/channels/${foChannelId}/accounts`, {
+      name: '失效账户',
+      apiKey: 'sk-this-key-is-rejected',
+      priority: 1,
+      weight: 1
+    })
+    const foBadId = foBad.body.account.id
+    const foAlias = `smoke-fo-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: foAlias,
+      targets: [{ channelId: foChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    const foKey = await apiCall('POST', '/api/keys', { name: `smoke-fo-key-${RUN}` })
+    const foHit = async (model) =>
+      fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${foKey.body.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }] })
+      })
+
+    const foRes = await foHit(foAlias)
+    check('最高优先级账户失效时自动换号且仍成功', () => assert.equal(foRes.status, 200))
+
+    const foAccounts = await apiCall('GET', `/api/channels/${foChannelId}/accounts`)
+    const foBadAfter = foAccounts.body.accounts.find((a) => a.id === foBadId)
+    check('失效账户进入冷却并记录错误', () => {
+      assert.ok(foBadAfter.cooldownUntil, '未进入冷却')
+      assert.match(foBadAfter.lastError, /401/)
+      assert.ok(foBadAfter.consecutiveFailures >= 1)
+    })
+
+    let foLogs = []
+    for (let i = 0; i < 20; i++) {
+      const r = await apiCall('GET', `/api/logs?limit=50&channelId=${foChannelId}`)
+      foLogs = r.body.logs.filter((l) => l.channelId === foChannelId)
+      if (foLogs.length > 0) break
+      await new Promise((res) => setTimeout(res, 100))
+    }
+    check('换号后日志记录的是兜底账户', () =>
+      assert.ok(foLogs.every((l) => l.accountName === '默认账户'), JSON.stringify(foLogs.map((l) => l.accountName))))
+
+    // 冷却中的账户不该再被选中：再发一次请求仍应成功且不再打到失效账户
+    const foRes2 = await foHit(foAlias)
+    const foAccounts2 = await apiCall('GET', `/api/channels/${foChannelId}/accounts`)
+    const foBadAgain = foAccounts2.body.accounts.find((a) => a.id === foBadId)
+    check('冷却期内不再重试失效账户', () => {
+      assert.equal(foRes2.status, 200)
+      assert.equal(foBadAgain.consecutiveFailures, foBadAfter.consecutiveFailures)
+    })
+
+    // ---- 不可重试错误（400）：直接透传，不换号、不进冷却
+    const foBadReqAlias = `smoke-badreq-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: foBadReqAlias,
+      targets: [{ channelId: foChannelId, upstreamModel: 'bad-request-model' }]
+    })
+    const foBadReq = await foHit(foBadReqAlias)
+    const foAccounts3 = await apiCall('GET', `/api/channels/${foChannelId}/accounts`)
+    const foGoodAfter = foAccounts3.body.accounts.find((a) => a.name === '默认账户')
+    check('不可重试的 400 直接透传（不换号）', () => assert.equal(foBadReq.status, 400))
+    check('400 不会把正常账户打进冷却', () => assert.equal(foGoodAfter.cooldownUntil, null))
+
+    // ---- 手动重置健康：不必干等 10 分钟
+    const foReset = await apiCall(
+      'POST',
+      `/api/channels/${foChannelId}/accounts/${foBadId}/reset-health`
+    )
+    check('可手动重置账户健康', () => {
+      assert.equal(foReset.status, 200)
+      assert.equal(foReset.body.account.cooldownUntil, null)
+      assert.equal(foReset.body.account.consecutiveFailures, 0)
+    })
+
+    await apiCall('DELETE', `/api/keys/${foKey.body.apiKey.id}`)
+    await apiCall('DELETE', `/api/channels/${foChannelId}`)
 
     await apiCall('DELETE', `/api/keys/${acctKey.body.apiKey.id}`)
     await apiCall('DELETE', `/api/channels/${acctChannelId}`)

@@ -5,7 +5,15 @@ import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
-import { pickAccounts } from '../services/accounts.js'
+import {
+  COOLDOWN,
+  MAX_ACCOUNT_ATTEMPTS,
+  cooldownFor,
+  isRetriableStatus,
+  markAccountFailure,
+  markAccountSuccess,
+  pickAccounts
+} from '../services/accounts.js'
 import { tryDecryptKey } from '../services/channels.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import {
@@ -212,30 +220,14 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       code: 'no_account'
     })
   }
-  const account = candidates[0]!
-
-  const upstreamKey = tryDecryptKey(account.key_cipher)
-  if (upstreamKey === null) {
-    return openaiError(c, 500, '上游渠道密钥无法解密，请在管理面板重新填写', 'api_error', 'channel_key_error')
-  }
-
-  const logCtx = {
-    ...baseLog,
-    channelId: channel.id,
-    channelName: channel.name,
-    accountId: account.id,
-    accountName: account.name,
-    upstreamModel
-  }
-
   // ⑥ 命中模型映射时，把网关受理的 model 改写成上游真实 model
   let outPayload: Record<string, unknown> | null = payload
   if (payload && upstreamModel && upstreamModel !== model) {
     outPayload = { ...payload, model: upstreamModel }
   }
 
-  // ⑦ 规划上游请求：协议决定路径与请求体形态
-  //    （统一走 relay —— 此前网关与直连两条路径各写一遍，结果直连漏了协议处理）
+  // ⑦ 规划上游请求：协议决定路径与请求体形态。
+  //    与账户无关 —— 账户只换认证头，所以规划在循环外做一次。
   const plan = planUpstreamRequest({
     channel: channel as unknown as Parameters<typeof planUpstreamRequest>[0]['channel'],
     upstreamModel,
@@ -255,49 +247,112 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
   const url = plan.url
   const protocol = plan.protocol
-  // 客户端断开 或 上游超时 —— 任一触发都会取消上游请求（避免幽灵计费）
+  // 客户端断开 或 上游超时 —— 任一触发都会取消上游请求（避免幽灵计费）。
+  // 这是**整体预算**：故障转移的多次尝试共用它，不会因为换号而翻倍。
   const signal = AbortSignal.any([
     c.req.raw.signal,
     AbortSignal.timeout(channel.timeout_ms)
   ])
 
-  const upstreamHeaders = buildUpstreamHeaders(
-    upstreamKey,
-    c.req.header('content-type') ?? 'application/json',
-    {
-      // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
-      extraHeaders: channel.extra_headers ?? {},
-      vendor: channel.vendor ?? 'generic',
-      protocol: plan.protocol,
-      channelId: channel.id,
-      payload,
-      contentEncoding: c.req.header('content-encoding')
+  /**
+   * ⑤ 上游账户 + 故障转移。
+   *
+   * 只换认证头重放请求体（`plan.bodyText` 是字符串，天然可重放）。
+   * 三条约束：
+   *   ① 可重试才换号 —— 400/404 这类换号也一样失败，直接透传上游原文；
+   *   ② 客户端断开或整体超时就停 —— 再换号只会拖长响应；
+   *   ③ 有上限 —— 否则一个坏请求会打穿所有账户并把它们全打进冷却。
+   */
+  let account = candidates[0]!
+  let upstreamHeaders: ReturnType<typeof buildUpstreamHeaders> | null = null
+  let res: Response | null = null
+  let lastUpstreamError: Response | null = null
+  let lastFailure = ''
+  const attemptLimit = Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length)
+
+  for (const candidate of candidates.slice(0, attemptLimit)) {
+    const key = tryDecryptKey(candidate.key_cipher)
+    if (key === null) {
+      lastFailure = `账户「${candidate.name}」的密钥无法解密`
+      await markAccountFailure(candidate.id, lastFailure, COOLDOWN.auth)
+      continue
     }
-  )
-  const sessionEcho = sessionEchoOf(upstreamHeaders.session)
 
-  let res: Response
-  try {
-    // 配了代理就走代理；没配则与改造前完全一致（全局 fetch）
-    res = await upstreamFetch(
-      url,
+    const headers = buildUpstreamHeaders(
+      key,
+      c.req.header('content-type') ?? 'application/json',
       {
-        method: c.req.method,
-        headers: upstreamHeaders.headers,
-        body: plan.bodyText,
-        signal
-      },
-      pick.target.proxy
+        // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
+        extraHeaders: channel.extra_headers ?? {},
+        vendor: channel.vendor ?? 'generic',
+        protocol: plan.protocol,
+        channelId: channel.id,
+        payload,
+        contentEncoding: c.req.header('content-encoding')
+      }
     )
-  } catch (err) {
-    const clientGone = c.req.raw.signal.aborted
-    const timedOut = !clientGone && signal.aborted
-    const message = clientGone
-      ? '客户端已断开'
-      : timedOut
-        ? `上游响应超时（${channel.timeout_ms}ms）`
-        : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
 
+    try {
+      const attempt = await upstreamFetch(
+        url,
+        { method: c.req.method, headers: headers.headers, body: plan.bodyText, signal },
+        pick.target.proxy
+      )
+      account = candidate
+      upstreamHeaders = headers
+
+      if (attempt.ok) {
+        await markAccountSuccess(candidate.id)
+        res = attempt
+        break
+      }
+      if (!isRetriableStatus(attempt.status)) {
+        // 换号也没用：把上游原文原样交给后续处理
+        res = attempt
+        break
+      }
+
+      // 可重试：留下原文（全部失败时给客户端看这个，比网关自造的 502 有用）
+      const text = await attempt.text()
+      lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
+      const retryAfter = Number(attempt.headers.get('retry-after'))
+      await markAccountFailure(
+        candidate.id,
+        lastFailure,
+        cooldownFor(attempt.status, Number.isFinite(retryAfter) ? retryAfter : null)
+      )
+      lastUpstreamError = new Response(text, {
+        status: attempt.status,
+        headers: { 'content-type': attempt.headers.get('content-type') ?? 'application/json' }
+      })
+    } catch (err) {
+      const clientGone = c.req.raw.signal.aborted
+      const timedOut = !clientGone && signal.aborted
+      lastFailure = clientGone
+        ? '客户端已断开'
+        : timedOut
+          ? `上游响应超时（${channel.timeout_ms}ms）`
+          : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
+
+      await markAccountFailure(candidate.id, lastFailure, COOLDOWN.upstream)
+      // 客户端没了 / 整体预算耗尽 —— 换号没有意义
+      if (clientGone || timedOut) break
+    }
+  }
+
+  const logCtx = {
+    ...baseLog,
+    channelId: channel.id,
+    channelName: channel.name,
+    accountId: account.id,
+    accountName: account.name,
+    upstreamModel
+  }
+
+  // 全部尝试都没拿到 2xx/不可重试响应：优先把上游最后一次的拒绝交给客户端
+  res ??= lastUpstreamError
+  if (!res) {
+    const clientGone = c.req.raw.signal.aborted
     fireAndForgetLog({
       ...logCtx,
       statusCode: clientGone ? 499 : 504,
@@ -307,12 +362,13 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       estimated: false,
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
-      error: message
+      error: lastFailure || '上游不可达'
     })
-
     if (clientGone) return new Response(null, { status: 499 })
-    return openaiError(c, 504, message, 'api_error', 'upstream_unreachable')
+    return openaiError(c, 504, lastFailure || '上游不可达', 'api_error', 'upstream_unreachable')
   }
+
+  const sessionEcho = sessionEchoOf(upstreamHeaders?.session ?? null)
 
   const contentType = res.headers.get('content-type') ?? 'application/json'
   const isStream = contentType.includes('text/event-stream') || (streamFlag && res.ok)
