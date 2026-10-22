@@ -1003,10 +1003,21 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   padding-top: 12px;
   border-top: 1px dashed var(--border);
 }
-.usage-acct-item + .usage-acct-item {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+/*
+ * 逐账户小卡片：宽屏并排、窄屏堆叠。
+ * 只改布局，不动信息 —— 名称、余额、每个窗口的进度条全都在卡片里。
+ */
+.acct-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+.acct-card {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
 }
 
 /* ---------------------------------------------------------------- 上游账户 */
@@ -1057,11 +1068,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   padding-top: 14px;
   border-top: 1px dashed var(--border);
 }
-.detail-acct-item + .detail-acct-item {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
+
 
 /* ---------------------------------------------------------------- 账户用量（组件） */
 

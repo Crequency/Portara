@@ -794,12 +794,11 @@ onMounted(loadChannel)
             <div class="dim" style="font-size: 12px; margin-bottom: 10px">
               {{ t('usage.byAccount') }}
             </div>
-            <div
-              v-for="a in usage.accounts"
-              :key="a.accountId"
-              class="detail-acct-item"
-            >
-              <AccountUsage :account="a" show-name />
+            <!-- 小卡片：宽屏并排、窄屏堆叠；信息一条不少 -->
+            <div class="acct-card-grid">
+              <div v-for="a in usage.accounts" :key="a.accountId" class="acct-card">
+                <AccountUsage :account="a" show-name />
+              </div>
             </div>
           </div>
 

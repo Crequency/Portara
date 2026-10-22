@@ -195,6 +195,44 @@ const topSort = reactive<Record<'models' | 'channels' | 'keys', TopSort>>({
   keys: 'requests'
 })
 
+/**
+ * 三张 Top 卡的排序依据也要记住。
+ *
+ * 和统计粒度是同一类偏好：**习惯看 token 的人每次刷新都要再点一遍**，
+ * 纯属重复劳动。存到 localStorage，刷新后照旧。
+ */
+const TOP_SORT_KEY = 'portara.overview.topSort'
+const TOP_KEYS = ['models', 'channels', 'keys'] as const
+
+function loadTopSort(): void {
+  try {
+    const raw = localStorage.getItem(TOP_SORT_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    for (const k of TOP_KEYS) {
+      const v = parsed?.[k]
+      // 只接受已知取值 —— 坏数据不该让界面进入未知状态
+      if (v === 'requests' || v === 'tokens') topSort[k] = v
+    }
+  } catch {
+    /* 隐私模式 / 坏 JSON：用默认值即可 */
+  }
+}
+
+function persistTopSort(): void {
+  try {
+    localStorage.setItem(TOP_SORT_KEY, JSON.stringify(topSort))
+  } catch {
+    /* 写不进去不影响功能 */
+  }
+}
+
+/** 切换某张卡的排序依据并立即记住 */
+function setTopSort(key: (typeof TOP_KEYS)[number], basis: TopSort): void {
+  topSort[key] = basis
+  persistTopSort()
+}
+
 const topBlocks = computed(() => [
   { key: 'models' as const, title: t('overview.topModels'), rows: stats.value?.topModels ?? [] },
   { key: 'channels' as const, title: t('overview.topChannels'), rows: stats.value?.topChannels ?? [] },
@@ -452,8 +490,9 @@ function go(id: string): void {
 }
 
 onMounted(() => {
-  // 先恢复上次的粒度，再加载 —— 否则首屏会先按默认粒度拉一次
+  // 先恢复偏好，再加载 —— 否则首屏会先按默认值渲染一次
   restoreRange()
+  loadTopSort()
   void loadUsage()
   void load()
 
@@ -718,13 +757,13 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
           <div class="segmented segmented-sm" :title="t('overview.sortHint')">
             <button
               :class="{ on: topSort[block.key] === 'requests' }"
-              @click="topSort[block.key] = 'requests'"
+              @click="setTopSort(block.key, 'requests')"
             >
               {{ t('overview.sortByRequestsShort') }}
             </button>
             <button
               :class="{ on: topSort[block.key] === 'tokens' }"
-              @click="topSort[block.key] = 'tokens'"
+              @click="setTopSort(block.key, 'tokens')"
             >
               {{ t('overview.sortByTokensShort') }}
             </button>

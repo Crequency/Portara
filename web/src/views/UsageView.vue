@@ -341,8 +341,10 @@ onMounted(() => void load())
           <div class="dim" style="font-size: 12px; margin-bottom: 10px">
             {{ t('usage.byAccount') }}
           </div>
-          <div v-for="a in s.accounts" :key="a.accountId" class="usage-acct-item">
-            <AccountUsage :account="a" show-name />
+          <div class="acct-card-grid">
+            <div v-for="a in s.accounts" :key="a.accountId" class="acct-card">
+              <AccountUsage :account="a" show-name />
+            </div>
           </div>
         </div>
 
