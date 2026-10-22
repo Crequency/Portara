@@ -10,7 +10,8 @@
  */
 import { one, query } from '../db.js'
 import { redis } from '../redis.js'
-import { tryDecryptChannelKey } from './channels.js'
+import { primaryAccount } from './accounts.js'
+import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
@@ -147,7 +148,9 @@ export async function getUsageSnapshot(
 
 /** 真正去打上游并解析 */
 async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<UsageSnapshot> {
-  const apiKey = tryDecryptChannelKey(ch)
+  // 批 1：余额仍按"渠道一份"，取主账户的密钥；批 4 会改为逐账户
+  const primary = await primaryAccount(ch.id)
+  const apiKey = tryDecryptKey(primary?.key_cipher)
   if (apiKey === null) return errorSnapshot(ch, '渠道密钥无法解密，请重新填写')
 
   const proxy = await getProxyTarget(ch.proxy_id)

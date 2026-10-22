@@ -325,5 +325,61 @@ export const migrations: { id: string; sql: string }[] = [
       -- 定期清理过期会话用
       create index if not exists sessions_expires_idx on sessions (expires_at);
     `
+  },
+  {
+    id: '014_channel_accounts',
+    sql: `
+      -- 一个渠道下的多个上游账户（每账户一把 Key）。
+      --
+      -- 为什么需要它：单 Key 渠道无法做账户级负载均衡、故障转移与额度轮转，
+      -- 而这三件事都需要"同一渠道有多个可替换的凭据"。
+      --
+      -- 账户**不是**渠道：模型能力、协议、Base URL、模型映射都仍归渠道管，
+      -- 账户只提供凭据，外加它自己的选路权重与健康状态。
+      create table if not exists channel_accounts (
+        id             uuid primary key default gen_random_uuid(),
+        channel_id     uuid not null references channels(id) on delete cascade,
+        name           text not null default '',
+        key_cipher     text not null default '',
+        status         text not null default 'active',
+        -- 渠道**内**的选路层级；与渠道之间的 priority/weight 同构
+        priority       integer not null default 100,
+        weight         integer not null default 1,
+        note           text not null default '',
+        -- 健康状态：由故障转移维护，不是配置项
+        cooldown_until timestamptz,
+        last_error     text not null default '',
+        last_used_at   timestamptz,
+        consecutive_failures integer not null default 0,
+        -- 账户级适配器覆盖（默认继承渠道；国内站/国际站可能不同）
+        usage_adapter  text not null default '',
+        usage_url      text not null default '',
+        created_at     timestamptz not null default now(),
+        updated_at     timestamptz not null default now()
+      );
+
+      create index if not exists channel_accounts_channel_idx on channel_accounts (channel_id);
+      create index if not exists channel_accounts_pick_idx
+        on channel_accounts (channel_id, status, priority);
+
+      -- 回填：每个渠道生成一条「默认账户」，密钥取自 channels.api_key_cipher。
+      -- 幂等：已有账户的渠道不再插入。
+      -- 空密钥的渠道也建一条 —— 保证「任何渠道至少一个账户」这条不变式，
+      -- 请求路径因此不必到处判断"有没有账户"。
+      insert into channel_accounts (channel_id, name, key_cipher)
+      select c.id, '默认账户', c.api_key_cipher
+        from channels c
+       where not exists (
+         select 1 from channel_accounts a where a.channel_id = c.id
+       );
+
+      -- channels.api_key_cipher 仍会被**同步镜像**为第一个账户的密文：
+      -- 结构上停用它作为数据源，但保留同值以支持回滚到旧版本。
+      -- 不删列（迁移铁律：只增不删）。
+
+      -- 请求日志记录实际服务的是哪个账户 —— 否则"哪个号额度打爆了"只能靠猜
+      alter table request_logs add column if not exists account_id uuid;
+      alter table request_logs add column if not exists account_name text not null default '';
+    `
   }
 ]

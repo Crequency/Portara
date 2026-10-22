@@ -63,6 +63,29 @@ export function normalizeWeight(w: number): number {
   return Number.isFinite(w) && w >= 1 ? Math.floor(w) : 1
 }
 
+/**
+ * 加权轮转：在**同一 priority 层级**的一组候选里按 weight 取一个。
+ *
+ * 渠道选路、模型映射选路、账户选路共用一个实现 —— 三处各写一遍必然漂移，
+ * 而"轮转是否公平"恰恰是很难靠读代码看出问题的那类逻辑。
+ *
+ * `items` 必须已按稳定的次键排好序（调用方负责），这样同一 rotation 下结果确定。
+ */
+export function pickWeighted<T>(
+  items: T[],
+  weightOf: (item: T) => number,
+  rotation: number
+): T | null {
+  if (items.length === 0) return null
+  const total = items.reduce((sum, it) => sum + normalizeWeight(weightOf(it)), 0)
+  let point = ((Math.trunc(rotation) % total) + total) % total
+  for (const it of items) {
+    point -= normalizeWeight(weightOf(it))
+    if (point < 0) return it
+  }
+  return items[items.length - 1] ?? null
+}
+
 export function pickChannel(
   channels: ChannelCandidate[],
   model: string,
@@ -82,13 +105,7 @@ export function pickChannel(
     .filter((c) => c.priority === minPriority)
     .sort((a, b) => a.name.localeCompare(b.name))
 
-  const totalWeight = group.reduce((sum, c) => sum + normalizeWeight(c.weight), 0)
-  let point = ((Math.trunc(rotation) % totalWeight) + totalWeight) % totalWeight
-  for (const ch of group) {
-    point -= normalizeWeight(ch.weight)
-    if (point < 0) return ch
-  }
-  return group[group.length - 1] ?? null
+  return pickWeighted(group, (c) => c.weight, rotation)
 }
 
 // ---------------------------------------------------------------- 模型映射
@@ -116,11 +133,5 @@ export function pickRoute(targets: RouteTarget[], rotation = 0): RouteTarget | n
     .filter((t) => t.priority === minPriority)
     .sort((a, b) => a.id.localeCompare(b.id))
 
-  const totalWeight = group.reduce((sum, t) => sum + normalizeWeight(t.weight), 0)
-  let point = ((Math.trunc(rotation) % totalWeight) + totalWeight) % totalWeight
-  for (const t of group) {
-    point -= normalizeWeight(t.weight)
-    if (point < 0) return t
-  }
-  return group[group.length - 1] ?? null
+  return pickWeighted(group, (t) => t.weight, rotation)
 }

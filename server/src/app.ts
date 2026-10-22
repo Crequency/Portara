@@ -7,6 +7,7 @@ import { ApiError, errorResponse, openaiError } from './lib/http.js'
 import { redis } from './redis.js'
 import { auditRoutes } from './routes/audit.js'
 import { authRoutes } from './routes/auth.js'
+import { channelAccountRoutes } from './routes/channelAccounts.js'
 import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
 import { logRoutes } from './routes/logs.js'
@@ -107,6 +108,8 @@ export function createApp(): Hono {
   app.route('/api/auth', authRoutes)
   app.route('/api/users', userRoutes)
   app.route('/api/channels', channelRoutes)
+  // 嵌套资源：账户挂在渠道下（放在 channels 之后，靠其 unmatched 落空自然回落）
+  app.route('/api/channels', channelAccountRoutes)
   app.route('/api/keys', keyRoutes)
   app.route('/api/audit', auditRoutes)
   app.route('/api/model-routes', modelRouteRoutes)

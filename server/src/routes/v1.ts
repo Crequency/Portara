@@ -5,7 +5,8 @@ import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
-import { tryDecryptChannelKey } from '../services/channels.js'
+import { pickAccounts } from '../services/accounts.js'
+import { tryDecryptKey } from '../services/channels.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import {
   buildUpstreamHeaders,
@@ -36,6 +37,18 @@ v1Routes.use('*', apiKeyAuth)
 async function nextRotation(): Promise<number> {
   try {
     return await redis.incr('portara:route:rotation')
+  } catch {
+    return Date.now() % 1000
+  }
+}
+
+/**
+ * 账户轮转计数。
+ * 与渠道轮转**分开** —— 共用一个计数器会让渠道的权重分布随账户数量变化而漂移。
+ */
+async function nextAccountRotation(): Promise<number> {
+  try {
+    return await redis.incr('portara:account:rotation')
   } catch {
     return Date.now() % 1000
   }
@@ -188,17 +201,31 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
   const channel = pick.target.channel
   const upstreamModel = pick.target.upstreamModel
+  // ⑤ 上游账户：取优先级最高、按权重轮转到的那个
+  const candidates = await pickAccounts(channel.id, await nextAccountRotation())
+  if (candidates.length === 0) {
+    return rejectEarly({
+      status: 503,
+      logError: '该渠道没有可用的上游账户',
+      message: `渠道「${channel.name}」没有可用的上游账户`,
+      type: 'api_error',
+      code: 'no_account'
+    })
+  }
+  const account = candidates[0]!
+
+  const upstreamKey = tryDecryptKey(account.key_cipher)
+  if (upstreamKey === null) {
+    return openaiError(c, 500, '上游渠道密钥无法解密，请在管理面板重新填写', 'api_error', 'channel_key_error')
+  }
+
   const logCtx = {
     ...baseLog,
     channelId: channel.id,
     channelName: channel.name,
+    accountId: account.id,
+    accountName: account.name,
     upstreamModel
-  }
-
-  // ⑤ 上游密钥
-  const upstreamKey = tryDecryptChannelKey(channel)
-  if (upstreamKey === null) {
-    return openaiError(c, 500, '上游渠道密钥无法解密，请在管理面板重新填写', 'api_error', 'channel_key_error')
   }
 
   // ⑥ 命中模型映射时，把网关受理的 model 改写成上游真实 model

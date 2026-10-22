@@ -5,6 +5,9 @@ export interface LogInput {
   apiKeyName: string
   channelId: string | null
   channelName: string
+  /** 实际服务的上游账户；渠道只有一个账户时也能用（便于排查是哪个号出的问题） */
+  accountId?: string | null
+  accountName?: string
   model: string
   /** 实际发往上游的模型 id（经映射时与 model 不同） */
   upstreamModel: string
@@ -29,15 +32,18 @@ export interface LogInput {
 export async function writeLog(input: LogInput): Promise<void> {
   await query(
     `insert into request_logs
-       (api_key_id, api_key_name, channel_id, channel_name, model, upstream_model, path,
+       (api_key_id, api_key_name, channel_id, channel_name, account_id, account_name,
+        model, upstream_model, path,
         status_code, prompt_tokens, completion_tokens, total_tokens, estimated,
         latency_ms, ttft_ms, client_ip, error, source)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
     [
       input.apiKeyId,
       input.apiKeyName,
       input.channelId,
       input.channelName,
+      input.accountId ?? null,
+      input.accountName ?? '',
       input.model,
       input.upstreamModel,
       input.path,

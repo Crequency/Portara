@@ -64,7 +64,11 @@ logRoutes.get('/logs', async (c) => {
       id: r.id,
       ts: r.ts,
       apiKeyName: r.api_key_name,
+      channelId: r.channel_id,
       channelName: r.channel_name,
+      // 哪个上游账户服务的 —— 排查"是不是某个号额度打爆了"的关键字段
+      accountId: r.account_id,
+      accountName: r.account_name,
       model: r.model,
       upstreamModel: r.upstream_model,
       path: r.path,

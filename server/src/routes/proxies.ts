@@ -14,7 +14,8 @@ import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { buildUpstreamHeaders, buildUpstreamUrl, parseJsonSafe } from '../services/proxy.js'
 import { upstreamFetch, type ProxyTarget } from '../services/proxyAgent.js'
-import { decryptChannelKey } from '../services/channels.js'
+import { primaryAccount } from '../services/accounts.js'
+import { decryptKey } from '../services/channels.js'
 import { getProxyTarget } from '../services/proxies.js'
 import { toProxyDto, type ChannelRow, type ProxyRow } from '../types.js'
 
@@ -207,7 +208,8 @@ proxyRoutes.post('/latency-test', async (c) => {
   const proxy = await getProxyTarget(body.proxyId)
   if (!proxy) throw badRequest('代理不存在或已停用')
 
-  const upstreamKey = decryptChannelKey(ch)
+  const primary = await primaryAccount(ch.id)
+  const upstreamKey = decryptKey(primary?.key_cipher)
 
   const url = buildUpstreamUrl(ch.base_url, ch.models_path ?? '/models')
   const headers = buildUpstreamHeaders(upstreamKey, 'application/json', {

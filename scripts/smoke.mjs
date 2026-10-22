@@ -123,7 +123,12 @@ let failed = 0
 
 function check(name, fn) {
   try {
-    fn()
+    const r = fn()
+    // 异步断言不会被这里 await —— 所以它永远"通过"，失败也只会变成未捕获异常。
+    // 与其静默假通过，不如直接报错，逼出正确写法：check 之外 await，回调里只做同步断言。
+    if (r && typeof r.then === 'function') {
+      throw new Error('check() 不接受 async 回调：请把 await 移到 check 之外')
+    }
     passed++
     console.log(`  \u001b[32m✔\u001b[0m ${name}`)
   } catch (err) {
@@ -2682,7 +2687,155 @@ async function main() {
     }
 
     // ---------------------------------------------------------- 会话与 refresh token
-    section('㉛ 会话：refresh token 轮换与重用检测')
+    section('㉛ 渠道多上游账户（结构 + 选路 + 操作）')
+
+    const acctChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-acct-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 950
+    })
+    const acctChannelId = acctChannel.body.channel.id
+    const acctModel = `smoke-acct-model-${RUN}`
+    const acctPrimary = acctChannel.body.channel.accounts?.[0]
+
+    check('建渠道时自动创建主账户', () => {
+      const ch = acctChannel.body.channel
+      assert.equal(ch.accounts.length, 1)
+      assert.equal(ch.accounts[0].name, '默认账户')
+      assert.equal(ch.hasApiKey, true)
+      // 只给掩码：掩码里含 • 且不含完整密钥
+      assert.ok(ch.accounts[0].apiKeyMasked.includes('••'), '应给掩码而不是明文')
+      assert.ok(!ch.accounts[0].apiKeyMasked.includes(UPSTREAM_KEY))
+    })
+
+    const acctList = await apiCall('GET', `/api/channels/${acctChannelId}/accounts`)
+    check('账户列表接口可用', () => {
+      assert.equal(acctList.status, 200)
+      assert.equal(acctList.body.accounts.length, 1)
+    })
+
+    const acct2 = await apiCall('POST', `/api/channels/${acctChannelId}/accounts`, {
+      name: `二号账户-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 100,
+      weight: 1
+    })
+    const acct2Id = acct2.body.account?.id
+    check('可新增第二个账户', () => assert.equal(acct2.status, 201))
+
+    const acctDetail = await apiCall('GET', `/api/channels/${acctChannelId}`)
+    check('渠道 DTO 带出两个账户', () =>
+      assert.equal(acctDetail.body.channel.accounts.length, 2))
+
+    const acctReveal = await apiCall(
+      'GET',
+      `/api/channels/${acctChannelId}/accounts/${acct2Id}/reveal`
+    )
+    const acctAudit = await apiCall('GET', '/api/audit?action=channel_account.reveal')
+    check('账户密钥可单独查看', () => {
+      assert.equal(acctReveal.status, 200)
+      assert.equal(acctReveal.body.key, UPSTREAM_KEY)
+    })
+    check('查看账户密钥必留审计', () =>
+      assert.ok(acctAudit.body.events.some((e) => e.action === 'channel_account.reveal')))
+
+    const acctPatched = await apiCall(
+      'PATCH',
+      `/api/channels/${acctChannelId}/accounts/${acct2Id}`,
+      { priority: 1, weight: 3 }
+    )
+    check('可改账户的优先级/权重', () => {
+      assert.equal(acctPatched.status, 200)
+      assert.equal(acctPatched.body.account.priority, 1)
+      assert.equal(acctPatched.body.account.weight, 3)
+    })
+
+    await apiCall('PATCH', `/api/channels/${acctChannelId}`, { apiKey: `${UPSTREAM_KEY}-rot` })
+    const acctAfterKey = await apiCall('GET', `/api/channels/${acctChannelId}`)
+    check('改渠道密钥会同步到主账户', () => {
+      const primary = acctAfterKey.body.channel.accounts.find((a) => a.name === '默认账户')
+      assert.ok(primary.apiKeyMasked !== acctPrimary.apiKeyMasked, '主账户掩码未变')
+    })
+    await apiCall('PATCH', `/api/channels/${acctChannelId}`, { apiKey: UPSTREAM_KEY })
+
+    // ---- 选路：priority 1 的「二号账户」应独占，priority 100 的主账户不该被用
+    const acctRoute = await apiCall('POST', '/api/model-routes', {
+      alias: acctModel,
+      targets: [{ channelId: acctChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    check('映射建立成功', () =>
+      assert.equal(acctRoute.status, 201, acctRoute.text?.slice(0, 200)))
+    const acctKey = await apiCall('POST', '/api/keys', { name: `smoke-acct-key-${RUN}` })
+    const acctSecret = acctKey.body.key
+    const acctHitFull = async () => {
+      const r = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${acctSecret}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: acctModel, messages: [{ role: 'user', content: 'hi' }] })
+      })
+      return { status: r.status, text: await r.text() }
+    }
+    const acctHit = async () => (await acctHitFull()).status
+
+    const acctHit1 = await acctHit()
+    const acctHit2 = await acctHit()
+    const acctFirst = await acctHitFull()
+    check('多账户下仍能正常转发', () => {
+      assert.equal(acctFirst.status, 200, `响应：${acctFirst.text.slice(0, 300)}`)
+    })
+    await acctHit()
+    void acctHit1
+    void acctHit2
+
+    // 日志是 fire-and-forget 的异步写入 —— 立刻查可能还没落库，所以要等一下
+    let acctLogs = []
+    for (let i = 0; i < 20; i++) {
+      const r = await apiCall('GET', `/api/logs?limit=100&channelId=${acctChannelId}`)
+      acctLogs = r.body.logs.filter((l) => l.channelId === acctChannelId)
+      if (acctLogs.length >= 2) break
+      await new Promise((res) => setTimeout(res, 100))
+    }
+    check('日志记录了实际服务的账户', () => {
+      assert.ok(acctLogs.length >= 2, `只拿到 ${acctLogs.length} 条日志`)
+      assert.ok(acctLogs.every((l) => l.accountName), '日志缺 accountName')
+    })
+    check('选中了优先级最高的账户', () =>
+      assert.ok(
+        acctLogs.every((l) => l.accountName === `二号账户-${RUN}`),
+        `实际走了：${acctLogs.map((l) => l.accountName).join(',')}`
+      ))
+
+    const acctDel = await apiCall(
+      'DELETE',
+      `/api/channels/${acctChannelId}/accounts/${acct2Id}`
+    )
+    const acctHit3 = await acctHit()
+    check('删除账户后回落到剩余账户并仍可转发', () => {
+      assert.equal(acctDel.status, 200)
+      assert.equal(acctHit3, 200)
+    })
+
+    const acctRemaining = await apiCall('GET', `/api/channels/${acctChannelId}/accounts`)
+    const acctLastDel = await apiCall(
+      'DELETE',
+      `/api/channels/${acctChannelId}/accounts/${acctRemaining.body.accounts[0].id}`
+    )
+    check('唯一的账户不允许删除（409）', () => assert.equal(acctLastDel.status, 409))
+
+    const acctDenied = await apiCall(
+      'POST',
+      `/api/channels/${acctChannelId}/accounts`,
+      { name: 'x' },
+      { cookie: operatorCookie, keepSession: true }
+    )
+    check('操作员不能新建账户（403）', () => assert.equal(acctDenied.status, 403))
+
+    await apiCall('DELETE', `/api/keys/${acctKey.body.apiKey.id}`)
+    await apiCall('DELETE', `/api/channels/${acctChannelId}`)
+
+    section('㉜ 会话：refresh token 轮换与重用检测')
 
     const jarOf = (res) => {
       const raw = res.headers.getSetCookie?.() ?? []
@@ -2770,19 +2923,15 @@ async function main() {
       password: ADMIN_PASS
     })
     const sLogout = await authPost('/api/auth/logout', sLogin2.jar.cookie)
-    check('登出作废整条链，旧 refresh 不能再换新', async () => {
-      assert.equal(sLogout.status, 200)
-    })
+    check('登出成功', () => assert.equal(sLogout.status, 200))
     const sAfterLogout = await authPost(
       '/api/auth/refresh',
       'portara_refresh=' + sLogin2.jar.pick('portara_refresh')
     )
     check('登出后 refresh 失效', () => assert.equal(sAfterLogout.status, 401))
 
-    check('没有 refresh cookie 时刷新 → 401', async () => {
-      const r = await authPost('/api/auth/refresh', null)
-      assert.equal(r.status, 401)
-    })
+    const sNoCookie = await authPost('/api/auth/refresh', null)
+    check('没有 refresh cookie 时刷新 → 401', () => assert.equal(sNoCookie.status, 401))
 
     // 冒烟只走 HTTP，没有数据库连接 —— 所以这里验证令牌本身的强度，
     // 「库里只存哈希」由服务端代码与人工查库保证（token_hash 是 64 位 hex）
@@ -2796,7 +2945,7 @@ async function main() {
     })
 
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉜ 密钥不泄漏到日志')
+    section('㉝ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -2808,7 +2957,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉝ 清理测试数据')
+    section('㉞ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

@@ -24,11 +24,24 @@ import {
 } from '../services/proxy.js'
 import { getSetting } from '../services/settings.js'
 import { getUsageSnapshot, invalidateUsageCache } from '../services/usageFetch.js'
-import { decryptChannelKey, tryDecryptChannelKey } from '../services/channels.js'
+import {
+  createAccount,
+  getAccount,
+  listAccounts,
+  mirrorChannelKey,
+  primaryAccount,
+  updateAccount
+} from '../services/accounts.js'
+import { decryptKey, tryDecryptKey } from '../services/channels.js'
 import { getProxyTarget } from '../services/proxies.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import type { ProxyTarget } from '../services/proxyAgent.js'
-import { toChannelDto, type ChannelRow } from '../types.js'
+import {
+  toAccountDto,
+  toChannelDto,
+  type ChannelAccountRow,
+  type ChannelRow
+} from '../types.js'
 
 export const channelRoutes = new Hono()
 
@@ -189,7 +202,8 @@ channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')
 
-  const upstreamKey = decryptChannelKey(ch)
+  const primary = await primaryAccount(ch.id)
+  const upstreamKey = decryptKey(primary?.key_cipher)
 
   const result = await fetchModelsFor({
     baseUrl: ch.base_url,
@@ -315,8 +329,30 @@ function validateChannelInput(input: {
   }
 }
 
-function maskOf(ch: ChannelRow): string {
-  const key = tryDecryptChannelKey(ch)
+/** 渠道的账户 DTO 列表（掩码已算好） */
+async function accountDtos(channelId: string): Promise<ReturnType<typeof toAccountDto>[]> {
+  const rows = await listAccounts(channelId)
+  return rows.map((a) => toAccountDto(a, maskOfAccount(a)))
+}
+
+/** 批量版：一次查完所有渠道的账户，避免列表页 N+1 */
+async function accountDtosByChannel(): Promise<Map<string, ReturnType<typeof toAccountDto>[]>> {
+  const rows = await query<ChannelAccountRow>(
+    `select * from channel_accounts order by priority asc, name asc, created_at asc`
+  )
+  const map = new Map<string, ReturnType<typeof toAccountDto>[]>()
+  for (const a of rows) {
+    const list = map.get(a.channel_id) ?? []
+    list.push(toAccountDto(a, maskOfAccount(a)))
+    map.set(a.channel_id, list)
+  }
+  return map
+}
+
+/** 面板上的密钥掩码；账户是密钥的载体，所以按账户算 */
+function maskOfAccount(account: { key_cipher: string } | null): string {
+  if (!account) return ''
+  const key = tryDecryptKey(account.key_cipher)
   if (key === null) return '（密文无法解密，请重新填写）'
   return key ? maskSecret(key) : ''
 }
@@ -325,7 +361,13 @@ channelRoutes.get('/', async (c) => {
   const rows = await query<ChannelRow>(
     'select * from channels order by priority asc, name asc'
   )
-  return c.json({ channels: rows.map((ch) => toChannelDto(ch, maskOf(ch))) })
+  const byChannel = await accountDtosByChannel()
+  return c.json({
+    channels: rows.map((ch) => {
+      const accounts = byChannel.get(ch.id) ?? []
+      return toChannelDto(ch, accounts[0]?.apiKeyMasked ?? '', accounts)
+    })
+  })
 })
 
 /** 单个渠道详情（供渠道详情子页面使用） */
@@ -333,7 +375,8 @@ channelRoutes.get('/:id', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')
-  return c.json({ channel: toChannelDto(ch, maskOf(ch)) })
+  const accounts = await accountDtos(ch.id)
+  return c.json({ channel: toChannelDto(ch, accounts[0]?.apiKeyMasked ?? '', accounts) })
 })
 
 channelRoutes.post('/', requireAdmin, async (c) => {
@@ -383,7 +426,13 @@ channelRoutes.post('/', requireAdmin, async (c) => {
     usageAdapter: row!.usage_adapter
   })
 
-  return c.json({ channel: toChannelDto(row!, maskOf(row!)) }, 201)
+  // 账户才是密钥的载体：首个账户与渠道同时创建
+  if (cipher) {
+    await createAccount(row!.id, { name: '默认账户', keyCipher: cipher })
+  }
+  const accounts = await accountDtos(row!.id)
+
+  return c.json({ channel: toChannelDto(row!, accounts[0]?.apiKeyMasked ?? '', accounts) }, 201)
 })
 
 channelRoutes.patch('/:id', requireAdmin, async (c) => {
@@ -474,7 +523,16 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
     await invalidateUsageCache(id)
   }
 
-  return c.json({ channel: toChannelDto(row!, maskOf(row!)) })
+  // 密钥变更同步到主账户（没有就建一条），再镜像回渠道列以支持回滚
+  if (body.apiKey !== undefined || body.clearApiKey) {
+    const primary = await primaryAccount(id)
+    if (primary) await updateAccount(id, primary.id, { keyCipher: cipher })
+    else if (cipher) await createAccount(id, { name: '默认账户', keyCipher: cipher })
+    await mirrorChannelKey(id)
+  }
+  const accounts = await accountDtos(id)
+
+  return c.json({ channel: toChannelDto(row!, accounts[0]?.apiKeyMasked ?? '', accounts) })
 })
 
 channelRoutes.delete('/:id', requireAdmin, async (c) => {
@@ -498,11 +556,12 @@ channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')
 
-  if (!ch.api_key_cipher) {
+  const primary = await primaryAccount(ch.id)
+  if (!primary?.key_cipher) {
     throw new ApiError(409, 'channel_key_empty', '该渠道没有配置上游密钥')
   }
 
-  const key = tryDecryptChannelKey(ch)
+  const key = tryDecryptKey(primary.key_cipher)
   if (key === null) {
     throw new ApiError(
       500,
@@ -545,7 +604,8 @@ channelRoutes.post('/:id/test', async (c) => {
     )
   }
 
-  const upstreamKey = tryDecryptChannelKey(ch)
+  const primary = await primaryAccount(ch.id)
+  const upstreamKey = tryDecryptKey(primary?.key_cipher)
   if (upstreamKey === null) {
       await record(0, false)
       return c.json({
@@ -615,7 +675,13 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
 
   const model = typeof payload.model === 'string' ? payload.model : ''
 
-  const upstreamKey = decryptChannelKey(ch)
+  // 可指定账户（面板上的「测哪个号」）；默认用主账户
+  const accountId = c.req.query('accountId') ?? ''
+  const account = accountId
+    ? await getAccount(ch.id, accountId)
+    : await primaryAccount(ch.id)
+  if (accountId && !account) throw notFound('账户不存在')
+  const upstreamKey = decryptKey(account?.key_cipher)
 
   /**
    * 直连测试同样要**按有效协议**发请求 —— 否则给 Anthropic 协议的模型发

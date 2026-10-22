@@ -12,6 +12,31 @@ export interface UserRow {
   last_login_at: string | null
 }
 
+/**
+ * 上游账户行（与 channel_accounts 表一一对应）。
+ *
+ * 账户只提供**凭据**；模型能力、协议、Base URL、模型映射都仍归渠道管。
+ */
+export interface ChannelAccountRow {
+  id: string
+  channel_id: string
+  name: string
+  key_cipher: string
+  status: 'active' | 'disabled'
+  priority: number
+  weight: number
+  note: string
+  /** 故障转移维护的冷却截止时间；null = 正常 */
+  cooldown_until: Date | null
+  last_error: string
+  last_used_at: Date | null
+  consecutive_failures: number
+  usage_adapter: string
+  usage_url: string
+  created_at: Date
+  updated_at: Date
+}
+
 export interface ChannelRow {
   id: string
   name: string
@@ -151,6 +176,8 @@ export interface AuditEventRow {
 }
 
 export interface RequestLogRow {
+  account_id: string | null
+  account_name: string
   id: string
   ts: string
   api_key_id: string | null
@@ -204,7 +231,33 @@ export function toUserDto(u: UserRow) {
 }
 
 /** 渠道对外表示：绝不包含上游密钥明文，只给掩码 */
-export function toChannelDto(ch: ChannelRow, maskedKey: string) {
+/** 账户 DTO：**只给掩码，永远不返回密文或明文** */
+export function toAccountDto(a: ChannelAccountRow, maskedKey: string) {
+  return {
+    id: a.id,
+    name: a.name,
+    status: a.status,
+    priority: a.priority,
+    weight: a.weight,
+    note: a.note ?? '',
+    apiKeyMasked: maskedKey,
+    hasKey: Boolean(a.key_cipher),
+    usageAdapter: a.usage_adapter ?? '',
+    usageUrl: a.usage_url ?? '',
+    /** 冷却中：面板显示倒计时；到点后自动恢复可用 */
+    cooldownUntil: a.cooldown_until ? new Date(a.cooldown_until).toISOString() : null,
+    lastError: a.last_error ?? '',
+    consecutiveFailures: a.consecutive_failures ?? 0,
+    lastUsedAt: a.last_used_at ? new Date(a.last_used_at).toISOString() : null,
+    createdAt: new Date(a.created_at).toISOString()
+  }
+}
+
+export function toChannelDto(
+  ch: ChannelRow,
+  maskedKey: string,
+  accounts: ReturnType<typeof toAccountDto>[] = []
+) {
   return {
     id: ch.id,
     name: ch.name,
@@ -220,7 +273,10 @@ export function toChannelDto(ch: ChannelRow, maskedKey: string) {
     usageUrl: ch.usage_url ?? '',
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
-    hasApiKey: Boolean(ch.api_key_cipher),
+    // 有账户就按账户算（账户才是密钥的载体）；没有则回退到渠道列，兼容旧数据
+    hasApiKey: accounts.length > 0 ? accounts.some((a) => a.hasKey) : Boolean(ch.api_key_cipher),
+    // 账户明细：面板据此渲染列表，余额页据此分组
+    accounts,
     models: ch.models,
     priority: ch.priority,
     weight: ch.weight,
