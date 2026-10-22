@@ -539,6 +539,29 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .form-grid { display: grid; gap: 13px; min-width: 0; }
 .form-row { display: grid; gap: 13px; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
 
+/*
+ * 渠道配置子页面（`.fill-view` 撑满内容区）。
+ *
+ * 卡片在 `.form-scroll` 里滚，操作条留在滚动区外面 ——
+ * 不用 `position: sticky` 是因为 .content 自带 22px 内边距，
+ * sticky 会吸在那条内边距之上，底下漏出一条滚动内容，看着像条缝。
+ *
+ * 表单铺满 1680px 反而难读（标签和输入框离得太远），所以中间这列限宽居中；
+ * 滚动条则仍在内容区右边缘 —— 限宽只作用在内容列上。
+ */
+.form-column { width: 100%; max-width: 1080px; margin: 0 auto; }
+
+.form-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+.form-bar {
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.form-bar-inner { display: flex; align-items: center; gap: 10px; }
+
 /* ---------------------------------------------------------------- 自定义下拉 */
 
 .psel { position: relative; display: block; width: 100%; min-width: 0; }

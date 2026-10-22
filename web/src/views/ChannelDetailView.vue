@@ -445,6 +445,11 @@ async function saveOverride(): Promise<void> {
   }
 }
 
+/** 配置的编辑入口：详情页只读展示，改配置去子页面 */
+function editChannel(): void {
+  location.hash = '#/channels/' + props.channelId + '/edit'
+}
+
 function back(): void {
   location.hash = '#/channels'
 }
@@ -474,6 +479,9 @@ onMounted(loadChannel)
         <span class="spacer" />
         <button class="btn btn-sm" :disabled="testing" @click="testChannel">
           {{ testing ? t('common.testing') : t('common.test') }}
+        </button>
+        <button v-if="isAdmin()" class="btn btn-sm btn-primary" @click="editChannel">
+          {{ t('common.edit') }}
         </button>
         <button v-if="isAdmin() && channel.hasApiKey" class="btn btn-sm" @click="revealKey">
           {{ t('channels.revealKey') }}

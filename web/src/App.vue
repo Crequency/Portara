@@ -13,6 +13,7 @@ import { loadMeta, meta, siteName } from './meta'
 import { THEME_MODES, setThemeMode, themeMode } from './theme'
 import { toast } from './toast'
 import ChannelDetailView from './views/ChannelDetailView.vue'
+import ChannelFormView from './views/ChannelFormView.vue'
 import ChannelsView from './views/ChannelsView.vue'
 import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
@@ -31,23 +32,46 @@ const user = ref<User | null>(null)
 const ready = ref(false)
 
 /**
- * 极简路由：`#/<name>[/<param>]`
- * 例如 `#/channels` 与 `#/channels/<id>`（渠道详情子页面）
+ * 极简路由：`#/<name>[/<param>[/<action>]]`
+ *   `#/channels`             列表
+ *   `#/channels/new`         新建渠道（子页面）
+ *   `#/channels/<id>`        渠道详情
+ *   `#/channels/<id>/edit`   编辑渠道（子页面）
  */
 interface Route {
   name: string
   param: string
+  action: string
 }
 
 function parseRoute(): Route {
   const raw = location.hash.replace(/^#\/?/, '')
-  const [name = '', param = ''] = raw.split('/')
-  return { name: name || 'overview', param }
+  const [name = '', param = '', action = ''] = raw.split('/')
+  return { name: name || 'overview', param, action }
 }
 
 const route = ref<Route>(parseRoute())
+
+/**
+ * 渠道的新建 / 编辑子页面。
+ *
+ * `new` 与 `edit` 是两条不同的入口但共用一个页面：新建时没有 channelId，
+ * 页面自己去拉默认值；编辑时按 channelId 载入现有配置。
+ */
+const isChannelForm = computed(
+  () =>
+    route.value.name === 'channels' &&
+    (route.value.param === 'new' || route.value.action === 'edit')
+)
+/** `new` 视为「没有 id」 */
+const channelFormId = computed(() =>
+  route.value.param === 'new' ? '' : route.value.param
+)
 const isChannelDetail = computed(
-  () => route.value.name === 'channels' && route.value.param.length > 0
+  () =>
+    route.value.name === 'channels' &&
+    route.value.param.length > 0 &&
+    !isChannelForm.value
 )
 
 const NAV = [
@@ -92,12 +116,16 @@ const currentView = computed(() => {
   }
 })
 
-const pageTitle = computed(() =>
-  isChannelDetail.value ? t('channelDetail.title') : t('nav.' + route.value.name)
-)
-const pageSub = computed(() =>
-  isChannelDetail.value ? t('channelDetail.sub') : t(route.value.name + '.sub')
-)
+const pageTitle = computed(() => {
+  if (isChannelForm.value) {
+    return channelFormId.value ? t('channels.editChannel') : t('channels.newChannel')
+  }
+  return isChannelDetail.value ? t('channelDetail.title') : t('nav.' + route.value.name)
+})
+const pageSub = computed(() => {
+  if (isChannelForm.value) return t('channels.formSub')
+  return isChannelDetail.value ? t('channelDetail.sub') : t(route.value.name + '.sub')
+})
 
 /**
  * 当前路由是否对该用户可见。
@@ -162,7 +190,7 @@ setSessionExpiredHandler(() => {
 function onLoggedIn(u: User): void {
   user.value = u
   location.hash = '#/overview'
-  route.value = { name: 'overview', param: '' }
+  route.value = { name: 'overview', param: '', action: '' }
 }
 
 async function logout(): Promise<void> {
@@ -267,6 +295,12 @@ function go(id: string): void {
           </div>
         </div>
 
+        <ChannelFormView
+          v-else-if="isChannelForm"
+          :key="channelFormId || 'new'"
+          :user="user"
+          :channel-id="channelFormId"
+        />
         <ChannelDetailView
           v-else-if="isChannelDetail"
           :user="user"

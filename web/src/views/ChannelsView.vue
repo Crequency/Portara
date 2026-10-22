@@ -6,21 +6,13 @@ import {
   ApiError,
   type Channel,
   type ChannelTestResult,
-  type FetchModelsResult,
-  type ModelMeta,
   type ModelRoute,
   type User
 } from '../api'
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
-import {
-  formatNumber,
-  formatTime,
-  headerLines,
-  parseHeaderLines,
-  parseList
-} from '../format'
+import { formatTime, parseList } from '../format'
 import { useI18n } from '../i18n'
 import { toast } from '../toast'
 
@@ -30,9 +22,6 @@ const { t } = useI18n()
 
 const channels = ref<Channel[]>([])
 const loading = ref(true)
-const showForm = ref(false)
-const saving = ref(false)
-const editingId = ref<string | null>(null)
 const testResults = reactive<Record<string, ChannelTestResult | 'loading'>>({})
 
 /** 页内 Tabs：上游渠道 / 模型映射 */
@@ -42,46 +31,6 @@ const tab = ref<PageTab>('channels')
 /** 「测试全部」的进度 */
 const testingAll = ref(false)
 const testAllProgress = reactive({ done: 0, total: 0 })
-
-const form = reactive({
-  name: '',
-  baseUrl: '',
-  apiKey: '',
-  protocol: 'openai',
-  vendor: 'generic',
-  modelsPath: '/models',
-  modelsMeta: {} as Record<string, ModelMeta>,
-  headersText: '',
-  modelsText: '',
-  priority: 100,
-  weight: 1,
-  timeoutMs: 120000,
-  /** 选用的 HTTP 代理；null = 直连 */
-  proxyId: null as string | null,
-  /** 余额/用量适配器 id；'' = 不提供余额 */
-  usageAdapter: '',
-  usageUrl: '',
-  /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
-  limitPriority: 'balance' as 'balance' | 'quota',
-  status: 'active' as 'active' | 'disabled',
-  note: ''
-})
-
-const protocolOptions = computed(() => [
-  { value: 'openai', label: t('channels.protocolOpenai') },
-  { value: 'anthropic', label: t('channels.protocolAnthropic') },
-  { value: 'mixed', label: t('channels.protocolMixed') }
-])
-
-const vendorOptions = computed(() => [
-  { value: 'generic', label: t('channels.vendorGeneric') },
-  { value: 'opencode-go', label: t('channels.vendorOpencode') }
-])
-
-const statusOptions = computed(() => [
-  { value: 'active', label: t('common.enabled') },
-  { value: 'disabled', label: t('common.disabled') }
-])
 
 const isAdmin = (): boolean => props.user?.role === 'admin'
 
@@ -439,6 +388,20 @@ async function submitBatch(): Promise<void> {
   }
 }
 
+/**
+ * 新建 / 编辑不再是弹窗，而是独立的子页面。
+ *
+ * 渠道配置项太多（凭据、连接、模型、用量、选路），弹窗里只能在内部再滚一层；
+ * 子页面能分区、能一屏看全，也顺手拿到了「地址可分享/可刷新」。
+ */
+function goCreate(): void {
+  location.hash = '#/channels/new'
+}
+
+function goEdit(ch: Channel): void {
+  location.hash = '#/channels/' + ch.id + '/edit'
+}
+
 async function load(): Promise<void> {
   loading.value = true
   try {
@@ -448,194 +411,6 @@ async function load(): Promise<void> {
     toast.error(t('channels.loadFailed'))
   } finally {
     loading.value = false
-  }
-}
-
-/** 系统设置里的「新建渠道默认超时」；拿不到就用内置默认 */
-const gatewayDefaults = ref<{ defaultChannelTimeoutMs: number } | null>(null)
-
-/** 可选余额适配器（管理员） */
-const usageAdapters = ref<{ id: string; label: string; note: string }[]>([])
-const usageAdapterOptions = computed(() => [
-  { value: '', label: t('usage.adapterNone'), hint: '' },
-  ...usageAdapters.value.map((a) => ({ value: a.id, label: a.label, hint: a.note }))
-])
-
-async function loadUsageAdapters(): Promise<void> {
-  try {
-    const res = await api.get<{ adapters: typeof usageAdapters.value }>('/api/usage/adapters')
-    usageAdapters.value = res.adapters
-  } catch {
-    usageAdapters.value = []
-  }
-}
-
-/** 可选代理（仅管理员可读；操作员拿不到就只显示「直连」） */
-const proxies = ref<{ id: string; name: string; host: string; port: number; status: string }[]>([])
-
-const proxyOptions = computed(() => [
-  { value: '', label: t('channels.proxyDirect'), hint: t('channels.proxyDirectHint') },
-  ...proxies.value.map((p) => ({
-    value: p.id,
-    label: p.name,
-    hint: `${p.host}:${p.port}${p.status === 'disabled' ? ' · ' + t('common.disabled') : ''}`
-  }))
-])
-
-async function loadProxies(): Promise<void> {
-  try {
-    const res = await api.get<{ proxies: typeof proxies.value }>('/api/proxies')
-    proxies.value = res.proxies
-  } catch {
-    proxies.value = []
-  }
-}
-
-async function loadGatewayDefaults(): Promise<void> {
-  try {
-    const res = await api.get<{ settings: { defaultChannelTimeoutMs: number } }>('/api/settings')
-    gatewayDefaults.value = res.settings
-  } catch {
-    // 操作员没有系统设置权限 —— 用内置默认即可，不影响功能
-    gatewayDefaults.value = null
-  }
-}
-
-function openCreate(): void {
-  editingId.value = null
-  Object.assign(form, {
-    name: '',
-    baseUrl: '',
-    apiKey: '',
-    protocol: 'openai',
-    vendor: 'generic',
-    modelsPath: '/models',
-    modelsMeta: {},
-    headersText: '',
-    modelsText: '',
-    priority: 100,
-    weight: 1,
-    timeoutMs: gatewayDefaults.value?.defaultChannelTimeoutMs ?? 120000,
-    proxyId: null,
-    usageAdapter: '',
-    usageUrl: '',
-    limitPriority: 'balance',
-    status: 'active',
-    note: ''
-  })
-  fetchState.value = null
-  rawModelsBody.value = ''
-  rawTruncated.value = false
-  showForm.value = true
-}
-
-function openEdit(ch: Channel): void {
-  editingId.value = ch.id
-  Object.assign(form, {
-    name: ch.name,
-    baseUrl: ch.baseUrl,
-    apiKey: '',
-    protocol: ch.protocol,
-    vendor: ch.vendor,
-    modelsPath: ch.modelsPath ?? '/models',
-    modelsMeta: { ...(ch.modelsMeta ?? {}) },
-    proxyId: ch.proxyId ?? null,
-    usageAdapter: ch.usageAdapter ?? '',
-    usageUrl: ch.usageUrl ?? '',
-    limitPriority: ch.limitPriority ?? 'balance',
-    headersText: headerLines(ch.extraHeaders ?? {}),
-    modelsText: ch.models.join('\n'),
-    priority: ch.priority,
-    weight: ch.weight,
-    timeoutMs: ch.timeoutMs,
-    status: ch.status,
-    note: ch.note
-  })
-  fetchState.value = null
-  rawModelsBody.value = ''
-  rawTruncated.value = false
-  showForm.value = true
-}
-
-const fetchingModels = ref(false)
-const fetchState = ref<{ ok: boolean; message: string; warnings: string[] } | null>(null)
-/** 上游 /models 的原始响应体（供复制排查） */
-const rawModelsBody = ref('')
-const rawTruncated = ref(false)
-
-/** 已获取到元信息的模型（用于在弹窗里展示上下文长度） */
-const metaList = computed(() =>
-  Object.values(form.modelsMeta)
-    .filter((m) => form.modelsText.includes(m.id))
-    .sort((a, b) => a.id.localeCompare(b.id))
-)
-const metaWithCtx = computed(() => metaList.value.filter((m) => m.contextLength !== null).length)
-
-/**
- * 从上游拉取模型列表并自动填入。
- * 编辑已有渠道且未重新输入密钥时，走后端用已存密钥的接口；
- * 否则把当前表单里的配置（含新填的密钥）发给草稿接口。
- */
-async function fetchModelsFromApi(): Promise<void> {
-  fetchingModels.value = true
-  fetchState.value = null
-  rawModelsBody.value = ''
-  rawTruncated.value = false
-  try {
-    const useStored = editingId.value && !form.apiKey
-    const res = useStored
-      ? await api.post<FetchModelsResult>('/api/channels/' + editingId.value + '/fetch-models')
-      : await api.post<FetchModelsResult>('/api/channels/fetch-models', {
-          baseUrl: form.baseUrl.trim(),
-          apiKey: form.apiKey,
-          modelsPath: form.modelsPath.trim() || '/models',
-          timeoutMs: Number(form.timeoutMs),
-          extraHeaders: parseHeaderLines(form.headersText).headers,
-          vendor: form.vendor
-        })
-
-    // 无论成功失败都留一份原始响应体 —— 失败时往往更需要它
-    rawModelsBody.value = res.raw ?? ''
-    rawTruncated.value = res.rawTruncated === true
-
-    if (!res.ok) {
-      fetchState.value = { ok: false, message: res.message, warnings: [] }
-      toast.error(res.message)
-      return
-    }
-
-    // 自动填入模型列表，并记录元信息（上下文长度等）
-    form.modelsText = res.models.map((m) => m.id).join('\n')
-    form.modelsMeta = Object.fromEntries(res.models.map((m) => [m.id, m]))
-
-    const withCtx = res.models.filter((m) => m.contextLength !== null).length
-    fetchState.value = { ok: true, message: res.message, warnings: res.warnings }
-    toast.success(
-      withCtx > 0
-        ? t('channels.fetchOk', { n: res.models.length, withCtx })
-        : t('channels.fetchOkNoCtx', { n: res.models.length })
-    )
-  } catch (err) {
-    const message = errorText(err, t('channels.fetchFailed'))
-    fetchState.value = { ok: false, message, warnings: [] }
-    toast.error(message)
-  } finally {
-    fetchingModels.value = false
-  }
-}
-
-/** 复制上游 /models 的原始响应体 */
-async function copyRawModelsBody(): Promise<void> {
-  if (!rawModelsBody.value) return
-  try {
-    await navigator.clipboard.writeText(rawModelsBody.value)
-    toast.success(
-      rawTruncated.value
-        ? t('channels.copiedRawTruncated')
-        : t('channels.copiedRaw', { n: formatNumber(rawModelsBody.value.length) })
-    )
-  } catch {
-    toast.error(t('toast.copyFailed'))
   }
 }
 
@@ -664,59 +439,6 @@ async function testAll(): Promise<void> {
   toast.success(
     t('channels.testAllDone', { total: testAllProgress.total, ok: okCount })
   )
-}
-
-async function submit(): Promise<void> {
-  const parsedHeaders = parseHeaderLines(form.headersText)
-  if (parsedHeaders.errors.length > 0) {
-    toast.error(t('channels.headerFormatError', { msg: parsedHeaders.errors[0]! }))
-    return
-  }
-
-  saving.value = true
-  try {
-    const modelIds = parseList(form.modelsText)
-
-    const body = {
-      name: form.name.trim(),
-      baseUrl: form.baseUrl.trim(),
-      protocol: form.protocol,
-      vendor: form.vendor,
-      extraHeaders: parsedHeaders.headers,
-      modelsPath: form.modelsPath.trim() || '/models',
-      // 只保留仍在模型列表里的元信息，避免留下陈旧条目
-      modelsMeta: Object.fromEntries(
-        Object.entries(form.modelsMeta).filter(([id]) => modelIds.includes(id))
-      ),
-      models: modelIds,
-      priority: Number(form.priority),
-      weight: Number(form.weight),
-      timeoutMs: Number(form.timeoutMs),
-      proxyId: form.proxyId || null,
-      usageAdapter: form.usageAdapter || '',
-      usageUrl: form.usageUrl.trim(),
-      limitPriority: form.limitPriority,
-      status: form.status,
-      note: form.note
-    }
-
-    if (editingId.value) {
-      await api.patch('/api/channels/' + editingId.value, {
-        ...body,
-        ...(form.apiKey ? { apiKey: form.apiKey } : {})
-      })
-      toast.success(t('channels.updated'))
-    } else {
-      await api.post('/api/channels', { ...body, apiKey: form.apiKey })
-      toast.success(t('channels.created'))
-    }
-    showForm.value = false
-    await load()
-  } catch (err) {
-    toastError(err, t('channels.saveFailed'))
-  } finally {
-    saving.value = false
-  }
 }
 
 async function test(ch: Channel, opts: { silent?: boolean } = {}): Promise<void> {
@@ -774,10 +496,6 @@ function latencyOk(ch: Channel): boolean {
 }
 
 onMounted(async () => {
-  // 这三个都是「打开弹窗时才需要」的辅助数据，与主列表并行加载即可
-  void loadGatewayDefaults()
-  void loadProxies()
-  void loadUsageAdapters()
   await load()
   await loadRoutes()
 })
@@ -815,7 +533,7 @@ onMounted(async () => {
             }}
           </button>
           <button class="btn btn-sm" @click="load">{{ t('common.refresh') }}</button>
-          <button v-if="isAdmin()" class="btn btn-primary btn-sm" @click="openCreate">
+          <button v-if="isAdmin()" class="btn btn-primary btn-sm" @click="goCreate">
             ＋ {{ t('channels.newChannel') }}
           </button>
         </div>
@@ -935,7 +653,7 @@ onMounted(async () => {
                     {{ testResults[ch.id] === 'loading' ? t('common.testing') : t('common.test') }}
                   </button>
                   <template v-if="isAdmin()">
-                    <button class="btn btn-sm" @click="openEdit(ch)">{{ t('common.edit') }}</button>
+                    <button class="btn btn-sm" @click="goEdit(ch)">{{ t('common.edit') }}</button>
                     <button class="btn btn-sm btn-danger" @click="remove(ch)">
                       {{ t('common.delete') }}
                     </button>
@@ -1103,207 +821,6 @@ onMounted(async () => {
     </div>
   </Modal>
 
-  <Modal
-    v-if="showForm"
-    :title="editingId ? t('channels.editChannel') : t('channels.newChannel')"
-    wide
-    @close="showForm = false"
-  >
-    <div class="form-grid">
-      <div class="form-row">
-        <div class="field">
-          <label>{{ t('common.name') }}</label>
-          <input v-model="form.name" placeholder="openai-main" />
-        </div>
-        <div class="field">
-          <label>{{ t('common.status') }}</label>
-          <PSelect v-model="form.status" :options="statusOptions" />
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="field">
-          <label>{{ t('channels.protocol') }}</label>
-          <PSelect v-model="form.protocol" :options="protocolOptions" />
-          <span class="hint">{{ t('channels.protocolHint') }}</span>
-          <span v-if="form.protocol === 'mixed'" class="hint" style="color: var(--warn)">
-            {{ t('channels.protocolMixedHint') }}
-          </span>
-        </div>
-        <div class="field">
-          <label>{{ t('channels.vendor') }}</label>
-          <PSelect v-model="form.vendor" :options="vendorOptions" />
-          <span v-if="form.vendor === 'opencode-go'" class="hint">
-            {{ t('channels.vendorHint') }}
-          </span>
-        </div>
-      </div>
-
-      <div class="field">
-        <label>{{ t('channels.baseUrl') }}</label>
-        <input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" />
-        <span class="hint">{{ t('channels.baseUrlHint') }}</span>
-      </div>
-
-      <div class="field">
-        <label>{{ t('channels.upstreamKey') }}</label>
-        <input
-          v-model="form.apiKey"
-          type="password"
-          :placeholder="
-            editingId
-              ? t('channels.upstreamKeyPlaceholderEdit')
-              : t('channels.upstreamKeyPlaceholderNew')
-          "
-        />
-        <span class="hint">{{ t('channels.upstreamKeyHint') }}</span>
-      </div>
-
-      <div class="field">
-        <label>{{ t('channels.fixedHeaders') }}</label>
-        <textarea
-          v-model="form.headersText"
-          rows="3"
-          :placeholder="t('channels.fixedHeadersPlaceholder')"
-        />
-        <span class="hint">{{ t('channels.fixedHeadersHint') }}</span>
-      </div>
-
-      <div class="field">
-        <label>{{ t('channels.modelsApiPath') }}</label>
-        <input v-model="form.modelsPath" placeholder="/models" />
-        <span class="hint">{{ t('channels.modelsApiPathHint') }}</span>
-      </div>
-
-      <div class="field">
-        <div class="row-between">
-          <label>{{ t('channels.models') }}</label>
-          <div class="row">
-            <button
-              class="btn btn-sm"
-              :disabled="fetchingModels || !form.baseUrl.trim()"
-              @click="fetchModelsFromApi"
-            >
-              {{ fetchingModels ? t('channels.fetchingModels') : t('channels.fetchModels') }}
-            </button>
-            <button
-              class="btn btn-sm btn-icon"
-              :disabled="!rawModelsBody"
-              :title="t('channels.copyRawBody')"
-              @click="copyRawModelsBody"
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="5.5" y="5.5" width="8" height="9" rx="1.5" />
-                <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v7A1.5 1.5 0 0 0 4 12.5h1.5" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <textarea
-          v-model="form.modelsText"
-          rows="4"
-          :placeholder="t('channels.modelsPlaceholder')"
-        />
-        <span class="hint">{{ t('channels.modelsHint') }} · {{ t('channels.fillFromApi') }}</span>
-
-        <div v-if="fetchState" class="hint" :class="{ 'err-text': !fetchState.ok }">
-          {{ fetchState.message }}
-          <template v-if="fetchState.warnings.length">
-            · {{ t('channels.fetchWarnings', { n: fetchState.warnings.length }) }}
-          </template>
-          <template v-if="rawModelsBody">
-            · {{ t('channels.rawBodySize', { n: formatNumber(rawModelsBody.length) }) }}
-            <span v-if="rawTruncated">{{ t('channels.rawBodyTruncated') }}</span>
-          </template>
-        </div>
-
-        <div v-if="metaList.length" style="margin-top: 8px">
-          <div class="dim" style="font-size: 12px; margin-bottom: 5px">
-            {{ t('channels.modelsMetaTitle') }} · {{ t('channels.modelsMetaHint') }}
-          </div>
-          <div class="batch-scroll" style="max-height: 160px">
-            <div v-for="m in metaList" :key="m.id" class="batch-row" style="grid-template-columns: 1.6fr 1fr 1fr">
-              <span class="mono" style="overflow: hidden; text-overflow: ellipsis">{{ m.id }}</span>
-              <span class="nowrap">
-                <span class="dim">{{ t('channels.ctxLength') }}</span>
-                {{ m.contextLength === null ? '—' : m.contextLength.toLocaleString('en-US') }}
-              </span>
-              <span class="nowrap">
-                <span class="dim">{{ t('channels.maxOutput') }}</span>
-                {{ m.maxOutputTokens === null ? '—' : m.maxOutputTokens.toLocaleString('en-US') }}
-              </span>
-            </div>
-          </div>
-          <div class="dim" style="font-size: 11.5px; margin-top: 4px">
-            {{ t('channels.fetchOk', { n: metaList.length, withCtx: metaWithCtx }) }}
-          </div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="field">
-          <label class="row" style="gap: 5px; display: inline-flex">
-            {{ t('channels.priority') }}
-            <PInfo :text="t('channels.priorityHint')" />
-          </label>
-          <input v-model.number="form.priority" type="number" min="1" />
-        </div>
-        <div class="field">
-          <label class="row" style="gap: 5px; display: inline-flex">
-            {{ t('channels.weight') }}
-            <PInfo :text="t('channels.weightHint')" />
-          </label>
-          <input v-model.number="form.weight" type="number" min="1" />
-        </div>
-      </div>
-
-      <div class="field">
-        <label>{{ t('channels.proxy') }}</label>
-        <!-- PSelect 的值类型是 string，而 proxyId 可为 null（= 直连），这里显式转换 -->
-        <PSelect
-          :model-value="form.proxyId ?? ''"
-          :options="proxyOptions"
-          @update:model-value="form.proxyId = $event || null"
-        />
-        <span class="hint">{{ t('channels.proxyHint') }}</span>
-      </div>
-
-      <div class="form-row">
-        <div class="field">
-          <label>{{ t('usage.adapterField') }}</label>
-          <PSelect v-model="form.usageAdapter" :options="usageAdapterOptions" />
-          <span class="hint">{{ t('usage.adapterHint') }}</span>
-        </div>
-        <div v-if="form.usageAdapter" class="field">
-          <label>{{ t('usage.limitPriority') }}</label>
-          <PSelect
-            v-model="form.limitPriority"
-            :options="[
-              { value: 'balance', label: t('usage.limitPriorityBalance') },
-              { value: 'quota', label: t('usage.limitPriorityQuota') }
-            ]"
-          />
-          <span class="hint">{{ t('usage.limitPriorityHint') }}</span>
-        </div>
-        <div class="field">
-          <label>{{ t('channels.timeout') }}</label>
-          <input v-model.number="form.timeoutMs" type="number" min="1000" />
-        </div>
-        <div class="field">
-          <label>{{ t('common.note') }}</label>
-          <input v-model="form.note" :placeholder="t('channels.notePlaceholder')" />
-        </div>
-      </div>
-    </div>
-
-    <div class="modal-foot">
-      <button class="btn" @click="showForm = false">{{ t('common.cancel') }}</button>
-      <button class="btn btn-primary" :disabled="saving" @click="submit">
-        {{ saving ? t('common.saving') : t('common.save') }}
-      </button>
-    </div>
-  </Modal>
 
   <Modal
     v-if="showRouteForm"
