@@ -178,19 +178,36 @@ export function aggregateAccountSnapshots(accounts: UsageAccountSnapshot[]): {
   }
 }
 
+/** 耗尽判定的依据（渠道级配置） */
+export type LimitPriority = 'balance' | 'quota'
+
 /**
- * 该账户是否已经"额度耗尽"。
+ * 该账户是否已经"用不了"。
  *
- * **宁可漏标，也不要误标**：漏标最多多一次上游往返（然后靠 402/429 进冷却），
- * 而误标会让一个还有额度的账户被直接跳过。
+ * 同时有余额与用量窗口的厂商（CommandCode / OpenCode 这类），两套口径并不总是同步：
+ * 窗口打满但充值额度还有，或者反之。谁先算"用不了"取决于使用者的策略，所以由渠道配置决定：
  *
- * 所以有金额余额时**只看金额**：CommandCode 这类"月度窗口满了但还有充值额度"的账户，
- * 单看窗口会被误判。没有金额的纯窗口厂商（如 MiniMax）才看窗口。
+ *   `balance`（默认）—— 钱见底才算耗尽。适合"额度窗口只是限速、充值额度才是真钱"的用法
+ *   `quota`          —— 窗口打满就换号，即使还有余额。适合"窗口就是套餐额度"的用法
+ *
+ * 两种口径都**在自己那一维没有数据时退回另一维**，避免"配了 quota 但该厂商没有窗口"
+ * 导致永远判定为可用。
+ *
+ * 判据一律保守：宁可漏标（最多多一次上游往返，随后靠 402/429 进冷却），
+ * 也不要误标 —— 误标会让一个还有额度的账户被直接跳过。
  */
-export function isAccountExhausted(s: UsageAccountSnapshot): boolean {
-  if (s.balances.length > 0) return s.balances.every((b) => b.remaining <= 0)
-  if (s.windows.length === 0) return false
-  return s.windows.some((w) => w.exceeded === true || (w.total > 0 && w.used / w.total >= 0.95))
+export function isAccountExhausted(
+  s: UsageAccountSnapshot,
+  basis: LimitPriority = 'balance'
+): boolean {
+  const byBalance = s.balances.length > 0 ? s.balances.every((b) => b.remaining <= 0) : null
+  const byQuota =
+    s.windows.length > 0
+      ? s.windows.some((w) => w.exceeded === true || (w.total > 0 && w.used / w.total >= 0.95))
+      : null
+
+  if (basis === 'quota') return byQuota ?? byBalance ?? false
+  return byBalance ?? byQuota ?? false
 }
 
 export interface UsageEndpoint {

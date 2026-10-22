@@ -19,6 +19,7 @@ import {
   quotaColor,
   quotaPercent
 } from '../format'
+import PSelect from '../components/PSelect.vue'
 import { useI18n } from '../i18n'
 import { loadRangePreference, saveRangePreference } from '../rangePreference'
 import { CLIENT_TZ, tzQueryParam } from '../time'
@@ -215,6 +216,32 @@ const usageFailedCount = computed(
 const isAdmin = computed(() => props.user?.role === 'admin')
 
 /**
+ * 每张渠道卡各自记住"正在看哪个账户"：'' = 聚合，否则是账户 id。
+ * 用 per-channel 的映射而不是一个全局选择器 —— 不同渠道的账户集合互不相干。
+ */
+const accountPick = reactive<Record<string, string>>({})
+
+/** 当前展示的窗口/余额：选了账户就用该账户的，否则用聚合值 */
+function windowsFor(s: UsageSnapshot) {
+  const id = accountPick[s.channelId]
+  const acc = id ? s.accounts.find((a) => a.accountId === id) : null
+  return acc ? acc.windows : s.windows
+}
+
+function balancesFor(s: UsageSnapshot) {
+  const id = accountPick[s.channelId]
+  const acc = id ? s.accounts.find((a) => a.accountId === id) : null
+  return acc ? acc.balances : s.balances
+}
+
+function accountOptions(s: UsageSnapshot) {
+  return [
+    { value: '', label: t('usage.aggregate') },
+    ...s.accounts.map((a) => ({ value: a.accountId, label: a.accountName }))
+  ]
+}
+
+/**
  * 窗口按**时间跨度升序**：5 小时 → 每周 → 每月。
  *
  * 这是人读限额的自然顺序。注意排序**不能**再兼职"窄屏留哪一条"——
@@ -233,13 +260,12 @@ function windowSpanRank(key: string): number {
   return WINDOW_SPAN[base] ?? 99
 }
 
-function orderedWindows(s: UsageSnapshot) {
-  return [...(s.windows ?? [])].sort((a, b) => windowSpanRank(a.key) - windowSpanRank(b.key))
+function orderedWindows<T extends { key: string }>(list: T[]): T[] {
+  return [...list].sort((a, b) => windowSpanRank(a.key) - windowSpanRank(b.key))
 }
 
 /** 已用百分比最高的那条窗口键 —— 窄屏只显示它 */
-function tightestWindowKey(s: UsageSnapshot): string {
-  const list = s.windows ?? []
+function tightestWindowKey(list: { key: string; used: number; total: number }[]): string {
   if (list.length === 0) return ''
   return [...list].sort(
     (a, b) => quotaPercent(b.used, b.total) - quotaPercent(a.used, a.total)
@@ -261,11 +287,6 @@ function windowLabel(key: string): string {
     interval: t('usage.windowInterval')
   }
   return map[base] ?? base
-}
-
-/** 渠道的主余额（金额或 credits） */
-function primaryBalance(s: UsageSnapshot) {
-  return s.balances && s.balances.length > 0 ? s.balances[0]! : null
 }
 
 async function loadUsage(): Promise<void> {
@@ -772,26 +793,39 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
             <span class="usage-cell-name">{{ s.channelName }}</span>
             <span class="tag">{{ s.adapter }}</span>
             <!-- 多账户：提示额度是几个号合起来的 -->
-            <span v-if="s.accounts.length > 1" class="dim nowrap" style="font-size: 11px">
-              {{ t('usage.accountCount', { n: s.accounts.length }) }}
-            </span>
+            <template v-if="s.accounts.length > 1">
+              <span class="dim nowrap" style="font-size: 11px">
+                {{ t('usage.accountCount', { n: s.accounts.length }) }}
+              </span>
+              <span class="spacer" />
+              <!-- 每张卡各自切换：聚合 / 某个账户 -->
+              <span style="width: 118px">
+                <PSelect
+                  :model-value="accountPick[s.channelId] ?? ''"
+                  :options="accountOptions(s)"
+                  size="sm"
+                  align="end"
+                  @update:model-value="(v: string) => (accountPick[s.channelId] = v)"
+                />
+              </span>
+            </template>
           </div>
 
           <!-- 金额余额（DeepSeek / Moonshot 这类） -->
-          <div v-if="primaryBalance(s)" class="mono usage-cell-balance">
+          <div v-if="balancesFor(s).length" class="mono usage-cell-balance">
             {{
-              primaryBalance(s)!.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 })
+              balancesFor(s)[0]!.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 })
             }}
-            <span class="dim">{{ primaryBalance(s)!.currency }}</span>
+            <span class="dim">{{ balancesFor(s)[0]!.currency }}</span>
           </div>
 
           <!-- 额度窗口：宽屏全列，窄屏只留最紧的那条 -->
-          <div v-if="orderedWindows(s).length" class="usage-windows">
+          <div v-if="orderedWindows(windowsFor(s)).length" class="usage-windows">
             <div
-              v-for="w in orderedWindows(s)"
+              v-for="w in orderedWindows(windowsFor(s))"
               :key="w.key"
               class="usage-window"
-              :class="{ 'is-tightest': w.key === tightestWindowKey(s) }"
+              :class="{ 'is-tightest': w.key === tightestWindowKey(windowsFor(s)) }"
             >
               <div class="row-between" style="font-size: 11.5px; gap: 8px">
                 <span class="nowrap">{{ windowLabel(w.key) }}</span>

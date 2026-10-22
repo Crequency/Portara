@@ -24,6 +24,7 @@ import {
   type User
 } from '../api'
 import Modal from '../components/Modal.vue'
+import AccountUsage from '../components/AccountUsage.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
 import {
@@ -787,6 +788,21 @@ onMounted(loadChannel)
           <div v-for="(wn, i) in usage.warnings" :key="i" class="dim" style="font-size: 12px; margin-top: 8px">
             · {{ wn }}
           </div>
+
+          <!-- 逐账户：上面是聚合值，这里是每个号各自的余额与限额 -->
+          <div v-if="usage.accounts.length > 1" class="detail-acct-usage">
+            <div class="dim" style="font-size: 12px; margin-bottom: 10px">
+              {{ t('usage.byAccount') }}
+            </div>
+            <div
+              v-for="a in usage.accounts"
+              :key="a.accountId"
+              class="detail-acct-item"
+            >
+              <AccountUsage :account="a" show-name />
+            </div>
+          </div>
+
           <div class="dim" style="font-size: 11.5px; margin-top: 10px">
             {{ t('usage.fetchedAt') }} {{ formatTime(usage.fetchedAt) }}
           </div>

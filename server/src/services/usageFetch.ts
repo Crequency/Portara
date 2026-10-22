@@ -260,14 +260,19 @@ async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<Usa
     parts
       .filter((p) => p.ok)
       .map((p) =>
-        setAccountQuotaExhausted(p.accountId, isAccountExhausted(p)).catch(() => undefined)
+        setAccountQuotaExhausted(
+          p.accountId,
+          isAccountExhausted(p, ch.limit_priority ?? 'balance')
+        ).catch(() => undefined)
       )
   )
 
   const raw: Record<string, unknown> = {}
   for (const p of parts) raw[p.accountName] = p.raw ?? null
 
-  const warnings = parts.flatMap((p) => (p.ok ? p.warnings : []))
+  // 去重：同一个厂商的多个账户会报同样的提醒（如「limited=true」），
+  // 三份一模一样的文字堆在页面上只是噪音
+  const warnings = [...new Set(parts.flatMap((p) => (p.ok ? p.warnings : [])))]
   const errors = parts.filter((p) => !p.ok).map((p) => `${p.accountName}：${p.error ?? '未知错误'}`)
 
   return {

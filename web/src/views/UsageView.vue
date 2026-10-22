@@ -8,6 +8,7 @@
 import { toastError } from '../error'
 import { computed, onMounted, ref } from 'vue'
 import { api, type UsageSnapshot, type User } from '../api'
+import AccountUsage from '../components/AccountUsage.vue'
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
 import {
@@ -332,30 +333,16 @@ onMounted(() => void load())
           </div>
         </div>
 
-        <!-- 按账户：渠道有多把 Key 时，各自的钱包/额度是分开的 -->
-        <div v-if="s.accounts.length > 1" class="acct-breakdown">
-          <div class="dim" style="font-size: 12px; margin-bottom: 6px">
+        <!--
+          按账户：渠道有多把 Key 时，各自的钱包与限额是分开的。
+          聚合值在上，逐账户在下 —— 两处用同一个组件渲染，不会出现"两处数字不一致"的疑心。
+        -->
+        <div v-if="s.accounts.length > 1" class="usage-acct-section">
+          <div class="dim" style="font-size: 12px; margin-bottom: 10px">
             {{ t('usage.byAccount') }}
           </div>
-          <div v-for="a in s.accounts" :key="a.accountId" class="acct-break">
-            <span class="acct-break-name">{{ a.accountName }}</span>
-            <span class="tag">{{ a.adapter }}</span>
-            <template v-if="a.ok">
-              <span v-for="b in a.balances" :key="b.currency" class="mono acct-break-val">
-                {{ b.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) }}
-                <span class="dim">{{ b.currency }}</span>
-              </span>
-              <span v-for="w in a.windows" :key="w.key" class="acct-break-val nowrap">
-                {{ windowLabel(w.key) }}
-                <span :style="{ color: quotaColor(quotaPercent(w.used, w.total), w.exceeded) }">
-                  {{ quotaPercent(w.used, w.total) }}%
-                </span>
-              </span>
-            </template>
-            <span v-else class="badge badge-err">
-              {{ t('usage.accountFailed') }}
-              <span class="dim" style="font-weight: 400">· {{ a.error }}</span>
-            </span>
+          <div v-for="a in s.accounts" :key="a.accountId" class="usage-acct-item">
+            <AccountUsage :account="a" show-name />
           </div>
         </div>
 

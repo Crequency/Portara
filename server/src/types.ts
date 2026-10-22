@@ -64,6 +64,8 @@ export interface ChannelRow {
   usage_adapter: string
   /** 余额接口的 base 覆盖；'' = 用 adapter 默认 */
   usage_url: string
+  /** 耗尽判定的依据：balance（余额优先）| quota（用量限额优先） */
+  limit_priority: 'balance' | 'quota'
   models: string[]
   priority: number
   weight: number
@@ -276,6 +278,7 @@ export function toChannelDto(
     proxyId: ch.proxy_id ?? null,
     usageAdapter: ch.usage_adapter ?? '',
     usageUrl: ch.usage_url ?? '',
+    limitPriority: ch.limit_priority ?? 'balance',
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     // 有账户就按账户算（账户才是密钥的载体）；没有则回退到渠道列，兼容旧数据

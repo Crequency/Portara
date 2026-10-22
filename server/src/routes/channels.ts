@@ -256,6 +256,8 @@ const channelShape = {
   usageAdapter: z.string().max(64),
   /** 余额接口 base 覆盖；'' = 用 adapter 默认 */
   usageUrl: z.string().max(500),
+  /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
+  limitPriority: z.enum(['balance', 'quota']),
   models: z.array(z.string().min(1)),
   priority: z.coerce.number().int().min(1).max(9999),
   weight: z.coerce.number().int().min(1).max(1000),
@@ -294,6 +296,7 @@ function withCreateDefaults(b: CreateInput) {
     // 余额适配器：默认空 = 不提供余额（不改变既有行为）
     usageAdapter: b.usageAdapter ?? '',
     usageUrl: b.usageUrl ?? '',
+    limitPriority: b.limitPriority ?? 'balance',
     apiKey: b.apiKey ?? '',
     models: b.models ?? [],
     priority: b.priority ?? 100,
@@ -396,8 +399,8 @@ channelRoutes.post('/', requireAdmin, async (c) => {
     `insert into channels
        (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
         model_overrides, api_key_cipher, proxy_id, models, priority, weight, timeout_ms,
-        status, note, usage_adapter, usage_url)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning *`,
+        status, note, usage_adapter, usage_url, limit_priority)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) returning *`,
     [
       body.name,
       body.baseUrl,
@@ -416,7 +419,8 @@ channelRoutes.post('/', requireAdmin, async (c) => {
       body.status,
       body.note,
       body.usageAdapter ?? '',
-      body.usageUrl ?? ''
+      body.usageUrl ?? '',
+      body.limitPriority ?? 'balance'
     ]
   )
   await recordAudit(c, 'channel.create', { type: 'channel', id: row!.id }, {
@@ -480,6 +484,7 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        note           = coalesce($17, note),
        usage_adapter  = coalesce($18, usage_adapter),
        usage_url      = coalesce($19, usage_url),
+       limit_priority = coalesce($20, limit_priority),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -503,7 +508,8 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       body.status ?? null,
       body.note ?? null,
       body.usageAdapter ?? null,
-      body.usageUrl ?? null
+      body.usageUrl ?? null,
+      body.limitPriority ?? null
     ]
   )
   // 只记「改了哪些字段」，不记值 —— 其中可能有密钥

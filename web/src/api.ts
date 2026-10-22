@@ -293,6 +293,8 @@ export interface Channel {
   usageAdapter: string
   /** 余额接口 base 覆盖 */
   usageUrl: string
+  /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
+  limitPriority: 'balance' | 'quota'
   /** 该渠道的上游账户（至少一个） */
   accounts: ChannelAccount[]
   baseUrl: string

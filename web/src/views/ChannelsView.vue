@@ -61,6 +61,8 @@ const form = reactive({
   /** 余额/用量适配器 id；'' = 不提供余额 */
   usageAdapter: '',
   usageUrl: '',
+  /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
+  limitPriority: 'balance' as 'balance' | 'quota',
   status: 'active' as 'active' | 'disabled',
   note: ''
 })
@@ -517,6 +519,7 @@ function openCreate(): void {
     proxyId: null,
     usageAdapter: '',
     usageUrl: '',
+    limitPriority: 'balance',
     status: 'active',
     note: ''
   })
@@ -539,6 +542,7 @@ function openEdit(ch: Channel): void {
     proxyId: ch.proxyId ?? null,
     usageAdapter: ch.usageAdapter ?? '',
     usageUrl: ch.usageUrl ?? '',
+    limitPriority: ch.limitPriority ?? 'balance',
     headersText: headerLines(ch.extraHeaders ?? {}),
     modelsText: ch.models.join('\n'),
     priority: ch.priority,
@@ -691,6 +695,7 @@ async function submit(): Promise<void> {
       proxyId: form.proxyId || null,
       usageAdapter: form.usageAdapter || '',
       usageUrl: form.usageUrl.trim(),
+      limitPriority: form.limitPriority,
       status: form.status,
       note: form.note
     }
@@ -1269,6 +1274,17 @@ onMounted(async () => {
           <label>{{ t('usage.adapterField') }}</label>
           <PSelect v-model="form.usageAdapter" :options="usageAdapterOptions" />
           <span class="hint">{{ t('usage.adapterHint') }}</span>
+        </div>
+        <div v-if="form.usageAdapter" class="field">
+          <label>{{ t('usage.limitPriority') }}</label>
+          <PSelect
+            v-model="form.limitPriority"
+            :options="[
+              { value: 'balance', label: t('usage.limitPriorityBalance') },
+              { value: 'quota', label: t('usage.limitPriorityQuota') }
+            ]"
+          />
+          <span class="hint">{{ t('usage.limitPriorityHint') }}</span>
         </div>
         <div class="field">
           <label>{{ t('channels.timeout') }}</label>

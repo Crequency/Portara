@@ -225,12 +225,17 @@ function startMockUpstream() {
         return
       }
       if (url.endsWith('/alpha/billing/credits')) {
+        // 密钥含 quota-full：窗口打满但还有充值额度 ——
+        // 用于验证「余额优先 / 用量限额优先」两种口径给出相反结论。
+        const quotaFull = (req.headers.authorization ?? '').includes('quota-full')
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({
           credits: { monthlyCredits: 0, purchasedCredits: 5.0, freeCredits: 0, belowThreshold: false },
           windowLimits: { limited: true, exceeded: null,
             fiveHour: { used: 0, cap: 14, exceeded: false, resetAt: 0 },
-            weekly: { used: 3.0, cap: 35, exceeded: false, resetAt: 1791859267795 } }
+            weekly: quotaFull
+              ? { used: 35, cap: 35, exceeded: true, resetAt: 1791859267795 }
+              : { used: 3.0, cap: 35, exceeded: false, resetAt: 1791859267795 } }
         }))
         return
       }
@@ -2988,6 +2993,90 @@ async function main() {
     }
     check('选中的是有余额的账户', () =>
       assert.ok(qLogs.every((l) => l.accountName === '默认账户'), JSON.stringify(qLogs.map((l) => l.accountName))))
+
+
+    // ---- 口径优先级：窗口满但还有余额时，balance 与 quota 应给出相反结论
+    const lpChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-lp-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 953,
+      usageAdapter: 'commandcode',
+      limitPriority: 'balance'
+    })
+    const lpId = lpChannel.body.channel.id
+    check('渠道可保存耗尽判定的口径', () =>
+      assert.equal(lpChannel.body.channel.limitPriority, 'balance'))
+
+    // 高优先级账户：窗口满但有充值额度
+    await apiCall('POST', `/api/channels/${lpId}/accounts`, {
+      name: '窗口满但有余额',
+      apiKey: 'sk-quota-full-account',
+      priority: 1,
+      weight: 1
+    })
+
+    const lpBal = await apiCall('GET', `/api/channels/${lpId}/usage?refresh=1`)
+    const lpBalFull = lpBal.body.accounts.find((a) => a.accountName === '窗口满但有余额')
+    check('该账户确实同时有余额与已满窗口', () => {
+      assert.ok(lpBalFull.balances[0].remaining > 0, '应还有余额')
+      assert.ok(lpBalFull.windows.some((w) => w.exceeded), '应有已超限窗口')
+    })
+    let lpAcc = await apiCall('GET', `/api/channels/${lpId}/accounts`)
+    check('口径为 balance 时不算耗尽（钱还在）', () => {
+      const a = lpAcc.body.accounts.find((x) => x.name === '窗口满但有余额')
+      assert.equal(a.quotaExhausted, false)
+    })
+
+    // 切到 quota 口径再刷新：窗口满即算耗尽
+    await apiCall('PATCH', `/api/channels/${lpId}`, { limitPriority: 'quota' })
+    const lpQuota = await apiCall('GET', `/api/channels/${lpId}/usage?refresh=1`)
+    lpAcc = await apiCall('GET', `/api/channels/${lpId}/accounts`)
+    check('口径为 quota 时同样状态就算耗尽（窗口满）', () => {
+      const a = lpAcc.body.accounts.find((x) => x.name === '窗口满但有余额')
+      assert.equal(a.quotaExhausted, true)
+      assert.equal(lpQuota.status, 200)
+    })
+
+    // 选路应跳过它，走另一个有窗口余量的账户
+    const lpNormal = await apiCall('POST', `/api/channels/${lpId}/accounts`, {
+      name: '窗口有余量',
+      apiKey: UPSTREAM_KEY,
+      priority: 2,
+      weight: 1
+    })
+    void lpNormal
+    await apiCall('POST', '/api/model-routes', {
+      alias: `smoke-lp-model-${RUN}`,
+      targets: [{ channelId: lpId, upstreamModel: MOCK_MODEL }]
+    })
+    const lpKey = await apiCall('POST', '/api/keys', { name: `smoke-lp-key-${RUN}` })
+    const lpHit = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${lpKey.body.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: `smoke-lp-model-${RUN}`,
+        messages: [{ role: 'user', content: 'hi' }]
+      })
+    })
+    check('quota 口径下窗口已满的账户被跳过，请求仍成功', () =>
+      assert.equal(lpHit.status, 200))
+    let lpLogs = []
+    for (let i = 0; i < 20; i++) {
+      const r = await apiCall('GET', `/api/logs?limit=50&channelId=${lpId}`)
+      lpLogs = r.body.logs.filter((l) => l.channelId === lpId)
+      if (lpLogs.length > 0) break
+      await new Promise((res) => setTimeout(res, 100))
+    }
+    check('选中了窗口有余量的账户', () =>
+      assert.ok(lpLogs.every((l) => l.accountName === '窗口有余量'), JSON.stringify(lpLogs.map((l) => l.accountName))))
+
+    await apiCall('DELETE', `/api/keys/${lpKey.body.apiKey.id}`)
+    await apiCall('DELETE', `/api/channels/${lpId}`)
 
     await apiCall('DELETE', `/api/keys/${qKey.body.apiKey.id}`)
     await apiCall('DELETE', `/api/channels/${qChannelId}`)

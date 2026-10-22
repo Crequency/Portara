@@ -997,22 +997,17 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 }
 .chart-tip-err { color: var(--danger); }
 
-/* 余额页的「按账户」明细：一行一个账户，金额与各窗口百分比紧凑排列 */
-.acct-breakdown {
+/* 余额页的「按账户」区块：聚合在上、逐账户在下 */
+.usage-acct-section {
   margin-bottom: 14px;
   padding-top: 12px;
   border-top: 1px dashed var(--border);
 }
-.acct-break {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  font-size: 12px;
-  line-height: 1.9;
+.usage-acct-item + .usage-acct-item {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
-.acct-break-name { font-weight: 600; }
-.acct-break-val { font-variant-numeric: tabular-nums; }
 
 /* ---------------------------------------------------------------- 上游账户 */
 
@@ -1054,6 +1049,37 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   font-size: 12.5px;
   word-break: break-all;
   user-select: all;
+}
+
+/* 详情页里逐账户区块：用分隔线切成"一档一档"，避免与聚合值糊在一起 */
+.detail-acct-usage {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+.detail-acct-item + .detail-acct-item {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------------------------------------------------------------- 账户用量（组件） */
+
+.acct-usage { display: flex; flex-direction: column; gap: 8px; }
+
+.acct-usage-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.acct-usage-name { font-size: 12.5px; font-weight: 600; }
+
+.acct-usage-balances { display: flex; flex-wrap: wrap; gap: 14px; font-size: 14px; }
+.acct-usage-balance { display: inline-flex; align-items: baseline; gap: 4px; }
+
+.acct-usage-windows { display: flex; flex-direction: column; gap: 7px; }
+.acct-usage-win-head { font-size: 11.5px; gap: 8px; }
+.acct-usage-track {
+  height: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 3px;
+  margin-top: 4px;
 }
 
 /* ---------------------------------------------------------------- 工具 */

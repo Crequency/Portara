@@ -395,5 +395,19 @@ export const migrations: { id: string; sql: string }[] = [
         add column if not exists quota_exhausted boolean not null default false,
         add column if not exists quota_checked_at timestamptz;
     `
+  },
+  {
+    id: '016_channel_limit_priority',
+    sql: `
+      -- 判定"账户是否已耗尽"时以哪个维度为准。
+      --
+      -- 有些厂商同时给两套口径：CommandCode 有 credits 余额 + 5h/周/月窗口，
+      -- 二者并不总是同步（窗口满了但充值额度还有；或反之）。
+      -- 到底哪个先算"用不了"，取决于使用者的策略：
+      --   balance —— 余额优先（默认，与改造前一致）：钱见底才算耗尽
+      --   quota   —— 用量限额优先：窗口打满就换号，即使还有余额
+      alter table channels
+        add column if not exists limit_priority text not null default 'balance';
+    `
   }
 ]
