@@ -997,6 +997,23 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 }
 .chart-tip-err { color: var(--danger); }
 
+/* 余额页的「按账户」明细：一行一个账户，金额与各窗口百分比紧凑排列 */
+.acct-breakdown {
+  margin-bottom: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.acct-break {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 12px;
+  line-height: 1.9;
+}
+.acct-break-name { font-weight: 600; }
+.acct-break-val { font-variant-numeric: tabular-nums; }
+
 /* ---------------------------------------------------------------- 上游账户 */
 
 /*

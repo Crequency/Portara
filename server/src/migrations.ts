@@ -381,5 +381,19 @@ export const migrations: { id: string; sql: string }[] = [
       alter table request_logs add column if not exists account_id uuid;
       alter table request_logs add column if not exists account_name text not null default '';
     `
+  },
+  {
+    id: '015_account_quota_flag',
+    sql: `
+      -- 该账户的余额/额度是否已经耗尽（由余额适配器在刷新时标记）。
+      --
+      -- 为什么要单独一列而不是复用 cooldown：语义不同 ——
+      -- cooldown 是"刚失败过，先歇一会儿"，会随时间自动过期；
+      -- 这里是"余额见底了"，只能靠余额回升来解除，跟时间无关。
+      -- 分开存，面板上也能分别显示「冷却中」与「额度耗尽」。
+      alter table channel_accounts
+        add column if not exists quota_exhausted boolean not null default false,
+        add column if not exists quota_checked_at timestamptz;
+    `
   }
 ]

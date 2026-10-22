@@ -193,6 +193,21 @@ export interface UsagePlan {
   inferred?: boolean
 }
 
+/** 单个上游账户的余额/用量快照 */
+export interface UsageAccountSnapshot {
+  accountId: string
+  accountName: string
+  adapter: string
+  ok: boolean
+  error?: string
+  warnings: string[]
+  balances: UsageBalance[]
+  windows: UsageWindow[]
+  period?: UsagePeriod
+  plan?: UsagePlan
+  raw?: unknown
+}
+
 export interface UsageSnapshot {
   channelId: string
   channelName: string
@@ -207,6 +222,8 @@ export interface UsageSnapshot {
   windows: UsageWindow[]
   period?: UsagePeriod
   plan?: UsagePlan
+  /** 逐账户明细；顶层 balances/windows 是聚合值 */
+  accounts: UsageAccountSnapshot[]
   raw?: unknown
 }
 

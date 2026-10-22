@@ -206,12 +206,14 @@ function startMockUpstream() {
 
       // ---- 余额 / 用量接口（四种，与真实上游同形）----
       if (url.endsWith('/user/balance')) {
-        // DeepSeek：金额是字符串，数组可多币种
+        // DeepSeek：金额是字符串，数组可多币种。
+        // 密钥里带 exhausted 的账户返回 0 余额 —— 用于验证「主动额度轮转」。
+        const broke = (req.headers.authorization ?? '').includes('exhausted')
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({
-          is_available: true,
-          balance_infos: [{ currency: 'CNY', total_balance: '100.00',
-                            granted_balance: '0.00', topped_up_balance: '100.00' }]
+          is_available: !broke,
+          balance_infos: [{ currency: 'CNY', total_balance: broke ? '0.00' : '100.00',
+                            granted_balance: '0.00', topped_up_balance: broke ? '0.00' : '100.00' }]
         }))
         return
       }
@@ -2923,6 +2925,72 @@ async function main() {
       assert.equal(foReset.body.account.cooldownUntil, null)
       assert.equal(foReset.body.account.consecutiveFailures, 0)
     })
+
+
+    // ---- 主动额度轮转：余额为 0 的账户被选中前就应被跳过
+    const qChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-quota-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 952,
+      usageAdapter: 'deepseek'
+    })
+    const qChannelId = qChannel.body.channel.id
+    const qBroke = await apiCall('POST', `/api/channels/${qChannelId}/accounts`, {
+      name: '余额为零',
+      apiKey: 'sk-exhausted-account',
+      priority: 1,
+      weight: 1
+    })
+    const qBrokeId = qBroke.body.account.id
+
+    const qUsage = await apiCall('GET', `/api/channels/${qChannelId}/usage?refresh=1`)
+    check('两账户余额被聚合', () => {
+      assert.equal(qUsage.body.accounts.length, 2)
+      const total = qUsage.body.balances[0]?.remaining
+      assert.equal(total, 100.00, `实际 ${total}`)
+    })
+    const qBrokeAfter = qUsage.body.accounts.find((a) => a.accountName === '余额为零')
+    const qRichAfter = qUsage.body.accounts.find((a) => a.accountName === '默认账户')
+    check('余额为 0 的账户被标记为额度耗尽', () => assert.equal(qBrokeAfter.ok, true))
+    check('按账户明细各自报出自己的余额', () => {
+      assert.equal(qBrokeAfter.balances[0].remaining, 0)
+      assert.equal(qRichAfter.balances[0].remaining, 100.00)
+    })
+
+    const qAccounts = await apiCall('GET', `/api/channels/${qChannelId}/accounts`)
+    const qFlag = qAccounts.body.accounts.find((a) => a.id === qBrokeId)
+    check('耗尽标记已落库（面板可见）', () => assert.equal(qFlag.quotaExhausted, true))
+
+    const qAlias = `smoke-quota-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: qAlias,
+      targets: [{ channelId: qChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    const qKey = await apiCall('POST', '/api/keys', { name: `smoke-quota-key-${RUN}` })
+    const qHit = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${qKey.body.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ model: qAlias, messages: [{ role: 'user', content: 'hi' }] })
+    })
+    check('额度耗尽的账户被跳过，请求仍成功', () => assert.equal(qHit.status, 200))
+
+    let qLogs = []
+    for (let i = 0; i < 20; i++) {
+      const r = await apiCall('GET', `/api/logs?limit=50&channelId=${qChannelId}`)
+      qLogs = r.body.logs.filter((l) => l.channelId === qChannelId)
+      if (qLogs.length > 0) break
+      await new Promise((res) => setTimeout(res, 100))
+    }
+    check('选中的是有余额的账户', () =>
+      assert.ok(qLogs.every((l) => l.accountName === '默认账户'), JSON.stringify(qLogs.map((l) => l.accountName))))
+
+    await apiCall('DELETE', `/api/keys/${qKey.body.apiKey.id}`)
+    await apiCall('DELETE', `/api/channels/${qChannelId}`)
 
     await apiCall('DELETE', `/api/keys/${foKey.body.apiKey.id}`)
     await apiCall('DELETE', `/api/channels/${foChannelId}`)

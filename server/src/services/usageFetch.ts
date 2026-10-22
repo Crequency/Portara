@@ -10,14 +10,17 @@
  */
 import { one, query } from '../db.js'
 import { redis } from '../redis.js'
-import { primaryAccount } from './accounts.js'
+import { listAccounts, setAccountQuotaExhausted, type AccountRow } from './accounts.js'
 import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
 import {
+  aggregateAccountSnapshots,
   endpointUrl,
   getUsageAdapter,
+  isAccountExhausted,
+  type UsageAccountSnapshot,
   type UsageAdapter,
   type UsageSnapshot
 } from './usage.js'
@@ -74,7 +77,8 @@ function errorSnapshot(
     cached: false,
     warnings: [],
     balances: [],
-    windows: []
+    windows: [],
+    accounts: []
   }
 }
 
@@ -146,16 +150,32 @@ export async function getUsageSnapshot(
   return snapshot
 }
 
-/** 真正去打上游并解析 */
-async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<UsageSnapshot> {
-  // 批 1：余额仍按"渠道一份"，取主账户的密钥；批 4 会改为逐账户
-  const primary = await primaryAccount(ch.id)
-  const apiKey = tryDecryptKey(primary?.key_cipher)
-  if (apiKey === null) return errorSnapshot(ch, '渠道密钥无法解密，请重新填写')
+/** 打一个账户的余额接口并解析（失败只影响这个账户） */
+async function fetchAccountSnapshot(
+  ch: ChannelRow,
+  account: AccountRow,
+  proxy: Awaited<ReturnType<typeof getProxyTarget>>
+): Promise<UsageAccountSnapshot> {
+  const fail = (error: string, raw?: unknown): UsageAccountSnapshot => ({
+    accountId: account.id,
+    accountName: account.name,
+    adapter: account.usage_adapter || ch.usage_adapter,
+    ok: false,
+    error,
+    warnings: [],
+    balances: [],
+    windows: [],
+    raw
+  })
 
-  const proxy = await getProxyTarget(ch.proxy_id)
+  // 账户级适配器可覆盖渠道（国内站/国际站的接口未必相同）
+  const adapter = getUsageAdapter(account.usage_adapter || ch.usage_adapter)
+  if (!adapter) return fail('未配置或未知的余额适配器')
+
+  const apiKey = tryDecryptKey(account.key_cipher)
+  if (apiKey === null) return fail('账户密钥无法解密，请重新填写')
+
   const timeoutMs = Math.min(ch.timeout_ms, 30_000)
-
   const responses: Record<string, unknown> = {}
   const warnings: string[] = []
   const raws: Record<string, string> = {}
@@ -163,7 +183,7 @@ async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<Usa
   // 并行拉取：各端点相互独立，串行会白白等好几倍时间
   const results = await Promise.all(
     adapter.endpoints.map(async (ep) => {
-      const url = endpointUrl(ch.base_url, ep.path, ch.usage_url)
+      const url = endpointUrl(ch.base_url, ep.path, account.usage_url || ch.usage_url)
       const headers: Record<string, string> = { accept: 'application/json' }
       if (adapter.auth === 'bearer' && apiKey) headers.authorization = `Bearer ${apiKey}`
       if (adapter.auth === 'x-api-key' && apiKey) headers['x-api-key'] = apiKey
@@ -196,39 +216,75 @@ async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<Usa
       responses[r.ep.key] = r.body
       continue
     }
-    if (r.ep.required) {
-      // 必需端点失败 → 整个快照失败
-      return {
-        ...errorSnapshot(ch, `${r.ep.path} 拉取失败：${r.error}`),
-        raw: raws
-      }
-    }
+    if (r.ep.required) return fail(`${r.ep.path} 拉取失败：${r.error}`, raws)
     warnings.push(`${r.ep.path} 拉取失败：${r.error}`)
   }
 
-  let parsed: Partial<UsageSnapshot>
   try {
-    parsed = adapter.parse(responses)
-  } catch (err) {
+    const parsed = adapter.parse(responses)
     return {
-      ...errorSnapshot(ch, err instanceof Error ? err.message : String(err)),
+      accountId: account.id,
+      accountName: account.name,
+      adapter: adapter.id,
+      ok: true,
+      warnings: [...(parsed.warnings ?? []), ...warnings],
+      balances: parsed.balances ?? [],
+      windows: parsed.windows ?? [],
+      period: parsed.period,
+      plan: parsed.plan,
       raw: raws
     }
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err), raws)
   }
+}
+
+/**
+ * 打该渠道的**所有账户**并聚合成一份渠道级快照。
+ *
+ * 单个账户失败不影响其它账户：它只是在明细里标 `ok:false`，
+ * 顶层聚合只统计成功的那些。
+ */
+async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<UsageSnapshot> {
+  const accounts = await listAccounts(ch.id)
+  if (accounts.length === 0) return errorSnapshot(ch, '该渠道没有上游账户')
+
+  const proxy = await getProxyTarget(ch.proxy_id)
+  const parts = await Promise.all(accounts.map((a) => fetchAccountSnapshot(ch, a, proxy)))
+
+  const okParts = parts.filter((p) => p.ok)
+  const agg = aggregateAccountSnapshots(okParts)
+
+  // 额度轮转：把"耗尽"标记写回账户。失败不影响快照返回。
+  await Promise.all(
+    parts
+      .filter((p) => p.ok)
+      .map((p) =>
+        setAccountQuotaExhausted(p.accountId, isAccountExhausted(p)).catch(() => undefined)
+      )
+  )
+
+  const raw: Record<string, unknown> = {}
+  for (const p of parts) raw[p.accountName] = p.raw ?? null
+
+  const warnings = parts.flatMap((p) => (p.ok ? p.warnings : []))
+  const errors = parts.filter((p) => !p.ok).map((p) => `${p.accountName}：${p.error ?? '未知错误'}`)
 
   return {
     channelId: ch.id,
     channelName: ch.name,
     adapter: adapter.id,
-    ok: true,
+    ok: okParts.length > 0,
+    error: okParts.length === 0 ? errors.join('；') : undefined,
     fetchedAt: new Date().toISOString(),
     cached: false,
-    warnings: [...(parsed.warnings ?? []), ...warnings],
-    balances: parsed.balances ?? [],
-    windows: parsed.windows ?? [],
-    period: parsed.period,
-    plan: parsed.plan,
-    raw: raws
+    warnings: okParts.length > 0 && errors.length > 0 ? [...warnings, ...errors] : warnings,
+    balances: agg.balances,
+    windows: agg.windows,
+    period: agg.period,
+    plan: agg.plan,
+    accounts: parts,
+    raw
   }
 }
 
@@ -256,7 +312,8 @@ export async function getUsageSnapshots(
         cached: false,
         warnings: [],
         balances: [],
-        windows: []
+        windows: [],
+        accounts: []
       })
     }
   }

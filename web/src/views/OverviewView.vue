@@ -771,6 +771,10 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
           <div class="row" style="gap: 7px; min-width: 0">
             <span class="usage-cell-name">{{ s.channelName }}</span>
             <span class="tag">{{ s.adapter }}</span>
+            <!-- 多账户：提示额度是几个号合起来的 -->
+            <span v-if="s.accounts.length > 1" class="dim nowrap" style="font-size: 11px">
+              {{ t('usage.accountCount', { n: s.accounts.length }) }}
+            </span>
           </div>
 
           <!-- 金额余额（DeepSeek / Moonshot 这类） -->

@@ -83,9 +83,15 @@ export async function pickAccounts(
   let pool = rows.filter((a) => a.status === 'active')
   if (opts.excludeIds?.size) pool = pool.filter((a) => !opts.excludeIds!.has(a.id))
 
-  // 不变式 ②：全部冷却时退化，忽略冷却标记
-  const ready = pool.filter((a) => !isCooling(a, now))
-  const usable = ready.length > 0 ? ready : pool
+  /*
+   * 三级退化（不动点：永远有账户可用，宁可让上游裁决也不自己造 503）：
+   *   ① 既没冷却、额度也没耗尽
+   *   ② 全耗尽了 → 允许用耗尽的（余额可能刚回升、缓存还没刷新）
+   *   ③ 全冷却了 → 连冷却也忽略
+   */
+  const healthy = pool.filter((a) => !isCooling(a, now) && !a.quota_exhausted)
+  const quotaFree = pool.filter((a) => !isCooling(a, now))
+  const usable = healthy.length > 0 ? healthy : quotaFree.length > 0 ? quotaFree : pool
   if (usable.length === 0) return []
 
   const tiers = [...new Set(usable.map((a) => a.priority))].sort((a, b) => a - b)
@@ -279,4 +285,22 @@ export function cooldownFor(status: number, retryAfterSec?: number | null): numb
   if (status === 401 || status === 403) return COOLDOWN.auth
   if (status === 429) return retryAfterSec && retryAfterSec > 0 ? retryAfterSec : COOLDOWN.rateLimit
   return COOLDOWN.upstream
+}
+
+/**
+ * 更新账户的"额度耗尽"标记（由余额适配器在刷新后调用）。
+ *
+ * 判据交给调用方（金额 ≤ 0 / 窗口打满），这里只负责落库 ——
+ * 因为不同厂商的"耗尽"信号不一样，不该在账户层猜。
+ */
+export async function setAccountQuotaExhausted(
+  accountId: string,
+  exhausted: boolean
+): Promise<void> {
+  await query(
+    `update channel_accounts
+        set quota_exhausted = $2, quota_checked_at = now(), updated_at = now()
+      where id = $1 and quota_exhausted <> $2`,
+    [accountId, exhausted]
+  )
 }

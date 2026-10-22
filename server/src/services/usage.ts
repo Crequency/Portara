@@ -53,6 +53,21 @@ export interface UsagePlan {
   inferred?: boolean
 }
 
+/** 单个上游账户的快照（渠道级快照由它们聚合而来） */
+export interface UsageAccountSnapshot {
+  accountId: string
+  accountName: string
+  adapter: string
+  ok: boolean
+  error?: string
+  warnings: string[]
+  balances: UsageBalance[]
+  windows: UsageWindow[]
+  period?: UsagePeriod
+  plan?: UsagePlan
+  raw?: unknown
+}
+
 export interface UsageSnapshot {
   channelId: string
   channelName: string
@@ -71,8 +86,111 @@ export interface UsageSnapshot {
   windows: UsageWindow[]
   period?: UsagePeriod
   plan?: UsagePlan
+  /** 逐账户明细；顶层的 balances/windows 是它们的**聚合值**（向后兼容） */
+  accounts: UsageAccountSnapshot[]
   raw?: unknown
   rawTruncated?: boolean
+}
+
+/**
+ * 把多个账户的快照聚合成渠道级视图。
+ *
+ * 顶层字段保持原语义（金额余额、额度窗口、账期），只是数值变成"所有账户之和" ——
+ * 这样 `/v1/usage` 与概览卡的消费方不必改动。
+ *
+ * 聚合规则：
+ *   - 金额按**币种**求和（不同币种不能相加）
+ *   - 窗口按 **key** 求和（used/total 相加，resetAt 取最早，exceeded/inferred 取"任一"）
+ *   - 账期：可数项求和；成功率按请求数加权（简单的算术平均会被小账户拖偏）
+ *   - 套餐：取第一个非空的（多账户套餐不同时，顶层意义有限，明细里有各自的）
+ */
+export function aggregateAccountSnapshots(accounts: UsageAccountSnapshot[]): {
+  balances: UsageBalance[]
+  windows: UsageWindow[]
+  period?: UsagePeriod
+  plan?: UsagePlan
+} {
+  const balances = new Map<string, UsageBalance>()
+  for (const a of accounts) {
+    for (const b of a.balances) {
+      const key = `${b.unit}:${b.currency}`
+      const cur = balances.get(key)
+      if (!cur) {
+        balances.set(key, { ...b })
+        continue
+      }
+      cur.remaining += b.remaining
+      if (b.total !== undefined) cur.total = (cur.total ?? 0) + b.total
+      if (b.granted !== undefined) cur.granted = (cur.granted ?? 0) + b.granted
+      if (b.toppedUp !== undefined) cur.toppedUp = (cur.toppedUp ?? 0) + b.toppedUp
+    }
+  }
+
+  const windows = new Map<string, UsageWindow>()
+  for (const a of accounts) {
+    for (const w of a.windows) {
+      const cur = windows.get(w.key)
+      if (!cur) {
+        windows.set(w.key, { ...w })
+        continue
+      }
+      cur.used += w.used
+      cur.total += w.total
+      cur.remaining += w.remaining
+      if (w.exceeded) cur.exceeded = true
+      if (w.inferred) cur.inferred = true
+      if (w.resetAt && (!cur.resetAt || w.resetAt < cur.resetAt)) cur.resetAt = w.resetAt
+    }
+  }
+
+  const withPeriod = accounts.filter((a) => a.period)
+  let period: UsagePeriod | undefined
+  if (withPeriod.length > 0) {
+    const sum = (pick: (p: UsagePeriod) => number | undefined): number | undefined => {
+      const values = withPeriod.map((a) => pick(a.period!)).filter((v): v is number => v !== undefined)
+      return values.length > 0 ? values.reduce((x, y) => x + y, 0) : undefined
+    }
+    const requests = sum((p) => p.requests)
+    const rates = withPeriod
+      .filter((a) => a.period!.successRate !== undefined)
+      .map((a) => ({ rate: a.period!.successRate!, weight: a.period!.requests ?? 1 }))
+    const weightSum = rates.reduce((s2, r) => s2 + r.weight, 0)
+    period = {
+      start: withPeriod.map((a) => a.period!.start).filter(Boolean).sort()[0],
+      end: withPeriod.map((a) => a.period!.end).filter(Boolean).sort().at(-1),
+      requests,
+      successRate:
+        rates.length > 0 && weightSum > 0
+          ? rates.reduce((s2, r) => s2 + r.rate * r.weight, 0) / weightSum
+          : undefined,
+      tokensIn: sum((p) => p.tokensIn),
+      tokensOut: sum((p) => p.tokensOut),
+      cost: sum((p) => p.cost),
+      costCurrency: withPeriod[0]!.period!.costCurrency
+    }
+  }
+
+  return {
+    balances: [...balances.values()],
+    windows: [...windows.values()],
+    period,
+    plan: accounts.find((a) => a.plan)?.plan
+  }
+}
+
+/**
+ * 该账户是否已经"额度耗尽"。
+ *
+ * **宁可漏标，也不要误标**：漏标最多多一次上游往返（然后靠 402/429 进冷却），
+ * 而误标会让一个还有额度的账户被直接跳过。
+ *
+ * 所以有金额余额时**只看金额**：CommandCode 这类"月度窗口满了但还有充值额度"的账户，
+ * 单看窗口会被误判。没有金额的纯窗口厂商（如 MiniMax）才看窗口。
+ */
+export function isAccountExhausted(s: UsageAccountSnapshot): boolean {
+  if (s.balances.length > 0) return s.balances.every((b) => b.remaining <= 0)
+  if (s.windows.length === 0) return false
+  return s.windows.some((w) => w.exceeded === true || (w.total > 0 && w.used / w.total >= 0.95))
 }
 
 export interface UsageEndpoint {

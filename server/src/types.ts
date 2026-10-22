@@ -31,6 +31,9 @@ export interface ChannelAccountRow {
   last_error: string
   last_used_at: Date | null
   consecutive_failures: number
+  /** 余额/额度耗尽（余额适配器刷新时标记）；只能靠余额回升解除 */
+  quota_exhausted: boolean
+  quota_checked_at: Date | null
   usage_adapter: string
   usage_url: string
   created_at: Date
@@ -248,6 +251,8 @@ export function toAccountDto(a: ChannelAccountRow, maskedKey: string) {
     cooldownUntil: a.cooldown_until ? new Date(a.cooldown_until).toISOString() : null,
     lastError: a.last_error ?? '',
     consecutiveFailures: a.consecutive_failures ?? 0,
+    quotaExhausted: Boolean(a.quota_exhausted),
+    quotaCheckedAt: a.quota_checked_at ? new Date(a.quota_checked_at).toISOString() : null,
     lastUsedAt: a.last_used_at ? new Date(a.last_used_at).toISOString() : null,
     createdAt: new Date(a.created_at).toISOString()
   }
