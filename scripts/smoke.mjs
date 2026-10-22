@@ -474,7 +474,13 @@ async function apiCall(method, pathname, body, opts = {}) {
   } catch {
     /* 非 JSON */
   }
-  return { status: res.status, body: json, text, cookie: freshCookie || useCookie }
+  return {
+    status: res.status,
+    body: json,
+    text,
+    cookie: freshCookie || useCookie,
+    headers: res.headers
+  }
 }
 
 async function proxyCall(pathname, body, key) {
@@ -2931,6 +2937,67 @@ async function main() {
       assert.equal(foReset.body.account.consecutiveFailures, 0)
     })
 
+
+    // ---- 直连测试的账户多选：按给出顺序回退，只在可重试的失败上换号
+    const dAccounts = await apiCall('GET', `/api/channels/${foChannelId}/accounts`)
+    const dBad = dAccounts.body.accounts.find((a) => a.name === '失效账户')
+    const dGood = dAccounts.body.accounts.find((a) => a.name === '默认账户')
+    const directTest = (query, model = MOCK_MODEL) =>
+      apiCall('POST', `/api/channels/${foChannelId}/chat${query}`, {
+        model,
+        messages: [{ role: 'user', content: 'hi' }]
+      })
+
+    const dOnly = await directTest(`?accountIds=${dBad.id}`)
+    check('只测失效账户：如实报错而不是假装成功', () => {
+      assert.equal(dOnly.status, 502)
+      assert.match(dOnly.body.error.message, /失效账户/)
+      assert.match(dOnly.body.error.message, /HTTP 401/)
+    })
+
+    const dMix = await directTest(`?accountIds=${dBad.id},${dGood.id}`)
+    check('多选账户：第一个失效时自动回退到下一个', () => {
+      assert.equal(dMix.status, 200)
+      assert.equal(
+        decodeURIComponent(dMix.headers.get('x-portara-account') ?? ''),
+        '默认账户',
+        `实际：${dMix.headers.get('x-portara-account')}`
+      )
+      assert.equal(dMix.headers.get('x-portara-skipped'), '1')
+    })
+
+    const dNoRetry = await directTest(`?accountIds=${dGood.id},${dBad.id}`, 'bad-request-model')
+    check('不可重试的 400 不换号：仍由第一个账户返回', () => {
+      assert.equal(dNoRetry.status, 400)
+      assert.equal(
+        decodeURIComponent(dNoRetry.headers.get('x-portara-account') ?? ''),
+        '默认账户'
+      )
+      assert.equal(dNoRetry.headers.get('x-portara-skipped'), '0')
+    })
+
+    const dForeign = await directTest('?accountIds=00000000-0000-4000-8000-000000000000')
+    check('指定不属于该渠道的账户：404', () => assert.equal(dForeign.status, 404))
+
+    // 失败的那次尝试也要留痕 —— 否则「为什么这次用到了备用号」永远查不到
+    let dLogs = []
+    for (let i = 0; i < 25; i++) {
+      const r = await apiCall('GET', `/api/logs?limit=50&channelId=${foChannelId}`)
+      dLogs = r.body.logs.filter((l) => l.source === 'playground')
+      if (dLogs.length >= 4) break
+      await new Promise((res) => setTimeout(res, 100))
+    }
+    check('直连测试的失败尝试也记进日志，并标明是哪个账户', () => {
+      const failed = dLogs.find((l) => l.accountName === '失效账户' && l.statusCode === 401)
+      assert.ok(
+        failed,
+        `没有失效账户的 401 记录：${JSON.stringify(dLogs.map((l) => [l.accountName, l.statusCode]))}`
+      )
+      assert.ok(
+        dLogs.some((l) => l.accountName === '默认账户' && l.statusCode === 200),
+        '成功的那次没有记下账户'
+      )
+    })
 
     // ---- 主动额度轮转：余额为 0 的账户被选中前就应被跳过
     const qChannel = await apiCall('POST', '/api/channels', {

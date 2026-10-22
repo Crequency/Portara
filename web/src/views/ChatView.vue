@@ -11,7 +11,7 @@
  */
 import { errorText } from '../error'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { api, type ApiKey, type Channel, type User } from '../api'
+import { api, type ApiKey, type Channel, type ChannelAccount, type User } from '../api'
 import Modal from '../components/Modal.vue'
 import PCheckbox from '../components/PCheckbox.vue'
 import PCombobox from '../components/PCombobox.vue'
@@ -33,6 +33,10 @@ interface ChatMeta {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  /** 直连测试时真正出这个响应的上游账户；网关链路为空 */
+  account?: string
+  /** 这个账户之前被跳过（可重试失败）的账户数 */
+  skipped?: number
 }
 
 interface ChatMessage {
@@ -49,6 +53,8 @@ const keys = ref<ApiKey[]>([])
 const keyId = ref('')
 const channels = ref<Channel[]>([])
 const channelId = ref('')
+/** 直连测试要试哪些上游账户（多选，按面板顺序回退） */
+const accountIds = ref<string[]>([])
 const models = ref<string[]>([])
 const model = ref('')
 const messages = ref<ChatMessage[]>([])
@@ -67,6 +73,21 @@ const isAdmin = computed(() => props.user?.role === 'admin')
 const selectedKey = computed(() => keys.value.find((k) => k.id === keyId.value) ?? null)
 const selectedChannel = computed(
   () => channels.value.find((ch) => ch.id === channelId.value) ?? null
+)
+
+const channelAccounts = computed(() => selectedChannel.value?.accounts ?? [])
+
+/** 主账户 = 创建最早的那个 —— 与后端 primaryAccount() 的判定保持一致 */
+const primaryAccountId = computed(() => {
+  let best: ChannelAccount | null = null
+  for (const a of channelAccounts.value) {
+    if (!best || a.createdAt < best.createdAt) best = a
+  }
+  return best?.id ?? ''
+})
+
+const allAccountsSelected = computed(
+  () => channelAccounts.value.length > 0 && accountIds.value.length === channelAccounts.value.length
 )
 
 const keyOptions = computed(() =>
@@ -100,6 +121,80 @@ const canSend = computed(
     targetReady.value &&
     model.value.trim().length > 0
 )
+
+/**
+ * 账户选择跟随渠道。
+ *
+ * 换渠道时丢掉不属于该渠道的 id；一个都没剩下就回到主账户 ——
+ * 那正是引入多账户之前「直连测试只用主账户」的行为，不做静默改变。
+ */
+function syncAccountSelection(): void {
+  const list = channelAccounts.value
+  const valid = new Set(list.map((a) => a.id))
+  const kept = accountIds.value.filter((id) => valid.has(id))
+  accountIds.value = kept.length > 0 ? kept : primaryAccountId.value ? [primaryAccountId.value] : []
+}
+
+function toggleAccount(id: string): void {
+  const i = accountIds.value.indexOf(id)
+  if (i >= 0) {
+    // 至少留一个：全不选会被服务端当成「用主账户」，与面板所见不符
+    if (accountIds.value.length === 1) return
+    accountIds.value.splice(i, 1)
+    return
+  }
+  // 保持渠道账户列表的顺序，这样「按顺序回退」在界面上是可见的
+  const order = channelAccounts.value.map((a) => a.id)
+  accountIds.value = [...accountIds.value, id].sort((a, b) => order.indexOf(a) - order.indexOf(b))
+}
+
+/** 全选 / 只留主账户 —— 一键在「随便哪个通都行」与「只测主号」之间切换 */
+function toggleAllAccounts(): void {
+  accountIds.value = allAccountsSelected.value
+    ? primaryAccountId.value
+      ? [primaryAccountId.value]
+      : []
+    : channelAccounts.value.map((a) => a.id)
+}
+
+/**
+ * 悬浮信息里的账户注解。
+ *
+ * 拆成「账户 + 跳过数」两段再拼，是为了让中文的「（跳过 1 个）」紧贴账户名、
+ * 英文的 ` (skipped 1)` 自带前导空格 —— 模板里换行会各自多出一个空格。
+ */
+function accountNote(meta: ChatMeta): string {
+  const head = t('chat.metaAccount', { name: meta.account ?? '' })
+  return meta.skipped ? head + t('chat.metaSkipped', { n: meta.skipped }) : head
+}
+
+/**
+ * 直连测试的 URL。
+ *
+ * 多选时按顺序传给服务端（`accountIds=a,b`），由服务端逐个尝试、
+ * 只在可重试的失败（401/402/403/429/5xx）上换号 ——
+ * 前端不自己循环，否则一次「渠道测试」会在面板上留下多条残缺记录。
+ */
+function channelChatUrl(): string {
+  const base = '/api/channels/' + channelId.value + '/chat'
+  return accountIds.value.length > 0
+    ? base + '?accountIds=' + encodeURIComponent(accountIds.value.join(','))
+    : base
+}
+
+/** 从响应头取「这次是谁出的力」；账户名是 encodeURIComponent 过的（HTTP 头只吃 latin-1） */
+function accountHeaders(res: Response): { account?: string; skipped?: number } {
+  const raw = res.headers.get('x-portara-account')
+  if (!raw) return {}
+  let account = raw
+  try {
+    account = decodeURIComponent(raw)
+  } catch {
+    /* 解不开就按原样显示 */
+  }
+  const n = Number(res.headers.get('x-portara-skipped') ?? '0')
+  return { account, skipped: Number.isFinite(n) ? n : 0 }
+}
 
 async function loadKeys(): Promise<void> {
   try {
@@ -163,7 +258,9 @@ async function loadModels(): Promise<void> {
   }
 }
 
-watch([keyId, channelId, testTarget], () => {
+watch([keyId, channelId, testTarget, channels], () => {
+  // 账户选择必须先进位，再拉模型 —— 否则首帧的模型列表与所选账户对不上号
+  if (testTarget.value === 'channel') syncAccountSelection()
   void loadModels()
 })
 
@@ -215,7 +312,7 @@ async function send(): Promise<void> {
 
     let res: Response
     if (testTarget.value === 'channel') {
-      res = await fetch('/api/channels/' + channelId.value + '/chat', {
+      res = await fetch(channelChatUrl(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload)
@@ -235,6 +332,9 @@ async function send(): Promise<void> {
       throw new Error(body?.error?.message ?? who + ' HTTP ' + res.status)
     }
 
+    // 直连测试：记下这次是哪把上游 Key 出的力（多选时可能是备用号）
+    const served = testTarget.value === 'channel' ? accountHeaders(res) : {}
+
     if (!useStream.value) {
       const body = (await res.json()) as {
         choices?: { message?: { content?: string } }[]
@@ -243,12 +343,14 @@ async function send(): Promise<void> {
       assistant.content = body.choices?.[0]?.message?.content ?? t('chat.emptyResponse')
       meta = {
         ...meta,
+        ...served,
         latencyMs: Date.now() - startedAt,
         promptTokens: body.usage?.prompt_tokens ?? 0,
         completionTokens: body.usage?.completion_tokens ?? 0,
         totalTokens: body.usage?.total_tokens ?? 0
       }
     } else {
+      meta = { ...meta, ...served }
       const reader = res.body?.getReader()
       if (!reader) throw new Error(t('chat.noStream'))
 
@@ -321,6 +423,8 @@ interface BatchResult {
   totalTokens?: number
   content?: string
   error?: string
+  /** 直连测试时是哪个上游账户应答的（多选会回退，所以每条都可能不同） */
+  account?: string
 }
 
 const batchOpen = ref(false)
@@ -412,7 +516,7 @@ async function requestOne(
 
   let res: Response
   if (testTarget.value === 'channel') {
-    res = await fetch('/api/channels/' + channelId.value + '/chat', {
+    res = await fetch(channelChatUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload)
@@ -440,12 +544,15 @@ async function requestOne(
 
   const latencyMs = Date.now() - started
 
+  const served = testTarget.value === 'channel' ? accountHeaders(res) : {}
+
   if (!res.ok) {
     return {
       status: 'error',
       statusCode: res.status,
       latencyMs,
-      error: body?.error?.message ?? text.slice(0, 200) ?? 'HTTP ' + res.status
+      error: body?.error?.message ?? text.slice(0, 200) ?? 'HTTP ' + res.status,
+      account: served.account
     }
   }
 
@@ -454,7 +561,8 @@ async function requestOne(
     statusCode: res.status,
     latencyMs,
     totalTokens: body?.usage?.total_tokens ?? 0,
-    content: body?.choices?.[0]?.message?.content ?? t('chat.emptyResponse')
+    content: body?.choices?.[0]?.message?.content ?? t('chat.emptyResponse'),
+    account: served.account
   }
 }
 
@@ -613,6 +721,60 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!--
+        直连测试：测哪个（哪些）上游账户。
+        多选时服务端按顺序逐个尝试、只在可重试的失败上换号 ——
+        所以这里显示的勾选顺序就是回退顺序（按渠道账户列表排）。
+      -->
+      <div v-if="testTarget === 'channel'" class="field" style="margin-top: 12px">
+        <label>
+          {{ t('chat.accountLabel') }}
+          <span v-if="channelAccounts.length > 1" class="dim">
+            · {{ t('chat.accountSelected', { n: accountIds.length }) }}
+          </span>
+        </label>
+
+        <div v-if="channelAccounts.length === 0" class="hint">{{ t('chat.accountEmpty') }}</div>
+
+        <div v-else class="pick-chips">
+          <button
+            v-for="a in channelAccounts"
+            :key="a.id"
+            type="button"
+            class="pick-chip"
+            :class="{ on: accountIds.includes(a.id) }"
+            :title="a.apiKeyMasked || t('channels.accountNoKey')"
+            @click="toggleAccount(a.id)"
+          >
+            <span class="batch-pick-box">
+              <svg v-if="accountIds.includes(a.id)" width="10" height="10" viewBox="0 0 12 12">
+                <path
+                  d="M2 6.4 4.6 9 10 3.4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            {{ a.name }}
+            <span v-if="a.id === primaryAccountId" class="dim">{{ t('chat.accountPrimary') }}</span>
+          </button>
+
+          <button
+            v-if="channelAccounts.length > 1"
+            type="button"
+            class="btn btn-sm btn-ghost"
+            @click="toggleAllAccounts"
+          >
+            {{ allAccountsSelected ? t('chat.accountPrimaryOnly') : t('chat.accountAll') }}
+          </button>
+        </div>
+
+        <span v-if="channelAccounts.length > 1" class="hint">{{ t('chat.accountHint') }}</span>
+      </div>
+
       <div class="row row-wrap" style="margin-top: 12px">
         <PCheckbox v-model="useStream" :label="t('chat.streamToggle')" />
         <span class="spacer" />
@@ -700,6 +862,8 @@ onMounted(async () => {
                 out: m.meta.completionTokens
               })
             }}
+            <!-- 直连测试：把「这次实际用了哪个上游账户」写出来，多选时才不会看糊涂 -->
+            <template v-if="m.meta.account"> · {{ accountNote(m.meta) }}</template>
           </div>
         </div>
       </div>
@@ -833,15 +997,29 @@ onMounted(async () => {
           </div>
 
           <div class="batch-scroll">
-            <div class="batch-row batch-head">
+            <div
+              class="batch-row batch-head"
+              :class="{ 'has-account': testTarget === 'channel' }"
+            >
               <span>{{ t('chat.batchModel') }}</span>
+              <span v-if="testTarget === 'channel'">{{ t('chat.batchAccount') }}</span>
               <span>{{ t('chat.batchStatus') }}</span>
               <span>{{ t('chat.batchLatency') }}</span>
               <span>{{ t('chat.batchTokens') }}</span>
               <span>{{ t('chat.batchResponse') }}</span>
             </div>
-            <div v-for="r in batchResults" :key="r.model" class="batch-row">
+            <div
+              v-for="r in batchResults"
+              :key="r.model"
+              class="batch-row"
+              :class="{ 'has-account': testTarget === 'channel' }"
+            >
               <span class="mono" style="overflow: hidden; text-overflow: ellipsis">{{ r.model }}</span>
+              <span
+                v-if="testTarget === 'channel'"
+                class="dim"
+                style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+              >{{ r.account ?? '—' }}</span>
               <span>
                 <span v-if="r.status === 'pending'" class="dim">—</span>
                 <span v-else-if="r.status === 'running'" class="badge badge-info">…</span>

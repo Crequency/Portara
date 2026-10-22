@@ -25,6 +25,7 @@ import {
 } from '../api'
 import Modal from '../components/Modal.vue'
 import AccountUsage from '../components/AccountUsage.vue'
+import UsageTrendChart from '../components/UsageTrendChart.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
 import {
@@ -76,8 +77,6 @@ const rangeOptions = computed(() => [
   { value: '7d', label: t('overview.d7') },
   { value: '30d', label: t('overview.d30') }
 ])
-
-const maxRequests = computed(() => Math.max(1, ...series.value.map((p) => p.requests)))
 
 /** 上游模型 → 指向它的网关模型 ID 列表 */
 const aliasByModel = computed(() => {
@@ -640,17 +639,9 @@ onMounted(loadChannel)
         </div>
       </div>
 
-      <div v-if="series.length" class="chart" style="margin-top: 16px">
-        <div v-for="p in series" :key="p.day" class="chart-col">
-          <div class="chart-value">{{ p.requests }}</div>
-          <div
-            class="chart-bar"
-            :class="{ 'chart-bar-err': p.errors > 0 }"
-            :style="{ height: Math.max(2, (p.requests / maxRequests) * 100) + '%' }"
-            :title="p.day + '：' + p.requests + ' / ' + p.tokens + ' tok'"
-          />
-          <div class="chart-label">{{ p.day }}</div>
-        </div>
+      <!-- 与概览页共用同一张图（双轴 + 悬浮详情），避免两处各画一版 -->
+      <div class="chart-inline">
+        <UsageTrendChart :series="series" />
       </div>
     </div>
 

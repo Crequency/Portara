@@ -27,10 +27,12 @@ import { getUsageSnapshot, invalidateUsageCache } from '../services/usageFetch.j
 import {
   createAccount,
   getAccount,
+  isRetriableStatus,
   listAccounts,
   mirrorChannelKey,
   primaryAccount,
-  updateAccount
+  updateAccount,
+  type AccountRow
 } from '../services/accounts.js'
 import { decryptKey, tryDecryptKey } from '../services/channels.js'
 import { getProxyTarget } from '../services/proxies.js'
@@ -670,8 +672,14 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
   }
 
   const id = uuidSchema.parse(c.req.param('id'))
-  const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!ch) throw notFound('渠道不存在')
+  const found = await one<ChannelRow>('select * from channels where id = $1', [id])
+  if (!found) throw notFound('渠道不存在')
+  /*
+   * 换个名字存一次：下面的 `attempt()` 是闭包，而在闭包里 TS 不会沿用
+   * 「上面已判过空」这条收窄结论（`ch` 会被重新视作 null）。
+   * 用非空常量捕获，比在每个引用点写 `ch!` 更能说明这层意图。
+   */
+  const ch: ChannelRow = found
 
   const raw = await c.req.text()
   const payload = parseJsonSafe(raw) as Record<string, unknown> | null
@@ -681,13 +689,38 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
 
   const model = typeof payload.model === 'string' ? payload.model : ''
 
-  // 可指定账户（面板上的「测哪个号」）；默认用主账户
-  const accountId = c.req.query('accountId') ?? ''
-  const account = accountId
-    ? await getAccount(ch.id, accountId)
-    : await primaryAccount(ch.id)
-  if (accountId && !account) throw notFound('账户不存在')
-  const upstreamKey = decryptKey(account?.key_cipher)
+  /**
+   * 要测哪些账户：面板可**多选**（`accountIds=a,b`），单个时兼容旧的 `accountId`。
+   * 一个都不给就用主账户 —— 与引入多账户之前的行为保持一致。
+   *
+   * 给多个账户时按**给出顺序**依次尝试，只在「可重试的失败」上回退：
+   * 一个号 401 不代表渠道不通，也不代表另一个号不行；
+   * 而 400（参数 / 模型名错）是请求本身的问题，换号只会得到同一个答案。
+   *
+   * 显式点名要测的账户**不看冷却与额度标记** —— 这个入口的用途就是
+   * 「我偏要知道这个号现在到底行不行」，替用户跳过等于没测。
+   */
+  const requested = [
+    ...new Set(
+      (c.req.query('accountIds') ?? c.req.query('accountId') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    )
+  ]
+
+  const accounts: AccountRow[] = []
+  if (requested.length > 0) {
+    for (const aid of requested) {
+      const acc = await getAccount(ch.id, aid)
+      if (!acc) throw notFound('账户不存在：' + aid)
+      accounts.push(acc)
+    }
+  } else {
+    const primary = await primaryAccount(ch.id)
+    if (primary) accounts.push(primary)
+  }
+  if (accounts.length === 0) throw badRequest('该渠道还没有配置任何上游账户')
 
   /**
    * 直连测试同样要**按有效协议**发请求 —— 否则给 Anthropic 协议的模型发
@@ -709,195 +742,271 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     )
   }
 
-  const signal = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(ch.timeout_ms)])
-  const startedAt = Date.now()
-
-  const baseLog = {
-    apiKeyId: null,
-    apiKeyName: '',
-    channelId: ch.id,
-    channelName: ch.name,
-    model,
-    upstreamModel: model,
-    path: '/chat/completions',
-    clientIp: clientIp(c),
-    source: 'playground'
-  }
-
   const directProxy = await getProxyTarget(ch.proxy_id)
-  const upstreamHeaders = buildUpstreamHeaders(upstreamKey, 'application/json', {
-    extraHeaders: ch.extra_headers ?? {},
-    vendor: ch.vendor,
-    protocol: plan.protocol,
-    channelId: ch.id,
-    payload,
-    contentEncoding: c.req.header('content-encoding')
-  })
-  const sessionEcho = sessionEchoOf(upstreamHeaders.session)
+  /** 已经被跳过（且已记账）的账户，最终全失败时原样回给前端 */
+  const skipped: string[] = []
 
-  let res: Response
-  try {
-    res = await upstreamFetch(plan.url, {
-      method: 'POST',
-      headers: upstreamHeaders.headers,
-      body: plan.bodyText,
-      signal
-    }, directProxy)
-  } catch (err) {
-    const message = signal.aborted
-      ? `上游响应超时（${ch.timeout_ms}ms）`
-      : `连接上游失败：${err instanceof Error ? err.message : String(err)}`
+  /**
+   * 用一个账户打一次上游。
+   *
+   * 返回 `null` 表示「这个账户不行，但值得换个账户再试」——
+   * 已失败的那次请求**照样记进 request_logs**，否则「为什么这次用到了备用号」
+   * 在日志里查不到任何痕迹。
+   */
+  async function attempt(account: AccountRow): Promise<Response | null> {
+    let upstreamKey: string
+    try {
+      upstreamKey = decryptKey(account.key_cipher)
+    } catch {
+      skipped.push(`${account.name}：密钥无法解密`)
+      return null
+    }
 
-    fireAndForgetLog({
-      ...baseLog,
-      statusCode: 502,
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      estimated: false,
-      latencyMs: Date.now() - startedAt,
-      ttftMs: null,
-      error: message
+    const signal = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(ch.timeout_ms)])
+    const startedAt = Date.now()
+
+    const baseLog = {
+      apiKeyId: null,
+      apiKeyName: '',
+      channelId: ch.id,
+      channelName: ch.name,
+      accountId: account.id,
+      accountName: account.name,
+      model,
+      upstreamModel: model,
+      path: '/chat/completions',
+      clientIp: clientIp(c),
+      source: 'playground'
+    }
+
+    const upstreamHeaders = buildUpstreamHeaders(upstreamKey, 'application/json', {
+      extraHeaders: ch.extra_headers ?? {},
+      vendor: ch.vendor,
+      protocol: plan.protocol,
+      channelId: ch.id,
+      payload,
+      contentEncoding: c.req.header('content-encoding')
     })
+    const sessionEcho = sessionEchoOf(upstreamHeaders.session)
 
-    throw new ApiError(502, 'upstream_unreachable', message)
-  }
+    /*
+     * 账户名可以是中文，而 HTTP 头只能装 latin-1 —— 直接塞进去会在构造
+     * Response 时抛错。编码成 ASCII 给前端，前端解回来。
+     */
+    const whoHeaders = {
+      'x-portara-account': encodeURIComponent(account.name),
+      'x-portara-account-id': account.id,
+      'x-portara-skipped': String(skipped.length)
+    }
 
-  const contentType = res.headers.get('content-type') ?? 'application/json'
-  const isStream = contentType.includes('text/event-stream')
+    let res: Response
+    try {
+      res = await upstreamFetch(plan.url, {
+        method: 'POST',
+        headers: upstreamHeaders.headers,
+        body: plan.bodyText,
+        signal
+      }, directProxy)
+    } catch (err) {
+      const message = signal.aborted
+        ? `上游响应超时（${ch.timeout_ms}ms）`
+        : `连接上游失败：${err instanceof Error ? err.message : String(err)}`
 
-  // ---- Anthropic 上游：响应要翻回 OpenAI 格式 ----
-  if (plan.protocol === 'anthropic') {
+      fireAndForgetLog({
+        ...baseLog,
+        statusCode: 502,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        estimated: false,
+        latencyMs: Date.now() - startedAt,
+        ttftMs: null,
+        error: message
+      })
+
+      // 客户端已经走了就别再换号重试 —— 没人接这次响应
+      if (c.req.raw.signal.aborted) throw new ApiError(502, 'upstream_unreachable', message)
+      skipped.push(`${account.name}：${message}`)
+      return null
+    }
+
+    /*
+     * 鉴权 / 额度 / 限流 / 5xx：换下一个账户。
+     * 其余状态码（400 参数错、404 模型不存在等）原样返回 ——
+     * 那是请求本身的问题，换号只会得到同一个答案，反而掩盖真实原因。
+     */
+    if (isRetriableStatus(res.status)) {
+      const text = await res.text().catch(() => '')
+      fireAndForgetLog({
+        ...baseLog,
+        statusCode: res.status,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        estimated: false,
+        latencyMs: Date.now() - startedAt,
+        ttftMs: null,
+        error: text.slice(0, 300) || `上游返回 HTTP ${res.status}`
+      })
+      skipped.push(`${account.name}：HTTP ${res.status}`)
+      return null
+    }
+
+    const contentType = res.headers.get('content-type') ?? 'application/json'
+    const isStream = contentType.includes('text/event-stream')
+
+    // ---- Anthropic 上游：响应要翻回 OpenAI 格式 ----
+    if (plan.protocol === 'anthropic') {
+      if (isStream && res.body) {
+        const stream = translateAnthropicStream(
+          res.body,
+          model,
+          (usage, ttftMs) => {
+            fireAndForgetLog({
+              ...baseLog,
+              statusCode: res.status,
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens,
+              estimated: false,
+              latencyMs: Date.now() - startedAt,
+              ttftMs,
+              error: ''
+            })
+          },
+          startedAt
+        )
+        return new Response(stream, {
+          status: res.status,
+          headers: {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            'x-accel-buffering': 'no',
+            'x-portara-direct': ch.name,
+            'x-portara-protocol': 'anthropic',
+            ...whoHeaders,
+            ...sessionEcho
+          }
+        })
+      }
+
+      const text = await res.text()
+      let body = text
+      let tokens = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+      if (res.ok) {
+        try {
+          const translated = translateAnthropicJson(text, model)
+          body = translated.body
+          tokens = translated.usage
+        } catch {
+          /* 解析失败就原样返回，错误由调用方看到 */
+        }
+      }
+
+      fireAndForgetLog({
+        ...baseLog,
+        statusCode: res.status,
+        ...tokens,
+        estimated: false,
+        latencyMs: Date.now() - startedAt,
+        ttftMs: null,
+        error: res.ok ? '' : text.slice(0, 300)
+      })
+
+      return new Response(body, {
+        status: res.status,
+        headers: {
+          'content-type': res.ok ? 'application/json' : contentType,
+          'x-portara-direct': ch.name,
+          'x-portara-protocol': 'anthropic',
+          ...whoHeaders,
+          ...sessionEcho
+        }
+      })
+    }
+
+    // ---- OpenAI 上游：原样透传 ----
     if (isStream && res.body) {
-      const stream = translateAnthropicStream(
-        res.body,
-        model,
-        (usage, ttftMs) => {
+      const [clientStream, scanStream] = res.body.tee()
+      const scanner = new SseUsageScanner()
+      let ttftMs: number | null = null
+
+      void (async () => {
+        const reader = scanStream.getReader()
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (ttftMs === null) ttftMs = Date.now() - startedAt
+            scanner.push(value)
+          }
+        } catch {
+          /* 中断交由 finally 记账 */
+        } finally {
+          scanner.finish()
+          const exact = scanner.usage
+          const usage = exact ?? scanner.estimateFromBytes()
           fireAndForgetLog({
             ...baseLog,
             statusCode: res.status,
             promptTokens: usage.promptTokens,
             completionTokens: usage.completionTokens,
             totalTokens: usage.totalTokens,
-            estimated: false,
+            estimated: !exact,
             latencyMs: Date.now() - startedAt,
             ttftMs,
-            error: ''
+            error: exact ? '' : '上游未返回 usage，token 数为估算'
           })
-        },
-        startedAt
-      )
-      return new Response(stream, {
+        }
+      })()
+
+      return new Response(clientStream, {
         status: res.status,
         headers: {
-          'content-type': 'text/event-stream',
+          'content-type': contentType,
           'cache-control': 'no-cache',
           'x-accel-buffering': 'no',
           'x-portara-direct': ch.name,
-          'x-portara-protocol': 'anthropic',
+          ...whoHeaders,
           ...sessionEcho
         }
       })
     }
 
     const text = await res.text()
-    let body = text
-    let tokens = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
-    if (res.ok) {
-      try {
-        const translated = translateAnthropicJson(text, model)
-        body = translated.body
-        tokens = translated.usage
-      } catch {
-        /* 解析失败就原样返回，错误由调用方看到 */
-      }
-    }
+    const usage = extractUsage(parseJsonSafe(text))
 
     fireAndForgetLog({
       ...baseLog,
       statusCode: res.status,
-      ...tokens,
+      promptTokens: usage?.promptTokens ?? 0,
+      completionTokens: usage?.completionTokens ?? 0,
+      totalTokens: usage?.totalTokens ?? 0,
       estimated: false,
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
       error: res.ok ? '' : text.slice(0, 300)
     })
 
-    return new Response(body, {
-      status: res.status,
-      headers: {
-        'content-type': res.ok ? 'application/json' : contentType,
-        'x-portara-direct': ch.name,
-        'x-portara-protocol': 'anthropic',
-        ...sessionEcho
-      }
-    })
-  }
-
-  // ---- OpenAI 上游：原样透传 ----
-  if (isStream && res.body) {
-    const [clientStream, scanStream] = res.body.tee()
-    const scanner = new SseUsageScanner()
-    let ttftMs: number | null = null
-
-    void (async () => {
-      const reader = scanStream.getReader()
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (ttftMs === null) ttftMs = Date.now() - startedAt
-          scanner.push(value)
-        }
-      } catch {
-        /* 中断交由 finally 记账 */
-      } finally {
-        scanner.finish()
-        const exact = scanner.usage
-        const usage = exact ?? scanner.estimateFromBytes()
-        fireAndForgetLog({
-          ...baseLog,
-          statusCode: res.status,
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-          totalTokens: usage.totalTokens,
-          estimated: !exact,
-          latencyMs: Date.now() - startedAt,
-          ttftMs,
-          error: exact ? '' : '上游未返回 usage，token 数为估算'
-        })
-      }
-    })()
-
-    return new Response(clientStream, {
+    return new Response(text, {
       status: res.status,
       headers: {
         'content-type': contentType,
-        'cache-control': 'no-cache',
-        'x-accel-buffering': 'no',
         'x-portara-direct': ch.name,
+        ...whoHeaders,
         ...sessionEcho
       }
     })
   }
 
-  const text = await res.text()
-  const usage = extractUsage(parseJsonSafe(text))
+  for (const account of accounts) {
+    const res = await attempt(account)
+    if (res) return res
+  }
 
-  fireAndForgetLog({
-    ...baseLog,
-    statusCode: res.status,
-    promptTokens: usage?.promptTokens ?? 0,
-    completionTokens: usage?.completionTokens ?? 0,
-    totalTokens: usage?.totalTokens ?? 0,
-    estimated: false,
-    latencyMs: Date.now() - startedAt,
-    ttftMs: null,
-    error: res.ok ? '' : text.slice(0, 300)
-  })
-
-  return new Response(text, {
-    status: res.status,
-    headers: { 'content-type': contentType, 'x-portara-direct': ch.name, ...sessionEcho }
-  })
+  throw new ApiError(
+    502,
+    'upstream_all_failed',
+    `所选账户全部失败：${skipped.join('；')}`
+  )
 })

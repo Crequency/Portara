@@ -148,7 +148,7 @@ curl http://127.0.0.1:52740/v1/chat/completions \
 | --- | --- |
 | 会话 | `POST /api/auth/{login,refresh,logout,password}` · `GET /api/auth/me` |
 | 用户 | `GET/POST/PATCH/DELETE /api/users[/:id]` |
-| 渠道 | `GET/POST/PATCH/DELETE /api/channels[/:id]` · `POST /:id/test` · `POST /:id/chat`（直连上游）· `GET /:id/reveal` · `GET /:id/usage` · `POST /fetch-models`、`POST /:id/fetch-models` |
+| 渠道 | `GET/POST/PATCH/DELETE /api/channels[/:id]` · `POST /:id/test` · `POST /:id/chat`（直连上游，`?accountIds=a,b` 多账户按序回退）· `GET /:id/reveal` · `GET /:id/usage` · `POST /fetch-models`、`POST /:id/fetch-models` |
 | 密钥 | `GET/POST/PATCH/DELETE /api/keys[/:id]` · `POST /:id/rotate` · `GET /:id/reveal` |
 | 模型映射 | `GET/POST/PATCH/DELETE /api/model-routes[/:id]` · `POST /batch` · `POST /purge` · `POST /import` |
 | 代理 | `GET/POST/PATCH/DELETE /api/proxies[/:id]` · `GET /:id/reveal` · `POST /latency-test` |

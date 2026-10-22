@@ -171,7 +171,7 @@ onMounted(() => void load())
           <span class="dim" style="font-size: 12px; min-width: 72px">{{ t('usage.apiList') }}</span>
           <code class="mono api-url">{{ apiBase }}</code>
           <button
-            class="btn btn-sm btn-icon"
+            class="btn btn-sm btn-icon api-copy"
             :title="t('usage.copyUrl')"
             @click="copyApi(apiBase)"
           >
@@ -188,7 +188,7 @@ onMounted(() => void load())
           <span class="dim" style="font-size: 12px; min-width: 72px">{{ t('usage.apiSingle') }}</span>
           <code class="mono api-url">{{ apiBase }}/{{ sampleChannelId }}</code>
           <button
-            class="btn btn-sm btn-icon"
+            class="btn btn-sm btn-icon api-copy"
             :title="t('usage.copyUrl')"
             @click="copyApi(`${apiBase}/${sampleChannelId}`)"
           >

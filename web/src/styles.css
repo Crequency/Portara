@@ -780,6 +780,8 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 /* 用量趋势：每个时段两根柱 —— 蓝=请求量，绿=Token 用量 */
 .chart-wrap { display: flex; flex-direction: column; gap: 14px; }
+/* 嵌在统计卡里（渠道详情页）：与上方四个数字之间留出间距 */
+.chart-inline { margin-top: 16px; }
 
 .chart-legend {
   display: flex;
@@ -1300,6 +1302,10 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
 }
+/* 直连测试多了一列「是哪个上游账户应答的」 */
+.batch-row.has-account {
+  grid-template-columns: minmax(140px, 1.4fr) 120px 68px 76px 84px 1fr;
+}
 
 .batch-row:last-child {
   border-bottom: none;
@@ -1385,6 +1391,44 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   border-color: var(--accent);
 }
 
+/*
+ * 上游账户多选：一排小胶囊。
+ * 用行内胶囊而不是下拉多选 —— 账户通常只有 2~3 个，
+ * 一次看全比点开再记住「刚才选了谁」省事得多。
+ */
+.pick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.pick-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pick-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* 可点击进入详情的表格行 */
 .row-clickable {
   cursor: pointer;
@@ -1407,4 +1451,17 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .btn-icon:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/*
+ * 余额页 API 地址旁的复制按钮：与左侧地址框**等高**。
+ *
+ * 那一行是 align-items: center，而 .btn-icon 的高度只由 13px 的图标撑出来，
+ * 于是 15px 的按钮悬在 31px 的地址框旁边 —— 看着像没对齐的浮标。
+ * stretch 让按钮吃掉整行高度（行高由最高的地址框决定），图标仍然居中。
+ */
+.api-copy {
+  align-self: stretch;
+  width: 34px;
+  min-width: 34px;
 }
