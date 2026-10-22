@@ -20,7 +20,10 @@ import { userRoutes } from './routes/users.js'
 import { v1Routes } from './routes/v1.js'
 import { serveWebDist } from './static.js'
 
-export const VERSION = '0.1.0'
+// 版本常量独立成模块：测试要读它时不该顺带把数据库/Redis 连接也建起来。
+// 这里 import 是为了本文件自己用（健康检查与 /api/meta），再 re-export 给 index.ts。
+import { VERSION } from './version.js'
+export { VERSION }
 
 export function createApp(): Hono {
   const app = new Hono()

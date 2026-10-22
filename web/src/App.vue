@@ -244,7 +244,7 @@ function go(id: string): void {
       <div class="nav-spacer" />
 
       <div class="nav-foot">
-        <span>Portara v0.1.0</span>
+        <span>{{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template></span>
         <span>AGPL-3.0</span>
       </div>
     </aside>

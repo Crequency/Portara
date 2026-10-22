@@ -11,12 +11,21 @@ import { api } from './api'
 export interface SiteMeta {
   gatewayName: string
   productName: string
+  /**
+   * 版本号**只从后端来**。
+   *
+   * 以前页脚写死 `v0.1.0`，于是每次发版都要记得改前端 —— 迟早会忘，
+   * 而忘掉的表现是「包版本 0.2.0、页脚还写着 0.1.0」，没有任何报错。
+   * `/api/meta` 本来就会回版本，直接用它，前端不再有第二个真值。
+   */
+  version: string
   loaded: boolean
 }
 
 export const meta = reactive<SiteMeta>({
   gatewayName: '',
   productName: 'Portara',
+  version: '',
   loaded: false
 })
 
@@ -31,9 +40,12 @@ export function siteName(): string {
  */
 export async function loadMeta(): Promise<void> {
   try {
-    const res = await api.get<{ gatewayName: string; productName: string }>('/api/meta')
+    const res = await api.get<{ gatewayName: string; productName: string; version?: string }>(
+      '/api/meta'
+    )
     meta.gatewayName = res.gatewayName ?? ''
     meta.productName = res.productName || 'Portara'
+    meta.version = res.version ?? ''
   } catch {
     /* 用默认值 */
   } finally {
