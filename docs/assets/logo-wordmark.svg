@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="96" viewBox="0 0 300 96" role="img" aria-label="Portara">
+  <!-- 图形 + 字标。字形用系统无衬线字体，并以 textLength 钉死宽度，
+       避免不同机器字体度量差异导致溢出裁切；与 logo.svg 共用同一渐变。 -->
+  <title>Portara</title>
+  <defs>
+    <linearGradient id="portara-gate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#8f6bff"/>
+    </linearGradient>
+    <linearGradient id="portara-word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#8f6bff"/>
+    </linearGradient>
+  </defs>
+  <g transform="scale(3)">
+    <path d="M6.5 27V13.2a9.5 9.5 0 0 1 19 0V27H6.5ZM11.3 27V13.7a4.7 4.7 0 0 1 9.4 0V27h-9.4Z" fill="url(#portara-gate)" fill-rule="evenodd"/>
+  </g>
+  <text x="114" y="58" textLength="168" lengthAdjust="spacingAndGlyphs"
+        font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="48" font-weight="600" letter-spacing="-1"
+        fill="url(#portara-word)">Portara</text>
+</svg>
