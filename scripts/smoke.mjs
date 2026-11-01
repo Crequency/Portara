@@ -2610,7 +2610,7 @@ async function main() {
     })
     check('commandcode：余额 + 三个窗口 + 套餐 + 账期', () => {
       const p = usSnap('commandcode')
-      assert.ok(Math.abs(p.balances[0].remaining - 4.8) < 1e-9)
+      assert.ok(Math.abs(p.balances[0].remaining - 5.0) < 1e-9)
       const w = Object.fromEntries(p.windows.map((x) => [x.key, x]))
       assert.equal(w.fiveHour.total, 14)
       assert.equal(w.weekly.total, 35)

@@ -39,7 +39,7 @@ test('resolveChannelRefs 按渠道名解析为 id', () => {
 
 test('resolveChannelRefs 对大小写与首尾空格宽松匹配', () => {
   const r = resolveChannelRefs(
-    [inc({ alias: 'a', channel: '  deepseek official  ' })],
+    [inc({ alias: 'a', channel: '  deepseek  ' })],
     CHANNELS
   )
   assert.equal(r.unknown.length, 0)
