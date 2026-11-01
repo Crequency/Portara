@@ -22,6 +22,8 @@
     "app:down": "docker compose --profile app down",
     "smoke": "node scripts/smoke.mjs",
     "brand": "node scripts/brand.mjs",
-    "brand:check": "node scripts/brand.mjs --check"
+    "brand:check": "node scripts/brand.mjs --check",
+    "ui:check": "node scripts/ui/sweep.mjs",
+    "ui:keys": "node scripts/ui/keys-leak.mjs"
   }
 }
