@@ -199,7 +199,7 @@ test('commandcode：三个端点合并成余额 + 窗口 + 账期 + 套餐', () 
     summary: FIX.commandcodeSummary
   })
 
-  // 余额：月度剩余 0 + 充值 4.8 + 免费 0
+  // 余额：月度剩余 0 + 充值 5.0 + 免费 0
   assert.equal(out.balances![0].unit, 'credits')
   assert.ok(Math.abs(out.balances![0].remaining - 5.000000000) < 1e-9)
 
