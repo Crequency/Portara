@@ -98,7 +98,7 @@ const RUN = Date.now().toString(36)
  * 冒烟测试**必须**跑在独立 schema 里。
  *
  * 教训（2026-10-09）：此前冒烟直连开发库，其中一个 replace 模式的 JSON 导入
- * 测试是全局删除操作，把用户真实的 数十条模型映射清空了。
+ * 测试是全局删除操作，把用户真实的模型映射数据（数十条）清空了。
  * 端到端测试绝不该对开发数据执行破坏性全局操作 —— 现在从连接层面隔离。
  */
 const SMOKE_SCHEMA = process.env.SMOKE_DB_SCHEMA ?? 'portara_smoke'
