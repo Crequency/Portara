@@ -93,3 +93,5 @@ data/
 # ---- 开发文档 ----
 # 交接/路线/调研等开发文档不随仓库分发，存放于工作区 .meta/crequency/portara/
 .develop/
+DECISIONS.md
+HANDOFF.md
