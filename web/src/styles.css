@@ -1509,10 +1509,11 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
  */
 .bal-graph { width: 100%; overflow-x: auto; padding: 4px 0 2px; }
 /*
- * 上限 860px：超宽屏把三个节点拉成一米宽只会更难读；
- * 窄屏则允许横向滚动，而不是把节点压扁到文字放不下。
+ * 宽度铺满、高度由 viewBox 推（height: auto），保持比例不失真。
+ * 上限 620px：节点图是个"扇出示意"，不需要横跨整个宽屏；
+ * 窄屏下 100% 会等比缩小，文字仍清晰（最小宽度兜底避免小到读不清）。
  */
-.bal-graph svg { display: block; width: 100%; min-width: 620px; max-width: 860px; }
+.bal-graph svg { display: block; width: 100%; height: auto; min-width: 560px; max-width: 620px; }
 
 .bal-node {
   fill: var(--bg-elev-2);

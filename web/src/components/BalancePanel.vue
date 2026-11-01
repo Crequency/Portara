@@ -298,7 +298,13 @@ defineExpose({ load })
 
     <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
     <div v-else-if="groups.length === 0" class="empty">
-      {{ routes.length > 0 ? t('balance.filteredEmpty', { n: hiddenCount }) : t('balance.empty') }}
+      <div>
+        {{ routes.length > 0 ? t('balance.filteredEmpty', { n: hiddenCount }) : t('balance.empty') }}
+      </div>
+      <!-- 空态要给出路：单目标映射被默认过滤时，一键切到「显示全部」 -->
+      <div v-if="routes.length > 0 && !showAll" class="row" style="justify-content: center; margin-top: 10px">
+        <button class="btn btn-sm" @click="showAll = true">{{ t('balance.showAll') }}</button>
+      </div>
     </div>
 
     <div v-else class="stack">

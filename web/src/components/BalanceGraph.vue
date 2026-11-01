@@ -114,12 +114,12 @@ function onLeave(): void {
 
 <template>
   <div class="bal-graph">
-    <svg
-      :viewBox="`0 0 ${width} ${height}`"
-      :style="{ height: height + 'px' }"
-      role="img"
-      :aria-label="alias"
-    >
+    <!--
+      不要同时设死 width 与 height：viewBox 比例与显示尺寸不一致时，
+      SVG 会按 preserveAspectRatio 把内容居中，两侧留一大片空白。
+      只给宽度、让高度由 viewBox 推出来。
+    -->
+    <svg :viewBox="`0 0 ${width} ${height}`" role="img" :aria-label="alias">
       <!-- 连线先画，节点压在上面 -->
       <g>
         <path
@@ -140,9 +140,14 @@ function onLeave(): void {
         <text class="bal-src-label" :x="SRC_W / 2" :y="21" text-anchor="middle">
           {{ t('balance.gatewayModel') }}
         </text>
+        <!--
+          等宽 12.5px 在 176px 宽的节点里大约放得下 20 个字符；
+          留 1 个字符余量，否则末字会被节点边框切掉（实测溢出）。
+        -->
         <text class="bal-src-id" :x="SRC_W / 2" :y="39" text-anchor="middle">
-          {{ alias.length > 24 ? alias.slice(0, 23) + '…' : alias }}
+          {{ alias.length > 20 ? alias.slice(0, 19) + '…' : alias }}
         </text>
+        <title>{{ alias }}</title>
       </g>
 
       <!-- 目标：渠道 + 上游模型 -->
