@@ -198,6 +198,10 @@ export const en = {
     weightHint: 'Within the same priority, requests rotate by weight — e.g. weights 2 and 1 split roughly 2:1.',
     priorityWeightHint:
       'Priority: lower numbers win first. Within the same priority, requests rotate by weight — e.g. A (weight 2) and B (weight 1) split roughly 2:1. A lower priority tier is only used when every channel above it is unavailable.',
+    hideUnmappedModels: 'Only expose mapped models',
+    hideUnmappedModelsHint:
+      'When on, unmapped model ids from this channel are hidden from /v1/models and rejected with 404 model_not_found. Add a mapping to expose a model.',
+    tagHideUnmapped: 'mapped only',
     revealKey: 'Reveal',
     revealKeyTitle: 'Reveal upstream key · {name}',
     revealKeyWarning:

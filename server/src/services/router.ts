@@ -49,6 +49,7 @@ interface RouteJoin extends ModelRouteRow {
   c_protocol: string
   c_model_overrides: Record<string, { protocol?: string; baseUrl?: string }> | null
   c_proxy_id: string | null
+  c_hide_unmapped_models: boolean
 }
 
 /** 别名映射查询：只取「映射启用 且 渠道启用」的目标 */
@@ -63,7 +64,8 @@ const ROUTE_SQL = `
          c.timeout_ms      as c_timeout_ms,
          c.protocol        as c_protocol,
          c.model_overrides as c_model_overrides,
-         c.proxy_id        as c_proxy_id
+         c.proxy_id        as c_proxy_id,
+         c.hide_unmapped_models as c_hide_unmapped_models
     from model_routes r
     join channels c on c.id = r.channel_id
    where r.alias = $1
@@ -86,7 +88,8 @@ function toCandidate(row: RouteJoin): ChannelCandidate {
     extra_headers: row.c_extra_headers ?? {},
     protocol: row.c_protocol,
     model_overrides: row.c_model_overrides ?? {},
-    proxy_id: row.c_proxy_id
+    proxy_id: row.c_proxy_id,
+    hide_unmapped_models: row.c_hide_unmapped_models === true
   }
 }
 

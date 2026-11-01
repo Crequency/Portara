@@ -295,6 +295,8 @@ export interface Channel {
   usageUrl: string
   /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
   limitPriority: 'balance' | 'quota'
+  /** 只暴露映射模型：未映射的模型不出现也不受理 */
+  hideUnmappedModels: boolean
   /** 该渠道的上游账户（至少一个） */
   accounts: ChannelAccount[]
   baseUrl: string

@@ -11,6 +11,7 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api, type Channel, type FetchModelsResult, type ModelMeta, type User } from '../api'
+import PCheckbox from '../components/PCheckbox.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
 import { errorText, toastError } from '../error'
@@ -55,6 +56,8 @@ const form = reactive({
   usageUrl: '',
   /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
   limitPriority: 'balance' as 'balance' | 'quota',
+  /** 只暴露映射模型：未映射的模型名不出现在 /models、也不受理 */
+  hideUnmappedModels: false,
   status: 'active' as 'active' | 'disabled',
   note: ''
 })
@@ -152,6 +155,7 @@ function fill(ch: Channel): void {
     usageAdapter: ch.usageAdapter ?? '',
     usageUrl: ch.usageUrl ?? '',
     limitPriority: ch.limitPriority ?? 'balance',
+    hideUnmappedModels: ch.hideUnmappedModels === true,
     headersText: headerLines(ch.extraHeaders ?? {}),
     modelsText: ch.models.join('\n'),
     priority: ch.priority,
@@ -320,6 +324,7 @@ async function save(): Promise<void> {
       usageAdapter: form.usageAdapter || '',
       usageUrl: form.usageUrl.trim(),
       limitPriority: form.limitPriority,
+      hideUnmappedModels: form.hideUnmappedModels,
       status: form.status,
       note: form.note
     }
@@ -553,6 +558,14 @@ onMounted(async () => {
                 · {{ t('channels.rawBodySize', { n: formatNumber(rawModelsBody.length) }) }}
                 <span v-if="rawTruncated">{{ t('channels.rawBodyTruncated') }}</span>
               </template>
+            </div>
+
+            <div class="field">
+              <PCheckbox
+                v-model="form.hideUnmappedModels"
+                :label="t('channels.hideUnmappedModels')"
+              />
+              <span class="hint">{{ t('channels.hideUnmappedModelsHint') }}</span>
             </div>
 
             <div v-if="metaList.length">

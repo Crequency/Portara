@@ -3264,7 +3264,109 @@ async function main() {
     })
 
     // ---------------------------------------------------------- 密钥不落日志
-    section('㉝ 密钥不泄漏到日志')
+    // ------------------------------------------------ 渠道「只暴露映射模型」
+    section('㉝ 渠道：只暴露映射模型')
+
+    const hidOrigin = `hidden-origin-${RUN}`
+    const hidUpstream = `hidden-upstream-${RUN}`
+    const hidAlias = `smoke-hid-alias-${RUN}`
+
+    const hidChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-hide-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [hidOrigin, hidUpstream],
+      hideUnmappedModels: true,
+      priority: 930
+    })
+    const hidChannelId = hidChannel.body.channel.id
+    check('渠道可保存「只暴露映射模型」开关', () =>
+      assert.equal(hidChannel.body.channel.hideUnmappedModels, true)
+    )
+
+    await apiCall('POST', '/api/model-routes', {
+      alias: hidAlias,
+      targets: [{ channelId: hidChannelId, upstreamModel: hidUpstream }]
+    })
+    const hidKey = await apiCall('POST', '/api/keys', { name: `smoke-hide-key-${RUN}` })
+    const hidToken = hidKey.body.key
+    createdKeyIds.push(hidKey.body.apiKey.id)
+
+    const listModels = async (token) => {
+      const r = await fetch(`${BASE}/v1/models`, {
+        headers: { authorization: `Bearer ${token}` }
+      })
+      assert.equal(r.status, 200)
+      return (await r.json()).data.map((m) => m.id)
+    }
+
+    const hidIds = await listModels(hidToken)
+    check('未映射的模型不出现在 /v1/models（两个原始名都藏住）', () => {
+      assert.ok(!hidIds.includes(hidOrigin), `原始模型仍然可见：${hidOrigin}`)
+      assert.ok(!hidIds.includes(hidUpstream), `上游模型名泄漏了：${hidUpstream}`)
+    })
+    check('映射后的别名照常出现', () => assert.ok(hidIds.includes(hidAlias)))
+    check('其它渠道的模型不受影响', () => assert.ok(hidIds.includes(MOCK_MODEL)))
+
+    const hidUnmapped = await proxyCall(
+      '/v1/chat/completions',
+      { model: hidOrigin, messages: [{ role: 'user', content: 'hi' }] },
+      hidToken
+    )
+    check('直接请求未映射模型 → 404 model_not_found', () => {
+      assert.equal(hidUnmapped.status, 404)
+      assert.equal(hidUnmapped.body?.error?.code, 'model_not_found')
+    })
+
+    const hidMapped = await proxyCall(
+      '/v1/chat/completions',
+      { model: hidAlias, messages: [{ role: 'user', content: 'hi' }] },
+      hidToken
+    )
+    check('走映射仍然可用，且上游收到的是映射后的模型名', () => {
+      assert.equal(hidMapped.status, 200)
+      assert.equal(hidMapped.body?.received_model, hidUpstream)
+    })
+
+    const hidBoundKey = await apiCall('POST', '/api/keys', {
+      name: `smoke-hide-bound-${RUN}`,
+      channelId: hidChannelId
+    })
+    createdKeyIds.push(hidBoundKey.body.apiKey.id)
+    const hidBound = await proxyCall(
+      '/v1/chat/completions',
+      { model: hidOrigin, messages: [{ role: 'user', content: 'hi' }] },
+      hidBoundKey.body.key
+    )
+    check('绑定该渠道的 Key 同样拒绝未映射模型', () =>
+      assert.equal(hidBound.status, 404)
+    )
+
+    const hidOff = await apiCall('PATCH', `/api/channels/${hidChannelId}`, {
+      hideUnmappedModels: false
+    })
+    check('PATCH 只改开关时其它字段保持不变', () => {
+      assert.equal(hidOff.status, 200)
+      assert.equal(hidOff.body.channel.hideUnmappedModels, false)
+      assert.deepEqual(hidOff.body.channel.models, [hidOrigin, hidUpstream])
+    })
+
+    const hidIdsAfter = await listModels(hidToken)
+    check('关掉开关后原始模型名重新出现', () =>
+      assert.ok(hidIdsAfter.includes(hidOrigin))
+    )
+    const hidDirectAfter = await proxyCall(
+      '/v1/chat/completions',
+      { model: hidOrigin, messages: [{ role: 'user', content: 'hi' }] },
+      hidToken
+    )
+    check('关掉开关后可直接使用原始模型名', () =>
+      assert.equal(hidDirectAfter.status, 200)
+    )
+
+    await apiCall('DELETE', `/api/channels/${hidChannelId}`)
+
+    section('㉞ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -3276,7 +3378,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉞ 清理测试数据')
+    section('㉟ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

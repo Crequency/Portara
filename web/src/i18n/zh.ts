@@ -198,6 +198,10 @@ export const zh = {
     weightHint: '同一优先级内按权重轮转分配请求，例如权重 2 与 1 约为 2:1。',
     priorityWeightHint:
       '优先级：数字越小越优先被选中。同一优先级内按权重轮转分配请求，例如 A（权重 2）与 B（权重 1）约为 2:1。只有优先级更高的渠道全部不可用时，才会轮到下一优先级。',
+    hideUnmappedModels: '只暴露映射模型',
+    hideUnmappedModelsHint:
+      '开启后，该渠道未映射的模型 id 不出现在 /v1/models，直接请求也会被拒（404 model_not_found）。想让某个模型对外可见，就给它配一条映射。',
+    tagHideUnmapped: '仅映射',
     revealKey: '查看',
     revealKeyTitle: '查看上游密钥 · {name}',
     revealKeyWarning:

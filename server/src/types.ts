@@ -66,6 +66,8 @@ export interface ChannelRow {
   usage_url: string
   /** 耗尽判定的依据：balance（余额优先）| quota（用量限额优先） */
   limit_priority: 'balance' | 'quota'
+  /** 只暴露映射模型：为 true 时该渠道未映射的模型既不出现在 /models，也不受理 */
+  hide_unmapped_models: boolean
   models: string[]
   priority: number
   weight: number
@@ -279,6 +281,7 @@ export function toChannelDto(
     usageAdapter: ch.usage_adapter ?? '',
     usageUrl: ch.usage_url ?? '',
     limitPriority: ch.limit_priority ?? 'balance',
+    hideUnmappedModels: ch.hide_unmapped_models === true,
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     // 有账户就按账户算（账户才是密钥的载体）；没有则回退到渠道列，兼容旧数据

@@ -409,5 +409,19 @@ export const migrations: { id: string; sql: string }[] = [
       alter table channels
         add column if not exists limit_priority text not null default 'balance';
     `
+  },
+  {
+    id: '017_hide_unmapped_models',
+    sql: `
+      -- 「只暴露映射模型」开关。
+      --
+      -- 打开后，该渠道未映射的模型 id 既不出现在网关的 /v1/models，
+      -- 也不受理直接拿它发起的请求 —— 否则映射形同虚设：
+      -- 客户端绕过别名、直接用上游原始模型名依然能打进来。
+      --
+      -- 默认 false：老渠道行为完全不变（原始模型名照旧可见可用）。
+      alter table channels
+        add column if not exists hide_unmapped_models boolean not null default false;
+    `
   }
 ]

@@ -260,6 +260,8 @@ const channelShape = {
   usageUrl: z.string().max(500),
   /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
   limitPriority: z.enum(['balance', 'quota']),
+  /** 只暴露映射模型：未映射的模型名不出现也不受理 */
+  hideUnmappedModels: z.boolean(),
   models: z.array(z.string().min(1)),
   priority: z.coerce.number().int().min(1).max(9999),
   weight: z.coerce.number().int().min(1).max(1000),
@@ -299,6 +301,7 @@ function withCreateDefaults(b: CreateInput) {
     usageAdapter: b.usageAdapter ?? '',
     usageUrl: b.usageUrl ?? '',
     limitPriority: b.limitPriority ?? 'balance',
+    hideUnmappedModels: b.hideUnmappedModels ?? false,
     apiKey: b.apiKey ?? '',
     models: b.models ?? [],
     priority: b.priority ?? 100,
@@ -401,8 +404,9 @@ channelRoutes.post('/', requireAdmin, async (c) => {
     `insert into channels
        (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
         model_overrides, api_key_cipher, proxy_id, models, priority, weight, timeout_ms,
-        status, note, usage_adapter, usage_url, limit_priority)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) returning *`,
+        status, note, usage_adapter, usage_url, limit_priority, hide_unmapped_models)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     returning *`,
     [
       body.name,
       body.baseUrl,
@@ -422,7 +426,8 @@ channelRoutes.post('/', requireAdmin, async (c) => {
       body.note,
       body.usageAdapter ?? '',
       body.usageUrl ?? '',
-      body.limitPriority ?? 'balance'
+      body.limitPriority ?? 'balance',
+      body.hideUnmappedModels
     ]
   )
   await recordAudit(c, 'channel.create', { type: 'channel', id: row!.id }, {
@@ -487,6 +492,7 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        usage_adapter  = coalesce($18, usage_adapter),
        usage_url      = coalesce($19, usage_url),
        limit_priority = coalesce($20, limit_priority),
+       hide_unmapped_models = coalesce($21, hide_unmapped_models),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -511,7 +517,8 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       body.note ?? null,
       body.usageAdapter ?? null,
       body.usageUrl ?? null,
-      body.limitPriority ?? null
+      body.limitPriority ?? null,
+      body.hideUnmappedModels ?? null
     ]
   )
   // 只记「改了哪些字段」，不记值 —— 其中可能有密钥

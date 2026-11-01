@@ -28,6 +28,8 @@ export interface ChannelCandidate {
   model_overrides?: Record<string, { protocol?: string; baseUrl?: string }>
   /** 选用的 HTTP 代理；null/缺省 = 直连 */
   proxy_id?: string | null
+  /** 只暴露映射模型：未映射的模型名不受理 */
+  hide_unmapped_models?: boolean
 }
 
 export type EffectiveProtocol = 'openai' | 'anthropic'

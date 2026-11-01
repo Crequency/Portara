@@ -585,6 +585,9 @@ onMounted(async () => {
                   <span v-if="ch.vendor !== 'generic'" class="tag" style="color: var(--accent)">
                     {{ ch.vendor }}
                   </span>
+                  <span v-if="ch.hideUnmappedModels" class="tag" style="color: var(--accent)">
+                    {{ t('channels.tagHideUnmapped') }}
+                  </span>
                   <span
                     v-if="Object.keys(ch.extraHeaders ?? {}).length > 0"
                     class="tag"

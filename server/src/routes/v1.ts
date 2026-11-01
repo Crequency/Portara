@@ -209,6 +209,23 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
   const channel = pick.target.channel
   const upstreamModel = pick.target.upstreamModel
+
+  /*
+   * ④.5 「只暴露映射模型」：未命中的映射一律不受理。
+   *
+   * 放在选路之后是因为这时才知道→哪个渠道：同一个模型名可能落在没开开关的
+   * 渠道上（照旧可用），只有真正要落到开了开关的渠道时才拒绝。
+   * 走映射（viaMapping）不受影响 —— 那正是被允许的入口。
+   */
+  if (model && channel.hide_unmapped_models && !pick.target.viaMapping) {
+    return rejectEarly({
+      status: 404,
+      logError: `模型 ${model} 未映射（渠道 ${channel.name} 仅暴露映射模型）`,
+      message: `模型「${model}」在该渠道未配置映射，且该渠道只暴露映射模型`,
+      type: 'invalid_request_error',
+      code: 'model_not_found'
+    })
+  }
   // ⑤ 上游账户：取优先级最高、按权重轮转到的那个
   const candidates = await pickAccounts(channel.id, await nextAccountRotation())
   if (candidates.length === 0) {
@@ -647,6 +664,14 @@ v1Routes.get('/models', async (c) => {
   }
 
   for (const ch of channels) {
+    /*
+     * 「只暴露映射模型」的渠道**不贡献原始模型名**。
+     *
+     * 不是「过滤掉没有映射的那几个」，而是整个不贡献：
+     * 它要对外呈现的名字就是映射别名，而别名上面已经收进来了。
+     * 若按「有没有映射」逐个判，就得在这里反查映射表，同一件事会有两处口径。
+     */
+    if (ch.hide_unmapped_models) continue
     for (const m of ch.models) {
       const existing = entries.get(m)
       if (existing) {

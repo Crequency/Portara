@@ -539,6 +539,21 @@ onMounted(loadChannel)
           <div class="dim">{{ formatTime(channel.createdAt) }}</div>
         </div>
         <div class="field">
+          <label>{{ t('channels.hideUnmappedModels') }}</label>
+          <div>
+            <span
+              class="badge"
+              :class="channel.hideUnmappedModels ? 'badge-ok' : 'badge-off'"
+            >
+              {{
+                channel.hideUnmappedModels
+                  ? t('common.enabled')
+                  : t('common.disabled')
+              }}
+            </span>
+          </div>
+        </div>
+        <div class="field">
           <label>{{ t('channelDetail.note') }}</label>
           <div class="dim">{{ channel.note || '—' }}</div>
         </div>
