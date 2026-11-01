@@ -6,6 +6,7 @@ import {
   isVendorPreset,
   sanitizeExtraHeaders
 } from '../src/services/proxy.js'
+import { VERSION } from '../src/version.js'
 
 // ------------------------------------------------------------ 固定请求头校验
 
@@ -122,3 +123,16 @@ test('无上游密钥时两种协议都不带认证头', () => {
   assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'openai' }).headers.authorization, undefined)
   assert.equal(buildUpstreamHeaders('', 'application/json', { protocol: 'anthropic' }).headers['x-api-key'], undefined)
 })
+
+// ------------------------------------------------------------ User-Agent
+
+test('上游 UA 跟着 VERSION 常量走，不再写死版本号', () => {
+  const { headers } = buildUpstreamHeaders('sk-abc', 'application/json')
+  assert.equal(
+    headers['user-agent'],
+    'Portara/' + VERSION + ' (+https://github.com/Crequency/Portara)'
+  )
+  // 回归防线：曾经写死 Portara/0.1，版本 bump 后一直漂着
+  assert.ok(!headers['user-agent'].includes('Portara/0.1'))
+})
+

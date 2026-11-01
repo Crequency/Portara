@@ -259,6 +259,71 @@ function anthropicStopToOpenai(reason: unknown): string {
   return STOP_REASON_MAP[reason] ?? 'stop'
 }
 
+// ---------------------------------------------------------------- usage 归一
+
+/** OpenAI 兼容的 usage 形状（`prompt_tokens_details` 是官方扩展字段） */
+export interface OpenAiUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  prompt_tokens_details?: { cached_tokens: number }
+}
+
+/**
+ * 单个 token 字段 → 非负整数。
+ *
+ * 上游字段缺失、为 null、非数字或负数时一律按 0 处理 ——
+ * 老代码的 `Number(x) || 0` 在 NaN 上侥幸成立，但会把 `-1` 原样带进总数，
+ * 一路污染 request_logs 的累加与 Key 配额扣减。
+ */
+function tokenCount(v: unknown): number {
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.round(v) : 0
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0
+  }
+  return 0
+}
+
+/** Anthropic usage 里属于「输入侧」的字段；message_start 与 message_delta 都可能给 */
+const INPUT_USAGE_KEYS = [
+  'input_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens'
+] as const
+
+/**
+ * Anthropic 的 usage → OpenAI 的 usage。
+ *
+ * ⚠️ **Anthropic 的 `input_tokens` 不含缓存部分**：命中缓存的读取量在
+ * `cache_read_input_tokens`，本次写入缓存的量在 `cache_creation_input_tokens`，
+ * 两者都是这次请求真实消耗的输入 token。只取 `input_tokens` 会让回给客户端的
+ * `prompt_tokens`、request_logs 的 token 累计与 Key 配额扣减**系统性偏低**。
+ *
+ * OpenAI 官方形状里缓存命中量放在 `prompt_tokens_details.cached_tokens`，
+ * 且 `prompt_tokens` 本身已经包含它 —— 与这里的加法语义一致。
+ */
+export function anthropicUsageToOpenai(usage: unknown): OpenAiUsage {
+  const u = isRecord(usage) ? usage : {}
+  const promptTokens =
+    tokenCount(u.input_tokens) +
+    tokenCount(u.cache_creation_input_tokens) +
+    tokenCount(u.cache_read_input_tokens)
+  const completionTokens = tokenCount(u.output_tokens)
+
+  const out: OpenAiUsage = {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens
+  }
+
+  // 没有缓存命中就不给这个字段：只有 input/output 的老形状保持原样，
+  // 免得给不认识的客户端塞一个全 0 的 details
+  const cached = tokenCount(u.cache_read_input_tokens)
+  if (cached > 0) out.prompt_tokens_details = { cached_tokens: cached }
+  return out
+}
+
 /**
  * Anthropic Messages 响应 → OpenAI Chat Completions 响应。
  * `requestedModel` 是调用方请求的模型 id（别名），回给调用方的应是它而非上游模型名。
@@ -286,10 +351,6 @@ export function anthropicToOpenai(
     }
   }
 
-  const usage = isRecord(body.usage) ? body.usage : {}
-  const promptTokens = Number(usage.input_tokens ?? 0) || 0
-  const completionTokens = Number(usage.output_tokens ?? 0) || 0
-
   const message: Record<string, unknown> = { role: 'assistant', content: texts.join('') }
   if (toolCalls.length > 0) message.tool_calls = toolCalls
 
@@ -305,11 +366,8 @@ export function anthropicToOpenai(
         finish_reason: toolCalls.length > 0 ? 'tool_calls' : anthropicStopToOpenai(body.stop_reason)
       }
     ],
-    usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens: promptTokens + completionTokens
-    }
+    // 缓存写入/命中都计入 prompt；映射细节见 anthropicUsageToOpenai
+    usage: anthropicUsageToOpenai(body.usage)
   }
 }
 
@@ -327,7 +385,8 @@ export class AnthropicToOpenAiStream {
   private id = `chatcmpl-${Date.now()}`
   private created = Math.floor(Date.now() / 1000)
   private sentRole = false
-  private promptTokens = 0
+  /** 上游给的输入侧用量原文（缓存字段要原样留着，见 usageNow） */
+  private inputUsage: Record<string, unknown> = {}
   private completionTokens = 0
   private stopReason = 'end_turn'
   private done = false
@@ -335,6 +394,24 @@ export class AnthropicToOpenAiStream {
   private toolIndex = -1
 
   constructor(private readonly requestedModel: string) {}
+
+  /**
+   * 合并输入侧用量。
+   *
+   * message_start 带全量（含缓存），message_delta 一般只给 output_tokens，
+   * 但部分上游会重复给输入字段 —— **只在字段确实出现时覆盖**，
+   * 避免半份 usage 把 message_start 拿到的缓存数冲成 0。
+   */
+  private mergeInputUsage(usage: Record<string, unknown>): void {
+    for (const key of INPUT_USAGE_KEYS) {
+      if (usage[key] !== undefined) this.inputUsage[key] = usage[key]
+    }
+  }
+
+  /** 当前累计用量（输入侧原文 + 已完成输出），与回给调用方的 usage 同源 */
+  private usageNow(): OpenAiUsage {
+    return anthropicUsageToOpenai({ ...this.inputUsage, output_tokens: this.completionTokens })
+  }
 
   private chunk(delta: Record<string, unknown>, finishReason: string | null): string {
     const payload = {
@@ -364,8 +441,7 @@ export class AnthropicToOpenAiStream {
         this.started = true
         const msg = isRecord(obj.message) ? obj.message : {}
         if (typeof msg.id === 'string') this.id = msg.id
-        const usage = isRecord(msg.usage) ? msg.usage : {}
-        this.promptTokens = Number(usage.input_tokens ?? 0) || 0
+        this.mergeInputUsage(isRecord(msg.usage) ? msg.usage : {})
         if (!this.sentRole) {
           out += this.chunk({ role: 'assistant', content: '' }, null)
           this.sentRole = true
@@ -420,8 +496,10 @@ export class AnthropicToOpenAiStream {
         const delta = isRecord(obj.delta) ? obj.delta : {}
         if (typeof delta.stop_reason === 'string') this.stopReason = delta.stop_reason
         const usage = isRecord(obj.usage) ? obj.usage : {}
+        // 输入侧字段若在这里再次出现（含缓存），按累计值覆盖而不是相加
+        this.mergeInputUsage(usage)
         if (usage.output_tokens !== undefined) {
-          this.completionTokens = Number(usage.output_tokens) || 0
+          this.completionTokens = tokenCount(usage.output_tokens)
         }
         break
       }
@@ -455,11 +533,8 @@ export class AnthropicToOpenAiStream {
         created: this.created,
         model: this.requestedModel,
         choices: [],
-        usage: {
-          prompt_tokens: this.promptTokens,
-          completion_tokens: this.completionTokens,
-          total_tokens: this.promptTokens + this.completionTokens
-        }
+        // 与 anthropicToOpenai 共用同一处映射：缓存 token 计入 prompt
+        usage: this.usageNow()
       })}\n\n`
     )
   }
@@ -512,6 +587,7 @@ export class AnthropicToOpenAiStream {
   }
 
   get usage(): { promptTokens: number; completionTokens: number } {
-    return { promptTokens: this.promptTokens, completionTokens: this.completionTokens }
+    const u = this.usageNow()
+    return { promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens }
   }
 }

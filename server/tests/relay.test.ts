@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { buildUpstreamUrl } from '../src/services/proxy.js'
-import { planUpstreamRequest } from '../src/services/relay.js'
+import {
+  planUpstreamRequest,
+  translateAnthropicJson,
+  translateAnthropicStream,
+  type TokenUsage
+} from '../src/services/relay.js'
 
 // ------------------------------------------------------------ 地址拼接容错
 
@@ -172,3 +177,77 @@ test('planUpstreamRequest：未改写且无需注入时保持原字节直通', (
   })
   assert.equal(plan.bodyText, raw)
 })
+
+// ------------------------------------------------------------ Anthropic 用量记账
+
+/*
+ * request_logs 的 token 累加与 api_keys.used_tokens 都是拿 relay 返回的
+ * usage 写的（routes/v1.ts 与 routes/channels.ts 两条路径）——
+ * 这两处必须拿到含缓存 token 的合计，否则记账与配额扣减系统性偏低。
+ */
+
+test('translateAnthropicJson 的 usage 已含缓存 token（响应与记账同源）', () => {
+  const text = JSON.stringify({
+    id: 'msg_1',
+    content: [{ type: 'text', text: 'x' }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 10,
+      cache_creation_input_tokens: 20,
+      cache_read_input_tokens: 30,
+      output_tokens: 5
+    }
+  })
+  const { body, usage } = translateAnthropicJson(text, 'claude-x')
+  assert.deepEqual(usage, { promptTokens: 60, completionTokens: 5, totalTokens: 65 })
+  assert.deepEqual((JSON.parse(body) as { usage: unknown }).usage, {
+    prompt_tokens: 60,
+    completion_tokens: 5,
+    total_tokens: 65,
+    prompt_tokens_details: { cached_tokens: 30 }
+  })
+})
+
+test('translateAnthropicStream 的收尾回调带回含缓存 token 的合计', async () => {
+  const sse = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":0}}}',
+    '',
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}',
+    '',
+    'event: message_delta',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}',
+    '',
+    'event: message_stop',
+    'data: {"type":"message_stop"}',
+    '',
+    ''
+  ].join('\n')
+  const upstream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(sse))
+      controller.close()
+    }
+  })
+
+  let captured: TokenUsage | null = null
+  const translated = translateAnthropicStream(
+    upstream,
+    'claude-x',
+    (usage) => {
+      captured = usage
+    },
+    Date.now()
+  )
+
+  const reader = translated.getReader()
+  for (;;) {
+    const { done } = await reader.read()
+    if (done) break
+  }
+
+  assert.ok(captured, 'onFinish 没有被调用')
+  assert.deepEqual(captured, { promptTokens: 60, completionTokens: 5, totalTokens: 65 })
+})
+

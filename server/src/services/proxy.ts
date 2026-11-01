@@ -5,6 +5,7 @@
  * data 行做 JSON.parse，原字节由 tee 的另一分支原样下传。
  */
 
+import { VERSION } from '../version.js'
 import { resolveVendorSession, type InjectedSession } from './vendorRules.js'
 
 export interface Usage {
@@ -264,7 +265,9 @@ export function buildUpstreamHeaders(
   const headers: Record<string, string> = {
     'content-type': contentType || 'application/json',
     accept: 'application/json, text/event-stream',
-    'user-agent': 'Portara/0.1 (+https://github.com/Crequency/Portara)'
+    // 版本号引用常量而不是写死：写死的 0.1 在 0.2.0 之后一直漂着，
+    // 上游日志里根本认不出是哪个版本在打请求
+    'user-agent': `Portara/${VERSION} (+https://github.com/Crequency/Portara)`
   }
 
   const extra = options.extraHeaders ?? {}
