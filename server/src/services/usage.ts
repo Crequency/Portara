@@ -210,6 +210,23 @@ export function isAccountExhausted(
   return byBalance ?? byQuota ?? false
 }
 
+/**
+ * 该账户是否有**任意窗口已经打满**。
+ *
+ * 判定与 `limit_priority` 无关 —— 打满的窗口就是硬上限。
+ * 阈值与 `isAccountExhausted` 里的相同（>=95% 视为打满，给上游留出误差空间）。
+ */
+export function hasExhaustedWindow(s: UsageAccountSnapshot): boolean {
+  return s.windows.some(
+    (w) =>
+      // 推算窗口（inferred）不参与：它是按社区逆向的套餐表算出来的，
+      // 不是上游给的硬事实。拿它做「不路由」判据会误杀健康账户 ——
+      // 实测踩过：CommandCode 的月窗被推算成 70/70，整条渠道的账户全被跳过。
+      !w.inferred &&
+      (w.exceeded === true || (w.total > 0 && w.used / w.total >= 0.95))
+  )
+}
+
 export interface UsageEndpoint {
   key: string
   path: string

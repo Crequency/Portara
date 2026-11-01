@@ -10,7 +10,12 @@
  */
 import { one, query } from '../db.js'
 import { redis } from '../redis.js'
-import { listAccounts, setAccountQuotaExhausted, type AccountRow } from './accounts.js'
+import {
+  listAccounts,
+  setAccountQuotaExhausted,
+  setAccountWindowExhausted,
+  type AccountRow
+} from './accounts.js'
 import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
@@ -19,6 +24,7 @@ import {
   aggregateAccountSnapshots,
   endpointUrl,
   getUsageAdapter,
+  hasExhaustedWindow,
   isAccountExhausted,
   type UsageAccountSnapshot,
   type UsageAdapter,
@@ -256,15 +262,21 @@ async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<Usa
   const agg = aggregateAccountSnapshots(okParts)
 
   // 额度轮转：把"耗尽"标记写回账户。失败不影响快照返回。
+  //
+  // 同时写两个标记：
+  //   quota_exhausted —— 按渠道口径（balance / quota）判定，驱动「耗尽轮转」
+  //   window_exhausted —— **硬事实**：任意窗口打满。与口径无关，
+  //                       驱动设置项 `skipExhaustedWindows`（打满就不路由）
   await Promise.all(
     parts
       .filter((p) => p.ok)
-      .map((p) =>
+      .flatMap((p) => [
         setAccountQuotaExhausted(
           p.accountId,
           isAccountExhausted(p, ch.limit_priority ?? 'balance')
-        ).catch(() => undefined)
-      )
+        ).catch(() => undefined),
+        setAccountWindowExhausted(p.accountId, hasExhaustedWindow(p)).catch(() => undefined)
+      ])
   )
 
   const raw: Record<string, unknown> = {}

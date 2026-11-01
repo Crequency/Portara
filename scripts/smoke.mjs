@@ -1404,6 +1404,11 @@ async function main() {
         [jsonAlias]: { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL }
       }
     })
+    if (jsonImport.status !== 200) {
+      const diag = await apiCall('GET', '/api/model-routes')
+      console.log('   [诊断] 状态', jsonImport.status, JSON.stringify(jsonImport.body).slice(0, 200),
+        '| 当前映射', JSON.stringify(diag.body.routes.map(r=>r.alias)))
+    }
     check('JSON 导入（替换模式）成功', () => assert.equal(jsonImport.status, 200))
     const afterJson = await apiCall('GET', '/api/model-routes')
     check('替换模式下旧映射被清空', () => {
@@ -1428,9 +1433,15 @@ async function main() {
     })
     check('replace 确认条数不符也被拒（409）', () => assert.equal(badAck.status, 409))
 
+    /*
+     * 条数必须**从库里读**而不是写死。
+     * 写死过 1 条，结果新增的路由用例在它之前又建了映射，
+     * 条数对不上直接 409 —— 这种"依赖全局条数"的断言很容易被后续用例打挂。
+     */
+    const routesNow = await apiCall('GET', '/api/model-routes')
     const goodAck = await apiCall('POST', '/api/model-routes/import', {
       mode: 'replace',
-      acknowledgeRemove: 1,
+      acknowledgeRemove: routesNow.body.routes.length,
       mapping: { [jsonAlias]: { channel: `smoke-mock-${RUN}`, model: MOCK_MODEL } }
     })
     check('replace 条数匹配则放行', () => assert.equal(goodAck.status, 200))
@@ -3514,7 +3525,226 @@ async function main() {
     await apiCall('DELETE', `/api/channels/${saAId}`)
     await apiCall('DELETE', `/api/channels/${saBId}`)
 
-    section('㉟ 密钥不泄漏到日志')
+    // ------------------------------------------------ 路由策略：失败冷却 + 打满窗口
+    section('㉟ 路由策略：失败冷却 1h + 打满窗口不路由')
+
+    // ① 设置项可读写
+    const rs0 = await apiCall('GET', '/api/settings')
+    check('设置里带失败冷却与窗口跳过两项', () => {
+      assert.equal(typeof rs0.body.settings.accountFailureCooldownSec, 'number')
+      assert.equal(rs0.body.settings.accountFailureCooldownSec, 3600, '默认应为 1 小时')
+      assert.equal(rs0.body.settings.skipExhaustedWindows, true, '默认应开启')
+    })
+
+    /*
+     * ② 失败冷却：**不改全局设置**，用默认值（3600s）验证真实行为。
+     *
+     * 之前把全局冷却临时改成 600s 来"方便测试"，结果 10 分钟内的失败账户
+     * 都不恢复，连带把后面 replace 导入的用例打挂 —— 全局设置是共享状态，
+     * 用例之间会互相污染。现在只在本地改一次往返验证可写，随即改回。
+     */
+    const cooldownRoundTrip = await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'accountFailureCooldownSec', value: 1800 }]
+    })
+    check('失败冷却时长可改', () => {
+      assert.equal(cooldownRoundTrip.status, 200)
+      assert.equal(cooldownRoundTrip.body.settings.accountFailureCooldownSec, 1800)
+    })
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'accountFailureCooldownSec', value: 3600 }]
+    })
+
+    const coolChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-cool-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 910
+    })
+    const coolId = coolChannel.body.channel.id
+    const coolBadAcc = await apiCall('POST', `/api/channels/${coolId}/accounts`, {
+      name: '坏账户',
+      apiKey: 'sk-this-key-is-rejected',
+      priority: 1,
+      weight: 1
+    })
+    const coolBadId = coolBadAcc.body.account.id
+
+    const coolAlias = `smoke-cool-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: coolAlias,
+      targets: [{ channelId: coolId, upstreamModel: MOCK_MODEL }]
+    })
+    const coolKey = await apiCall('POST', '/api/keys', { name: `smoke-cool-key-${RUN}` })
+    createdKeyIds.push(coolKey.body.apiKey.id)
+    const coolHit = async () =>
+      fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${coolKey.body.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: coolAlias, messages: [{ role: 'user', content: 'hi' }] })
+      })
+
+    const cool1 = await coolHit()
+    check('首次请求：坏账户失败后自动换号成功', () => assert.equal(cool1.status, 200))
+
+    const coolAccs = await apiCall('GET', `/api/channels/${coolId}/accounts`)
+    const coolBad = coolAccs.body.accounts.find((a) => a.id === coolBadId)
+    check('失败账户进入冷却，时长取设置值（默认 1 小时）', () => {
+      assert.ok(coolBad.cooldownUntil, '未进入冷却')
+      const secs = (new Date(coolBad.cooldownUntil).getTime() - Date.now()) / 1000
+      assert.ok(secs > 3500, `冷却只有 ${Math.round(secs)}s，应约 3600s`)
+    })
+
+    // 再打几次：坏账户在冷却里，不该被重试（consecutiveFailures 不再增长）
+    const before = coolBad.consecutiveFailures
+    for (let i = 0; i < 3; i++) await coolHit()
+    const coolAccs2 = await apiCall('GET', `/api/channels/${coolId}/accounts`)
+    const coolBad2 = coolAccs2.body.accounts.find((a) => a.id === coolBadId)
+    check('冷却期内不再路由到失败账户', () =>
+      assert.equal(coolBad2.consecutiveFailures, before)
+    )
+
+    // ③ 打满任意窗口的账户不路由（余额口径下同样生效）
+    const winChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-win-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 905,
+      usageAdapter: 'commandcode',
+      // 关键：余额口径下"钱还在"不算耗尽 —— 新策略要能看到窗口打满
+      limitPriority: 'balance'
+    })
+    const winId = winChannel.body.channel.id
+    const winFull = await apiCall('POST', `/api/channels/${winId}/accounts`, {
+      name: '窗口打满',
+      apiKey: 'sk-quota-full-account',
+      priority: 1,
+      weight: 1
+    })
+    const winFullId = winFull.body.account.id
+
+    const winUsage = await apiCall('GET', `/api/channels/${winId}/usage?refresh=1`)
+    const winSnap = winUsage.body.accounts?.find((a) => a.accountId === winFullId)
+    check('该账户确实「有余额但周窗口打满」', () => {
+      assert.ok(winSnap, '没有该账户快照')
+      assert.ok(winSnap.balances[0].remaining > 0, '余额应当还有')
+      assert.ok(
+        winSnap.windows.some((w) => w.exceeded === true),
+        `没有打满的窗口：${JSON.stringify(winSnap.windows)}`
+      )
+    })
+
+    const winAccs = await apiCall('GET', `/api/channels/${winId}/accounts`)
+    const winFlag = winAccs.body.accounts.find((a) => a.id === winFullId)
+    check('打满标记已落库（windowExhausted）', () => assert.equal(winFlag.windowExhausted, true))
+    check('余额口径下 quotaExhausted 仍为 false（两个口径互不干扰）', () =>
+      assert.equal(winFlag.quotaExhausted, false)
+    )
+
+    const winAlias = `smoke-win-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: winAlias,
+      targets: [{ channelId: winId, upstreamModel: MOCK_MODEL }]
+    })
+    const winKey = await apiCall('POST', '/api/keys', { name: `smoke-win-key-${RUN}` })
+    createdKeyIds.push(winKey.body.apiKey.id)
+    const winHit = async () =>
+      fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${winKey.body.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: winAlias, messages: [{ role: 'user', content: 'hi' }] })
+      })
+
+    const winLogsBefore = (await apiCall('GET', `/api/logs?limit=50&channelId=${winId}`)).body.logs
+    await winHit()
+    await sleep(250) // 日志是 fire-and-forget，给它一点落库时间
+    const winLogsAfter = (await apiCall('GET', `/api/logs?limit=50&channelId=${winId}`)).body.logs
+    check('窗口打满的账户被跳过（请求走了健康账户）', () => {
+      const before = winLogsBefore.filter((l) => l.accountName === '窗口打满').length
+      const after = winLogsAfter.filter((l) => l.accountName === '窗口打满').length
+      assert.equal(after, before, `仍然路由到了打满窗口的账户（${before} → ${after}）`)
+    })
+
+    /*
+     * ④ 关掉该策略后，打满窗口的账户重新参与（证明开关真的控制行为）
+     *
+     * 为了让"选没选中"可判定，先把健康账户**停用**：
+     * 这样一旦策略关闭，唯一可用的就是打满窗口的账户，请求必然落到它身上。
+     * 只用日志条数判断"有没有选中"会被时间窗口和后台上报干扰，测不准。
+     */
+    const healthyAcc = (await apiCall('GET', `/api/channels/${winId}/accounts`)).body.accounts.find(
+      (a) => a.name === '默认账户'
+    )
+    await apiCall('PATCH', `/api/channels/${winId}/accounts/${healthyAcc.id}`, { status: 'disabled' })
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'skipExhaustedWindows', value: false }]
+    })
+    const offCheck = await apiCall('GET', '/api/settings')
+    check('策略开关可关闭', () => assert.equal(offCheck.body.settings.skipExhaustedWindows, false))
+
+    /*
+     * 「选没选中」只能靠日志判定，不能靠状态码：
+     * 伪上游只认 UPSTREAM_KEY，这个打满窗口的账户用的是 sk-quota-full-account，
+     * 打过去必然是 401。**401 恰恰证明请求确实发到了它** —— 这正是我们要的证据。
+     */
+    const logsFor = async () =>
+      (await apiCall('GET', `/api/logs?limit=50&channelId=${winId}`)).body.logs.filter(
+        (l) => l.accountName === '窗口打满'
+      )
+
+    const beforeOff = (await logsFor()).length
+    const winOff = await winHit()
+    await sleep(400)
+    const afterOff = (await logsFor()).length
+    check('关闭策略后：请求被路由到打满窗口的账户（401 证明真的打过去了）', () => {
+      assert.equal(winOff.status, 401, `实际 ${winOff.status}`)
+      assert.ok(afterOff > beforeOff, '该账户没有收到请求')
+    })
+
+    /*
+     * 再打开策略，并把健康账户恢复 → 打满窗口的账户应当被跳过。
+     *
+     * 注意不能"只剩打满账户时要求 503"：`pickAccounts` 刻意做了三级退化
+     * （全部耗尽时允许用耗尽的），宁可让上游裁决也不自己造 503。
+     * 所以只有在**存在健康账户**时，才能观察到"打满的被跳过"。
+     */
+    await apiCall('PATCH', `/api/channels/${winId}/accounts/${healthyAcc.id}`, { status: 'active' })
+    await apiCall('PATCH', '/api/settings', {
+      settings: [{ key: 'skipExhaustedWindows', value: true }]
+    })
+    // 它刚吃过 401，重置健康，确保测的是窗口策略而不是冷却
+    await apiCall('POST', `/api/channels/${winId}/accounts/${winFullId}/reset-health`)
+    const beforeOn = (await logsFor()).length
+    const winOn = await winHit()
+    await sleep(400)
+    const afterOn = (await logsFor()).length
+    check('重新开启策略后：健康账户存在时，打满窗口的账户被跳过', () => {
+      assert.equal(winOn.status, 200, `实际 ${winOn.status}`)
+      assert.equal(afterOn, beforeOn, `仍然打到了打满窗口的账户（${beforeOn} → ${afterOn}）`)
+    })
+
+    // 本段自建的映射自己清掉：残留会让下一轮的 replace 类用例撞 409
+    await apiCall('POST', '/api/model-routes/purge', { alias: coolAlias })
+    await apiCall('POST', '/api/model-routes/purge', { alias: winAlias })
+    await apiCall('DELETE', `/api/channels/${coolId}`)
+    await apiCall('DELETE', `/api/channels/${winId}`)
+
+    // 复原设置，避免影响后续用例
+    await apiCall('PATCH', '/api/settings', {
+      settings: [
+        { key: 'skipExhaustedWindows', value: true },
+        { key: 'accountFailureCooldownSec', value: 3600 }
+      ]
+    })
+
+    section('㊱ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -3526,7 +3756,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㊱ 清理测试数据')
+    section('㊲ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

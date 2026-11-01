@@ -245,6 +245,10 @@ export interface GatewaySettings {
   timezone: string
   /** 余额快照缓存时长（秒）；用于避免上游限频 */
   usageCacheTtlSec: number
+  /** 上游失败后的冷却时长（秒）：这段时间内不再路由到该 (渠道, 账户) */
+  accountFailureCooldownSec: number
+  /** 是否跳过「任意用量窗口已打满」的账户 */
+  skipExhaustedWindows: boolean
 }
 
 export interface User {

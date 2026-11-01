@@ -38,6 +38,9 @@ export interface ChannelAccountRow {
   usage_url: string
   created_at: Date
   updated_at: Date
+  /** 任意用量窗口已打满（硬上限，与 limit_priority 无关） */
+  window_exhausted: boolean
+  window_checked_at: string | null
 }
 
 export interface ChannelRow {
@@ -259,6 +262,9 @@ export function toAccountDto(a: ChannelAccountRow, maskedKey: string) {
     consecutiveFailures: a.consecutive_failures ?? 0,
     quotaExhausted: Boolean(a.quota_exhausted),
     quotaCheckedAt: a.quota_checked_at ? new Date(a.quota_checked_at).toISOString() : null,
+    // 任意窗口打满（硬上限）—— 与 quotaExhausted 的口径无关，单独一列
+    windowExhausted: Boolean(a.window_exhausted),
+    windowCheckedAt: a.window_checked_at ? new Date(a.window_checked_at).toISOString() : null,
     lastUsedAt: a.last_used_at ? new Date(a.last_used_at).toISOString() : null,
     createdAt: new Date(a.created_at).toISOString()
   }

@@ -41,6 +41,27 @@ export interface GatewaySettings {
    * 面板与 API 都不该每次都真打上游。
    */
   usageCacheTtlSec: number
+  /**
+   * 上游请求失败后的冷却时长（秒）。
+   *
+   * 含义：**最近一次失败的那个 (渠道, 账户) 在这段时间内不再被路由到**。
+   * 默认 1 小时 —— 上游的配额/鉴权问题通常不是几秒钟就能恢复的，
+   * 而 30 秒冷却会让网关在故障期间反复去撞同一堵墙（每个请求都白跑一次）。
+   *
+   * 注意：401/403 这类「凭据坏了」仍会用更长的下限（见 COOLDOWN.auth），
+   * 本项只决定**普通失败**（超时、5xx、连接失败）的冷却。
+   */
+  accountFailureCooldownSec: number
+  /**
+   * 是否「用量限额打满任意窗口」就跳过该账户。
+   *
+   * 与渠道的 `limit_priority` 不同：那是"哪个口径说了算"，
+   * 这是"只要有一个窗口打满就先别用它" —— 打满的窗口就是硬上限，
+   * 继续打过去只会拿到 429/402，白费一次请求。
+   *
+   * 只在**该渠道/账户配了余额适配器**（能查到用量）时才有数据；查不到则不影响路由。
+   */
+  skipExhaustedWindows: boolean
 }
 
 export type SettingGroup = 'brand' | 'gateway'
@@ -98,6 +119,18 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
     // 5 分钟：足够挡住面板轮询与多人同时查看，又不至于让余额看着像"卡住了"
     schema: z.coerce.number().int().min(30).max(86_400),
     default: 300,
+    group: 'gateway'
+  },
+  accountFailureCooldownSec: {
+    // 1 小时：容错但不至于让恢复太慢；下限 30s 防止配成 0 变成"禁用冷却"
+    schema: z.coerce.number().int().min(30).max(86_400),
+    default: 3600,
+    group: 'gateway'
+  },
+  skipExhaustedWindows: {
+    // 默认开启：打满的窗口是硬上限，继续打过去只会换回 429/402
+    schema: z.boolean(),
+    default: true,
     group: 'gateway'
   },
   timezone: {
@@ -224,6 +257,9 @@ export async function saveSettings(
       [item.key, JSON.stringify(item.value), updatedBy]
     )
   }
+  // 注意：这里**不能**顺手清 Redis 缓存 —— 本模块刻意不依赖 redis
+  // （否则 timezone 之类的纯配置单测会被 ioredis 的连接卡住）。
+  // 失效由 HTTP 层在保存成功后调用 invalidateRoutingSettingCache() 完成。
   return (await getSettings()).settings
 }
 

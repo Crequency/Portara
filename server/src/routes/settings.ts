@@ -16,6 +16,7 @@ import {
   validateSettings,
   SETTING_KEYS
 } from '../services/settings.js'
+import { invalidateRoutingSettingCache } from '../services/routingSettings.js'
 
 export const settingsRoutes = new Hono()
 
@@ -44,6 +45,8 @@ settingsRoutes.patch('/', async (c) => {
   const before = (await getSettings()).settings
   const updatedBy = c.get('user')?.username ?? 'unknown'
   const settings = await saveSettings(checked.values, updatedBy)
+  // 数据面的路由设置走 Redis 短缓存，保存后立刻失效（否则最长 5 秒内仍是旧策略）
+  await invalidateRoutingSettingCache()
 
   // 审计：记录「哪一项从什么变成什么」——
   // 出事时要能回答「谁在什么时候把这个开关关了」

@@ -435,5 +435,22 @@ export const migrations: { id: string; sql: string }[] = [
       alter table request_logs
         add column if not exists session_hash text not null default '';
     `
+  },
+  {
+    id: '019_account_window_exhausted',
+    sql: `
+      -- 「任意用量窗口已打满」的独立标记。
+      --
+      -- 为什么不复用 quota_exhausted：那一列的口径由渠道的 limit_priority 决定
+      -- （balance 口径下只看钱、quota 口径下才看窗口）。而这里要表达的是
+      -- **硬事实**：有一个窗口打满了 —— 与"哪个口径说了算"无关，
+      -- 打满的窗口就是上限，继续请求只会拿回 429/402。
+      --
+      -- 两列并存：quota_exhausted 继续驱动"耗尽轮转"，这一列驱动
+      -- 「打满任意窗口就不路由」的新策略。查不到用量时两列都不动。
+      alter table channel_accounts
+        add column if not exists window_exhausted boolean not null default false,
+        add column if not exists window_checked_at timestamptz;
+    `
   }
 ]

@@ -6,7 +6,8 @@ import {
   originOf,
   toIso,
   toNum,
-  USAGE_ADAPTER_IDS
+  USAGE_ADAPTER_IDS,
+  hasExhaustedWindow
 } from '../src/services/usage.js'
 
 // 以下夹具全部来自**真实接口实测**（2026-10-10），不是照文档编的
@@ -304,4 +305,76 @@ test('每个适配器都声明了端点与鉴权方式', () => {
     assert.ok(['bearer', 'x-api-key', 'none'].includes(a.auth), `${id} 鉴权方式非法`)
     for (const e of a.endpoints) assert.ok(e.path.startsWith('/'), `${id} 端点路径要以 / 开头`)
   }
+})
+
+// ---------------------------------------------------------------- 窗口打满判定（D-070）
+
+test('hasExhaustedWindow：任一窗口打满即 true，与 limit_priority 无关', () => {
+  const base = {
+    accountId: 'a',
+    accountName: 'a',
+    adapter: 'x',
+    ok: true,
+    warnings: [],
+    balances: [{ currency: 'USD', unit: 'currency' as const, remaining: 100 }],
+    windows: []
+  }
+
+  // 钱还很多，但 5h 窗口打满 → 仍然算"打满"（这是硬上限）
+  const filled = {
+    ...base,
+    windows: [
+      { key: 'fiveHour', used: 0, total: 10, remaining: 10 },
+      { key: 'weekly', used: 35, total: 35, remaining: 0, exceeded: true }
+    ]
+  }
+  assert.equal(hasExhaustedWindow(filled), true)
+
+  // 接近打满（>=95%）也算
+  const nearFull = {
+    ...base,
+    windows: [{ key: 'weekly', used: 96, total: 100, remaining: 4 }]
+  }
+  assert.equal(hasExhaustedWindow(nearFull), true)
+
+  // 都没满 → false
+  const healthy = {
+    ...base,
+    windows: [{ key: 'weekly', used: 10, total: 100, remaining: 90 }]
+  }
+  assert.equal(hasExhaustedWindow(healthy), false)
+
+  // 没有窗口数据（不支持用量查询）→ false，不能因此把账户判死
+  assert.equal(hasExhaustedWindow(base), false)
+})
+
+test('hasExhaustedWindow：总上限为 0 的窗口不算打满（无数据 ≠ 打满）', () => {
+  const snap = {
+    accountId: 'a',
+    accountName: 'a',
+    adapter: 'x',
+    ok: true,
+    warnings: [],
+    balances: [],
+    windows: [{ key: 'monthly', used: 0, total: 0, remaining: 0 }]
+  }
+  assert.equal(hasExhaustedWindow(snap), false)
+})
+
+test('hasExhaustedWindow：推算出来的窗口不算数（避免误杀健康账户）', () => {
+  const snap = {
+    accountId: 'a',
+    accountName: 'a',
+    adapter: 'commandcode',
+    ok: true,
+    warnings: [],
+    balances: [{ currency: 'USD', unit: 'currency' as const, remaining: 5 }],
+    windows: [
+      // 真实窗口：空
+      { key: 'fiveHour', used: 0, total: 14, remaining: 14 },
+      // 推算窗口：满 —— 但它是"按套餐推算"的，不是上游硬事实
+      { key: 'monthly', used: 70, total: 70, remaining: 0, inferred: true }
+    ]
+  }
+  assert.equal(hasExhaustedWindow(snap), false)
 })

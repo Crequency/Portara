@@ -490,6 +490,13 @@ export const en = {
     timezoneInvalid: 'Not a valid IANA timezone name',
     allowDirectChannelTest: 'Allow direct upstream tests',
     allowDirectChannelTestHint: 'When off, the direct mode of the chat playground is disabled. That mode bypasses gateway auth, rate limits and quotas by calling the upstream with the channel key.',
+    accountFailureCooldownSec: 'Cooldown after failure (seconds)',
+    accountFailureCooldownSecHint:
+      'The (channel, account) that last failed is not routed to during this window. Defaults to 3600 (1 hour). A Retry-After from upstream or a credential failure (401/403) wins when longer.',
+    skipExhaustedWindows: 'Skip on filled quota windows',
+    skipExhaustedWindowsLabel: 'Skip accounts with any filled window',
+    skipExhaustedWindowsHint:
+      'Skip an account when any usage window is filled (>=95%) — a filled window is a hard cap and further requests only return 429/402. Only applies to channels with a balance adapter that can read usage.',
     logRetentionDays: 'Request log retention (days)',
     logRetentionDaysHint: '0 means keep forever. The service sweeps every 6 hours; use the button to purge now.',
     defaultChannelTimeoutMs: 'Default channel timeout (ms)',

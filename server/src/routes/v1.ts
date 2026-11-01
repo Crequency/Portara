@@ -44,6 +44,7 @@ import {
 } from '../services/affinityPure.js'
 import { clearAffinity, getAffinity, setAffinity } from '../services/affinity.js'
 import { env } from '../env.js'
+import { getRoutingSettings } from '../services/routingSettings.js'
 import type { ApiKeyRow, ChannelRow } from '../types.js'
 
 export const v1Routes = new Hono()
@@ -238,6 +239,13 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     })
   }
 
+  /*
+   * 路由策略（可配）：失败冷却时长 + 是否跳过打满窗口的账户。
+   *
+   * 一次请求读一次（内部有 Redis 短缓存，5 秒），不逐次查库。
+   */
+  const routing = await getRoutingSettings()
+
   // ④ 选路（会话亲和在这里生效）
   const pick = await selectTargets(key, model, session)
   if (!pick.ok) {
@@ -335,7 +343,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         ? (pick.affinity?.accountId ?? '')
         : ''
     const candidates = await pickAccounts(channel.id, await nextAccountRotation(), {
-      preferId: preferAccountId || undefined
+      preferId: preferAccountId || undefined,
+      skipExhaustedWindows: routing.skipExhaustedWindows
     })
     if (candidates.length === 0) {
       lastFailure = `渠道「${channel.name}」没有可用的上游账户`
@@ -347,7 +356,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       const upstreamKey = tryDecryptKey(candidate.key_cipher)
       if (upstreamKey === null) {
         lastFailure = `账户「${candidate.name}」的密钥无法解密`
-        await markAccountFailure(candidate.id, lastFailure, COOLDOWN.auth)
+        await markAccountFailure(
+          candidate.id,
+          lastFailure,
+          Math.max(routing.accountFailureCooldownSec, COOLDOWN.auth)
+        )
         continue
       }
 
@@ -389,11 +402,17 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         const text = await attempt.text()
         lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
         const retryAfter = Number(attempt.headers.get('retry-after'))
-        await markAccountFailure(
-          candidate.id,
-          lastFailure,
-          cooldownFor(attempt.status, Number.isFinite(retryAfter) ? retryAfter : null)
+        /*
+         * 冷却时长：**设置项说了算**，只有两处例外比它更长
+         *   ① 401/403（凭据坏了）—— 至少要 COOLDOWN.auth
+         *   ② 上游明确给了 Retry-After，且比设置值更大 —— 尊重上游
+         * 这样"最近一次失败的上游默认 1 小时不路由"就是可预期的默认行为。
+         */
+        const base = cooldownFor(
+          attempt.status,
+          Number.isFinite(retryAfter) ? retryAfter : null
         )
+        await markAccountFailure(candidate.id, lastFailure, Math.max(base, routing.accountFailureCooldownSec))
         lastUpstreamError = new Response(text, {
           status: attempt.status,
           headers: { 'content-type': attempt.headers.get('content-type') ?? 'application/json' }
@@ -407,7 +426,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
             ? `上游响应超时（${channel.timeout_ms}ms）`
             : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
 
-        await markAccountFailure(candidate.id, lastFailure, COOLDOWN.upstream)
+        await markAccountFailure(
+          candidate.id,
+          lastFailure,
+          Math.max(routing.accountFailureCooldownSec, COOLDOWN.upstream)
+        )
         // 客户端没了 / 整体预算耗尽 —— 换号没有意义
         if (clientGone || timedOut) break
       }

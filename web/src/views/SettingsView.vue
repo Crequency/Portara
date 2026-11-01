@@ -39,7 +39,9 @@ const form = ref<GatewaySettings>({
   defaultChannelTimeoutMs: 120000,
   defaultKeyRpmLimit: 60,
   timezone: 'UTC',
-  usageCacheTtlSec: 300
+  usageCacheTtlSec: 300,
+  accountFailureCooldownSec: 3600,
+  skipExhaustedWindows: true
 })
 
 const dirty = computed(() => {
@@ -202,6 +204,29 @@ onMounted(load)
           <label>{{ t('usage.cacheTtl') }}</label>
           <input v-model.number="form.usageCacheTtlSec" type="number" min="30" max="86400" />
           <span class="hint">{{ t('usage.cacheTtlHint') }}</span>
+        </div>
+
+        <!-- 路由策略：失败冷却 + 打满窗口跳过 -->
+        <div class="grid grid-2">
+          <div class="field">
+            <label>{{ t('settings.accountFailureCooldownSec') }}</label>
+            <input
+              v-model.number="form.accountFailureCooldownSec"
+              type="number"
+              min="30"
+              max="86400"
+              step="60"
+            />
+            <span class="hint">{{ t('settings.accountFailureCooldownSecHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.skipExhaustedWindows') }}</label>
+            <PCheckbox
+              v-model="form.skipExhaustedWindows"
+              :label="t('settings.skipExhaustedWindowsLabel')"
+            />
+            <span class="hint">{{ t('settings.skipExhaustedWindowsHint') }}</span>
+          </div>
         </div>
 
         <div class="grid grid-2">

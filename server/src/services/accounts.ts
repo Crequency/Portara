@@ -75,7 +75,18 @@ function isCooling(a: AccountRow, now: number): boolean {
 export async function pickAccounts(
   channelId: string,
   rotation: number,
-  opts: { limit?: number; excludeIds?: Set<string>; preferId?: string } = {}
+  opts: {
+    limit?: number
+    excludeIds?: Set<string>
+    preferId?: string
+    /**
+     * 是否跳过「任意用量窗口已打满」的账户（设置项 `skipExhaustedWindows`）。
+     *
+     * 与 `quota_exhausted` 的区别：后者按渠道的 `limit_priority` 口径判定，
+     * 这里只看硬事实 —— 有窗口打满就先别用它，继续打只会换回 429/402。
+     */
+    skipExhaustedWindows?: boolean
+  } = {}
 ): Promise<AccountRow[]> {
   const rows = await listAccounts(channelId)
   const now = Date.now()
@@ -89,7 +100,11 @@ export async function pickAccounts(
    *   ② 全耗尽了 → 允许用耗尽的（余额可能刚回升、缓存还没刷新）
    *   ③ 全冷却了 → 连冷却也忽略
    */
-  const healthy = pool.filter((a) => !isCooling(a, now) && !a.quota_exhausted)
+  const skipWindows = opts.skipExhaustedWindows === true
+  const exhausted = (a: AccountRow): boolean =>
+    a.quota_exhausted || (skipWindows && a.window_exhausted === true)
+
+  const healthy = pool.filter((a) => !isCooling(a, now) && !exhausted(a))
   const quotaFree = pool.filter((a) => !isCooling(a, now))
   const usable = healthy.length > 0 ? healthy : quotaFree.length > 0 ? quotaFree : pool
   if (usable.length === 0) return []
@@ -173,6 +188,29 @@ export async function markAccountFailure(
             updated_at = now()
       where id = $1`,
     [accountId, Math.max(0, Math.round(cooldownSec)), error.slice(0, 500)]
+  )
+}
+
+/**
+ * 标记「任意窗口已打满」。
+ *
+ * 与 `setAccountQuotaExhausted` 分开：那个是「按渠道口径判定为耗尽」，
+ * 这个是硬事实（某个窗口打满了）。两者都可能为 true，互不替代。
+ *
+ * 只在**确实查到用量**时调用 —— 查不到就保持原值，不能因为"没数据"而清标记。
+ */
+export async function setAccountWindowExhausted(
+  accountId: string,
+  exhausted: boolean
+): Promise<void> {
+  await query(
+    `update channel_accounts
+        set window_exhausted = $2,
+            window_checked_at = now(),
+            updated_at = now()
+      where id = $1
+        and (window_exhausted <> $2 or window_checked_at is null)`,
+    [accountId, exhausted]
   )
 }
 

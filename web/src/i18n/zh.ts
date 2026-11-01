@@ -490,6 +490,13 @@ export const zh = {
     timezoneInvalid: '不是合法的 IANA 时区名',
     allowDirectChannelTest: '允许「上游渠道测试」直连',
     allowDirectChannelTestHint: '关闭后对话测试页的直连模式会被禁用。该模式绕过网关的鉴权、限流与配额，直接用渠道密钥请求上游。',
+    accountFailureCooldownSec: '失败后的冷却时长（秒）',
+    accountFailureCooldownSecHint:
+      '最近一次请求失败的「渠道 + 账户」在这段时间内不再被路由过去。默认 3600 秒（1 小时）。上游给了 Retry-After 或凭据失效（401/403）时取两者中更长的那个。',
+    skipExhaustedWindows: '额度窗口打满即跳过',
+    skipExhaustedWindowsLabel: '跳过任意窗口已打满的账户',
+    skipExhaustedWindowsHint:
+      '列表里有任一用量窗口打满（≥95%）就不路由到该账户 —— 打满的窗口是硬上限，继续请求只会换回 429/402。仅对配置了余额适配器、能查到用量的渠道有效。',
     logRetentionDays: '请求日志保留天数',
     logRetentionDaysHint: '0 表示永久保留。服务每 6 小时自动清理一次，也可点右侧按钮立即清理。',
     defaultChannelTimeoutMs: '新建渠道默认超时（毫秒）',

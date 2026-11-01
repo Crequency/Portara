@@ -33,3 +33,20 @@ test('默认设置的每一项都符合各自的 schema', () => {
     assert.equal(parsed.success, true, `${key} 的默认值不合法`)
   }
 })
+
+/**
+ * settings.ts 必须保持「纯」：不 import redis。
+ *
+ * 这不是洁癖 —— ioredis 在模块加载时就会建连接并无限重连，
+ * 一旦 settings.ts 依赖它，所有 import 设置模块的单测都会挂死
+ * （本仓库已经踩过两次：D-065 的 version.test、D-069 的 router 抽取）。
+ * 用源码扫描把它钉住，比等测试超时 3 分钟再排查划算得多。
+ */
+test('settings.ts 不直接依赖 redis（否则单测会被连接挂死）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/services/settings.ts', import.meta.url), 'utf8')
+  assert.ok(
+    !/from ['"]\.\.\/redis\.js['"]/.test(src),
+    'settings.ts 不应 import redis —— 需要 Redis 的逻辑请放 services/routingSettings.ts'
+  )
+})
