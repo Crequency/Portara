@@ -128,10 +128,10 @@ flowchart LR
 
 | 文档 | 内容 |
 | --- | --- |
-| [交接入口](.develop/HANDOFF.md) | 请求链路、数据模型、验收口令、踩坑记录 —— 接手先读它 |
-| [愿景与边界](.develop/docs/00-vision.md) | 做什么、不做什么 |
-| [技术选型](.develop/docs/01-tech-selection.md) | 选型结论与工程纪律 |
-| [开发路线](.develop/docs/02-roadmap.md) | 里程碑与验收门 |
+| [CONTRIBUTING](CONTRIBUTING.md) | 贡献流程与验收门 |
+| [AGENTS](AGENTS.md) | 本仓库的 AI 协作约束与五条铁律 |
+
+> 交接文档、里程碑路线与厂商调研等内部开发资料不随仓库分发，由维护者单独保管。
 
 ## 贡献
 
