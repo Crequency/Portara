@@ -3366,7 +3366,155 @@ async function main() {
 
     await apiCall('DELETE', `/api/channels/${hidChannelId}`)
 
-    section('㉞ 密钥不泄漏到日志')
+    // ------------------------------------------------ 会话亲和（负载均衡）
+    section('㉞ 会话亲和：同一会话钉住 (渠道, 账户)，多会话分散')
+
+    const saChannelA = await apiCall('POST', '/api/channels', {
+      name: `smoke-sa-a-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 920,
+      weight: 1
+    })
+    const saChannelB = await apiCall('POST', '/api/channels', {
+      name: `smoke-sa-b-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 920,
+      weight: 1
+    })
+    const saAId = saChannelA.body.channel.id
+    const saBId = saChannelB.body.channel.id
+    const saAlias = `smoke-sa-model-${RUN}`
+
+    await apiCall('POST', '/api/model-routes', {
+      alias: saAlias,
+      targets: [
+        { channelId: saAId, upstreamModel: MOCK_MODEL, priority: 100, weight: 1 },
+        { channelId: saBId, upstreamModel: MOCK_MODEL, priority: 100, weight: 1 }
+      ]
+    })
+    const saKey = await apiCall('POST', '/api/keys', { name: `smoke-sa-key-${RUN}` })
+    createdKeyIds.push(saKey.body.apiKey.id)
+    const saToken = saKey.body.key
+
+    /** 用指定会话键打一次，返回服务它的渠道名 */
+    const saHit = async (sessionKey, model = saAlias) => {
+      const r = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${saToken}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          prompt_cache_key: sessionKey,
+          messages: [{ role: 'user', content: 'hi' }]
+        })
+      })
+      return { status: r.status, channel: r.headers.get('x-portara-channel') }
+    }
+
+    // ① 同一会话多次请求 → 必须固定在同一渠道（轮转已让位给亲和）
+    const saStable = []
+    for (let i = 0; i < 5; i++) saStable.push(await saHit(`affinity-fixed-${RUN}`))
+    check('同一会话 5 次请求落在同一渠道', () => {
+      assert.ok(saStable.every((r) => r.status === 200), JSON.stringify(saStable))
+      const names = new Set(saStable.map((r) => r.channel))
+      assert.equal(names.size, 1, `渠道发生了漂移：${[...names].join(',')}`)
+    })
+
+    // ② 多个会话 → 两个渠道都要被用到（分散，而不是全压一个）
+    const saSpread = []
+    for (let i = 0; i < 24; i++) saSpread.push(await saHit(`affinity-spread-${RUN}-${i}`))
+    check('24 个不同会话分散到两个渠道', () => {
+      assert.ok(saSpread.every((r) => r.status === 200), '存在失败请求')
+      const names = new Set(saSpread.map((r) => r.channel))
+      assert.equal(names.size, 2, `只用到 ${[...names].join(',')}`)
+      const counts = [...names].map((n) => saSpread.filter((r) => r.channel === n).length)
+      const min = Math.min(...counts)
+      assert.ok(min >= 3, `分布过于倾斜：${counts.join(':')}`)
+    })
+
+    // ③ 没有会话键时不能假装有亲和（应回到轮转）
+    const saNoKey = []
+    for (let i = 0; i < 8; i++) {
+      const r = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${saToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: saAlias, messages: [{ role: 'user', content: 'hi' }] })
+      })
+      saNoKey.push(r.headers.get('x-portara-channel'))
+    }
+    check('没有会话键时仍按权重轮转（两个渠道都用得到）', () =>
+      assert.equal(new Set(saNoKey).size, 2, `只用到 ${[...new Set(saNoKey)].join(',')}`)
+    )
+
+    /*
+     * ④ 上下文指纹**默认关闭**：内容相同的不同会话必须是不同会话。
+     *
+     * 这一条是从真实回归里长出来的：最初默认启用指纹，结果「固定系统提示 +
+     * 相同首条消息」的调用（探活、模板化请求）全被判成同一个会话，
+     * 一股脑钉死在一个渠道上 —— 加权轮转与负载均衡同时失效。
+     */
+    const saCtx = []
+    for (let i = 0; i < 8; i++) {
+      const r = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${saToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: saAlias,
+          messages: [
+            { role: 'system', content: 'stable system prompt' },
+            { role: 'user', content: 'same first turn' }
+          ]
+        })
+      })
+      saCtx.push(r.headers.get('x-portara-channel'))
+    }
+    check('内容相同的调用默认不当成同一会话（否则会压垮单渠道）', () =>
+      assert.equal(new Set(saCtx).size, 2, `全压在一个渠道：${[...new Set(saCtx)].join(',')}`)
+    )
+
+    // ⑤ 会话漂移：把当前渠道的密钥改坏 → 软漂到另一渠道，且后续稳定在新渠道
+    const saPinned = saStable[0].channel
+    const saPinnedId = saPinned === `smoke-sa-a-${RUN}` ? saAId : saBId
+    const pinnedAccounts = await apiCall('GET', `/api/channels/${saPinnedId}/accounts`)
+    const pinnedAccId = pinnedAccounts.body.accounts[0].id
+    await apiCall('PATCH', `/api/channels/${saPinnedId}/accounts/${pinnedAccId}`, {
+      apiKey: 'sk-this-key-is-rejected'
+    })
+    const saDrift = await saHit(`affinity-fixed-${RUN}`)
+    check('亲和渠道鉴权失败时漂移到另一渠道并成功', () => {
+      assert.equal(saDrift.status, 200, `漂移后仍失败：${saDrift.status}`)
+      assert.notEqual(saDrift.channel, saPinned, '仍然落在已损坏的渠道上')
+    })
+    const saAfterDrift = []
+    for (let i = 0; i < 3; i++) saAfterDrift.push(await saHit(`affinity-fixed-${RUN}`))
+    check('漂移后亲和记录被改写（后续稳定在新渠道）', () =>
+      assert.equal(new Set(saAfterDrift.map((r) => r.channel)).size, 1)
+    )
+
+    // ⑥ 日志里能查到会话哈希（前 8 位），但查不到原始会话键
+    await sleep(300)
+    const saLogs = await apiCall('GET', `/api/logs?limit=50&channelId=${saPinnedId}`)
+    const saLog = saLogs.body.logs.find((l) => l.model === saAlias && l.sessionHash)
+    check('请求日志记录了会话哈希（8 位）', () => {
+      assert.ok(saLog, '日志里没有 sessionHash')
+      assert.equal(saLog.sessionHash.length, 8)
+    })
+    check('日志里不含原始会话键', () => {
+      const all = JSON.stringify(saLogs.body.logs)
+      assert.ok(!all.includes(`affinity-fixed-${RUN}`), '原始会话键泄漏到日志')
+    })
+
+    // 清理本段渠道
+    await apiCall('DELETE', `/api/channels/${saAId}`)
+    await apiCall('DELETE', `/api/channels/${saBId}`)
+
+    section('㉟ 密钥不泄漏到日志')
 
     const stdout = output.join('')
     check('上游密钥未出现在服务端日志', () =>
@@ -3378,7 +3526,7 @@ async function main() {
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
     // ---------------------------------------------------------- 清理
-    section('㉟ 清理测试数据')
+    section('㊱ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

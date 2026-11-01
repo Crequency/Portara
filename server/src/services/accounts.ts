@@ -75,7 +75,7 @@ function isCooling(a: AccountRow, now: number): boolean {
 export async function pickAccounts(
   channelId: string,
   rotation: number,
-  opts: { limit?: number; excludeIds?: Set<string> } = {}
+  opts: { limit?: number; excludeIds?: Set<string>; preferId?: string } = {}
 ): Promise<AccountRow[]> {
   const rows = await listAccounts(channelId)
   const now = Date.now()
@@ -110,6 +110,20 @@ export async function pickAccounts(
       ordered.push(...tier)
     }
   })
+
+  /*
+   * 会话亲和：把这个会话上次用的账户提到首位。
+   *
+   * 只做「提前」不做「过滤」—— 它可能已经进冷却或被额度标记，
+   * 那就自然落到后面的梯队里，用户请求不该因为亲和而失败。
+   */
+  if (opts.preferId) {
+    const idx = ordered.findIndex((a) => a.id === opts.preferId)
+    if (idx > 0) {
+      const [preferred] = ordered.splice(idx, 1)
+      if (preferred) ordered.unshift(preferred)
+    }
+  }
 
   const limit = Math.max(1, opts.limit ?? ordered.length)
   return ordered.slice(0, limit)

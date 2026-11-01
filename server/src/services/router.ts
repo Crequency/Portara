@@ -1,13 +1,13 @@
 import { one, query } from '../db.js'
 import type { ChannelRow, ModelRouteRow } from '../types.js'
+import type { AffinityPin } from './affinityPure.js'
+import { orderRoutes, type OrderableRoute } from './routeOrder.js'
 import {
   pickChannel,
-  pickRoute,
   resolveBaseUrl,
   resolveProtocol,
   type ChannelCandidate,
-  type EffectiveProtocol,
-  type RouteTarget
+  type EffectiveProtocol
 } from './routing.js'
 
 export { pickChannel, pickRoute, normalizeWeight } from './routing.js'
@@ -110,28 +110,44 @@ async function targetOf(
 }
 
 /**
- * 解析调用方请求的模型 id：
- *   ① 先查别名映射 —— 命中则在其多个目标间按优先级/权重选一个；
- *   ② 未命中则回退到旧行为：按渠道声明的 models 直通。
+ * 解析调用方请求的模型 id，返回**按尝试顺序排好的候选**。
  *
- * 保留回退是刻意的：不配映射的渠道（如 DeepSeek）应当照旧可用，
- * 映射是增强而不是前置条件。
+ *   ① 先查别名映射 —— 命中则该 alias 的多个目标组成候选序列：
+ *      - 有会话键时：已记录的亲和 > 会话哈希排序（同一会话稳定落到同一渠道）
+ *      - 无会话键时：沿用原有的「优先级层 + 组内权重轮转」
+ *   ② 未命中则回退到旧行为：按渠道声明的 models 直通（单候选）。
+ *
+ * 为什么返回数组：会话粘性一旦成立，第一候选失败就该换下一个渠道 ——
+ * 换目标会丢掉缓存，但总比整轮打不通强。调用方依次尝试即可。
  */
-export async function resolveTarget(
+export interface ResolveOptions {
+  /** 会话哈希（空串 = 不做亲和） */
+  sessionHash?: string
+  /** Redis 里记下的亲和；可能指向已下线/已禁用的目标 */
+  affinity?: AffinityPin | null
+}
+
+export async function resolveTargets(
   model: string,
-  rotation: () => Promise<number>
-): Promise<ResolvedTarget | null> {
+  rotation: () => Promise<number>,
+  opts: ResolveOptions = {}
+): Promise<ResolvedTarget[]> {
   // 只取一次轮转计数，两条路径共用，避免同一请求消耗两个计数
   const round = await rotation()
 
   if (model) {
     const routes = await query<RouteJoin>(ROUTE_SQL, [model])
     if (routes.length > 0) {
-      const picked = pickRoute(routes as unknown as RouteTarget[], round)
-      if (picked) {
-        const row = routes.find((r) => r.id === picked.id)!
-        return await targetOf(toCandidate(row), row.upstream_model, true)
+      const ordered = orderRoutes(
+        routes as OrderableRoute[],
+        round,
+        opts
+      ) as typeof routes
+      const out: ResolvedTarget[] = []
+      for (const row of ordered) {
+        out.push(await targetOf(toCandidate(row), row.upstream_model, true))
       }
+      return out
     }
   }
 
@@ -139,18 +155,18 @@ export async function resolveTarget(
     `select * from channels where status = 'active' order by priority asc, name asc`
   )
   const picked = pickChannel(channels as unknown as ChannelCandidate[], model, round)
-  if (!picked) return null
-  return await targetOf(picked, model, false)
+  if (!picked) return []
+  return [await targetOf(picked, model, false)]
 }
 
 /**
  * Key 绑定了渠道时使用：只在**该渠道内**找映射，不做跨渠道回退。
  * 绑定的语义是「只走这个渠道」，不能被映射绕过。
  */
-export async function resolveBoundTarget(
+export async function resolveBoundTargets(
   channel: ChannelRow,
   model: string
-): Promise<ResolvedTarget> {
+): Promise<ResolvedTarget[]> {
   if (model) {
     const route = await one<ModelRouteRow>(
       `select * from model_routes
@@ -158,10 +174,12 @@ export async function resolveBoundTarget(
       [model, channel.id]
     )
     if (route) {
-      return targetOf(channel as unknown as ChannelCandidate, route.upstream_model, true)
+      return [
+        await targetOf(channel as unknown as ChannelCandidate, route.upstream_model, true)
+      ]
     }
   }
-  return await targetOf(channel as unknown as ChannelCandidate, model, false)
+  return [await targetOf(channel as unknown as ChannelCandidate, model, false)]
 }
 
 export async function getChannelById(id: string): Promise<ChannelRow | null> {

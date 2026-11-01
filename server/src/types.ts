@@ -204,6 +204,8 @@ export interface RequestLogRow {
   ttft_ms: number | null
   client_ip: string
   error: string
+  /** 会话键哈希前 8 位（亲和排查用） */
+  session_hash: string
 }
 
 /** 模型映射对外表示 */

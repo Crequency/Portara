@@ -9,6 +9,7 @@ import {
   type ModelRoute,
   type User
 } from '../api'
+import BalancePanel from '../components/BalancePanel.vue'
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
@@ -25,7 +26,7 @@ const loading = ref(true)
 const testResults = reactive<Record<string, ChannelTestResult | 'loading'>>({})
 
 /** 页内 Tabs：上游渠道 / 模型映射 */
-type PageTab = 'channels' | 'mapping'
+type PageTab = 'channels' | 'mapping' | 'balance'
 const tab = ref<PageTab>('channels')
 
 /** 「测试全部」的进度 */
@@ -512,6 +513,9 @@ onMounted(async () => {
         <button :class="{ on: tab === 'mapping' }" @click="tab = 'mapping'">
           {{ t('mapping.title') }}
         </button>
+        <button :class="{ on: tab === 'balance' }" @click="tab = 'balance'">
+          {{ t('balance.title') }}
+        </button>
       </div>
     </div>
 
@@ -796,6 +800,15 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 负载均衡：一个网关模型 id 扇出到多个渠道 -->
+    <div v-show="tab === 'balance'" class="fill-view view-panel">
+      <BalancePanel
+        :user="user"
+        :channels="channels"
+        @changed="loadRoutes"
+      />
     </div>
   </div>
 

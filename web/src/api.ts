@@ -404,6 +404,8 @@ export interface RequestLog {
   latencyMs: number
   ttftMs: number | null
   clientIp: string
+  /** 会话键哈希前 8 位（会话亲和排查用）；空串 = 本次没有会话键 */
+  sessionHash: string
   error: string
 }
 

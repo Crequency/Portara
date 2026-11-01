@@ -8,6 +8,7 @@ import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
 import {
   COOLDOWN,
   MAX_ACCOUNT_ATTEMPTS,
+  type AccountRow,
   cooldownFor,
   isRetriableStatus,
   markAccountFailure,
@@ -31,10 +32,18 @@ import {
 } from '../services/relay.js'
 import {
   getChannelById,
-  resolveBoundTarget,
-  resolveTarget,
+  resolveBoundTargets,
+  resolveTargets,
   type ResolvedTarget
 } from '../services/router.js'
+import {
+  sessionKeyOf,
+  shortSessionHash,
+  type AffinityPin,
+  type SessionKey
+} from '../services/affinityPure.js'
+import { clearAffinity, getAffinity, setAffinity } from '../services/affinity.js'
+import { env } from '../env.js'
 import type { ApiKeyRow, ChannelRow } from '../types.js'
 
 export const v1Routes = new Hono()
@@ -63,16 +72,23 @@ async function nextAccountRotation(): Promise<number> {
 }
 
 type TargetPick =
-  | { ok: true; target: ResolvedTarget }
+  | { ok: true; targets: ResolvedTarget[]; viaAlias: boolean; affinity: AffinityPin | null }
   | { ok: false; message: string; code: string }
 
 /**
- * 选定「渠道 + 上游模型」。
+ * 选定「渠道 + 上游模型」的**候选序列**。
  *
  * 绑定了渠道的 Key 只在该渠道内解析（可在渠道内命中映射），
  * 未绑定则走全局映射优先、旧逻辑回退。
+ *
+ * 返回数组是为了会话粘性的失败回退：第一候选（亲和/哈希选出的渠道）失败时
+ * 还能顺着候选往下试，而不是直接 502。
  */
-async function selectTarget(key: ApiKeyRow, model: string): Promise<TargetPick> {
+async function selectTargets(
+  key: ApiKeyRow,
+  model: string,
+  session: SessionKey
+): Promise<TargetPick> {
   if (key.channel_id) {
     const bound = await getChannelById(key.channel_id)
     if (!bound) {
@@ -85,11 +101,21 @@ async function selectTarget(key: ApiKeyRow, model: string): Promise<TargetPick> 
         code: 'channel_disabled'
       }
     }
-    return { ok: true, target: await resolveBoundTarget(bound, model) }
+    return {
+      ok: true,
+      targets: await resolveBoundTargets(bound, model),
+      viaAlias: false,
+      affinity: null
+    }
   }
 
-  const target = await resolveTarget(model, nextRotation)
-  if (!target) {
+  // 有会话键才查亲和：没有键就不该「装作有记忆」
+  const affinity = session.hash ? await getAffinity(model, session.hash) : null
+  const targets = await resolveTargets(model, nextRotation, {
+    sessionHash: session.hash,
+    affinity
+  })
+  if (targets.length === 0) {
     return {
       ok: false,
       message: model
@@ -98,7 +124,12 @@ async function selectTarget(key: ApiKeyRow, model: string): Promise<TargetPick> 
       code: 'no_channel'
     }
   }
-  return { ok: true, target }
+  return {
+    ok: true,
+    targets,
+    viaAlias: targets.some((t) => t.viaMapping),
+    affinity
+  }
 }
 
 interface ProxyOptions {
@@ -116,6 +147,16 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   const model = typeof payload?.model === 'string' ? payload.model : ''
   const streamFlag = payload?.stream === true
 
+  /**
+   * 会话键：决定「这个请求该落到哪个渠道/账户」。
+   *
+   * 来自请求体的 `prompt_cache_key`（OpenAI 官方缓存键，客户端会发），
+   * 否则退回「system + 首条 user」的上下文指纹。两者都拿不到就**不做亲和** ——
+   * 靠猜的亲和只会把并发堆到一个渠道上。
+   */
+  const session = sessionKeyOf(payload, { allowContext: env.affinityContext })
+  const sessionHash = shortSessionHash(session.hash)
+
   const baseLog = {
     apiKeyId: key.id,
     apiKeyName: key.name,
@@ -126,7 +167,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     upstreamModel: '',
     path: restPath,
     clientIp: ip,
-    source: 'gateway'
+    source: 'gateway',
+    sessionHash
   }
 
   /**
@@ -196,8 +238,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     })
   }
 
-  // ④ 选路
-  const pick = await selectTarget(key, model)
+  // ④ 选路（会话亲和在这里生效）
+  const pick = await selectTargets(key, model, session)
   if (!pick.ok) {
     return rejectEarly({
       status: 503,
@@ -207,8 +249,9 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       code: pick.code
     })
   }
-  const channel = pick.target.channel
-  const upstreamModel = pick.target.upstreamModel
+  const firstTarget = pick.targets[0]!
+  let channel = firstTarget.channel
+  let upstreamModel = firstTarget.upstreamModel
 
   /*
    * ④.5 「只暴露映射模型」：未命中的映射一律不受理。
@@ -217,7 +260,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    * 渠道上（照旧可用），只有真正要落到开了开关的渠道时才拒绝。
    * 走映射（viaMapping）不受影响 —— 那正是被允许的入口。
    */
-  if (model && channel.hide_unmapped_models && !pick.target.viaMapping) {
+  if (model && channel.hide_unmapped_models && !firstTarget.viaMapping) {
     return rejectEarly({
       status: 404,
       logError: `模型 ${model} 未映射（渠道 ${channel.name} 仅暴露映射模型）`,
@@ -226,143 +269,183 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       code: 'model_not_found'
     })
   }
-  // ⑤ 上游账户：取优先级最高、按权重轮转到的那个
-  const candidates = await pickAccounts(channel.id, await nextAccountRotation())
-  if (candidates.length === 0) {
-    return rejectEarly({
-      status: 503,
-      logError: '该渠道没有可用的上游账户',
-      message: `渠道「${channel.name}」没有可用的上游账户`,
-      type: 'api_error',
-      code: 'no_account'
-    })
-  }
-  // ⑥ 命中模型映射时，把网关受理的 model 改写成上游真实 model
-  let outPayload: Record<string, unknown> | null = payload
-  if (payload && upstreamModel && upstreamModel !== model) {
-    outPayload = { ...payload, model: upstreamModel }
-  }
-
-  // ⑦ 规划上游请求：协议决定路径与请求体形态。
-  //    与账户无关 —— 账户只换认证头，所以规划在循环外做一次。
-  const plan = planUpstreamRequest({
-    channel: channel as unknown as Parameters<typeof planUpstreamRequest>[0]['channel'],
-    upstreamModel,
-    restPath,
-    payload: outPayload,
-    rawBody: raw,
-    injectStreamUsage: opts.scanUsage,
-    // 命中映射时改写过 model —— 必须重新序列化，否则会把原始模型名发出去
-    payloadRewritten: upstreamModel !== model
-  })
-
-  if (plan.warnings.length > 0) {
-    console.warn(
-      `[portara] OpenAI→Anthropic 翻译提示（${channel.name}）：${plan.warnings.join('；')}`
-    )
-  }
-
-  const url = plan.url
-  const protocol = plan.protocol
-  // 客户端断开 或 上游超时 —— 任一触发都会取消上游请求（避免幽灵计费）。
-  // 这是**整体预算**：故障转移的多次尝试共用它，不会因为换号而翻倍。
-  const signal = AbortSignal.any([
-    c.req.raw.signal,
-    AbortSignal.timeout(channel.timeout_ms)
-  ])
-
-  /**
-   * ⑤ 上游账户 + 故障转移。
+  /*
+   * ⑤ 上游账户 + 故障转移（双层：先换号，再换渠道）。
    *
-   * 只换认证头重放请求体（`plan.bodyText` 是字符串，天然可重放）。
-   * 三条约束：
-   *   ① 可重试才换号 —— 400/404 这类换号也一样失败，直接透传上游原文；
-   *   ② 客户端断开或整体超时就停 —— 再换号只会拖长响应；
+   * 外层 = 候选渠道（别名映射的多个目标，已按会话亲和/哈希排好序），
+   * 内层 = 该渠道的账户（优先级梯队 + 权重轮转）。
+   *
+   * 三条约束照旧：
+   *   ① 可重试才换 —— 400/404 换号换渠道都一样失败，直接透传上游原文；
+   *   ② 客户端断开或整体超时就停 —— 再换只会拖长响应；
    *   ③ 有上限 —— 否则一个坏请求会打穿所有账户并把它们全打进冷却。
+   *
+   * 换渠道有额外代价：会话粘性断了，上游前缀缓存下一次要重建。
+   * 所以渠道上限默认只有 2（`PORTARA_MAX_CHANNEL_ATTEMPTS`），
+   * 且换成功之后要**把亲和改写到新渠道**，避免下一轮又打回坏渠道。
    */
-  let account = candidates[0]!
+  let account: AccountRow | null = null
   let upstreamHeaders: ReturnType<typeof buildUpstreamHeaders> | null = null
   let res: Response | null = null
   let lastUpstreamError: Response | null = null
   let lastFailure = ''
-  const attemptLimit = Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length)
+  let plan: ReturnType<typeof planUpstreamRequest> | null = null
+  let url = ''
+  let protocol: 'openai' | 'anthropic' = 'openai'
+  let signal: AbortSignal = c.req.raw.signal
+  /** 亲和命中的目标是否被换掉了 —— 换掉就要改写 Redis 里的记录 */
+  let affinityDrifted = false
 
-  for (const candidate of candidates.slice(0, attemptLimit)) {
-    const key = tryDecryptKey(candidate.key_cipher)
-    if (key === null) {
-      lastFailure = `账户「${candidate.name}」的密钥无法解密`
-      await markAccountFailure(candidate.id, lastFailure, COOLDOWN.auth)
+  const channelLimit = Math.min(env.maxChannelAttempts, pick.targets.length)
+
+  for (const target of pick.targets.slice(0, channelLimit)) {
+    channel = target.channel
+    upstreamModel = target.upstreamModel
+
+    // 每个渠道的协议/Base URL 都可能不同（混杂模式 + 逐模型覆盖），plan 必须逐渠道算
+    let outPayload: Record<string, unknown> | null = payload
+    if (payload && upstreamModel && upstreamModel !== model) {
+      outPayload = { ...payload, model: upstreamModel }
+    }
+    plan = planUpstreamRequest({
+      channel: channel as unknown as Parameters<typeof planUpstreamRequest>[0]['channel'],
+      upstreamModel,
+      restPath,
+      payload: outPayload,
+      rawBody: raw,
+      injectStreamUsage: opts.scanUsage,
+      payloadRewritten: upstreamModel !== model
+    })
+    if (plan.warnings.length > 0) {
+      console.warn(
+        `[portara] 协议翻译提示（${channel.name}）：${plan.warnings.join('；')}`
+      )
+    }
+    url = plan.url
+    protocol = plan.protocol
+    // 整体预算：多次尝试共用，不因换号/换渠道而翻倍
+    signal = AbortSignal.any([
+      c.req.raw.signal,
+      AbortSignal.timeout(channel.timeout_ms)
+    ])
+
+    // 会话亲和：同一会话优先回到它上次用的账户（缓存按账户计）
+    const preferAccountId =
+      session.hash && pick.affinity?.channelId === channel.id
+        ? (pick.affinity?.accountId ?? '')
+        : ''
+    const candidates = await pickAccounts(channel.id, await nextAccountRotation(), {
+      preferId: preferAccountId || undefined
+    })
+    if (candidates.length === 0) {
+      lastFailure = `渠道「${channel.name}」没有可用的上游账户`
       continue
     }
 
-    const headers = buildUpstreamHeaders(
-      key,
-      c.req.header('content-type') ?? 'application/json',
-      {
-        // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
-        extraHeaders: channel.extra_headers ?? {},
-        vendor: channel.vendor ?? 'generic',
-        protocol: plan.protocol,
-        channelId: channel.id,
-        payload,
-        contentEncoding: c.req.header('content-encoding')
+    const attemptLimit = Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length)
+    for (const candidate of candidates.slice(0, attemptLimit)) {
+      const upstreamKey = tryDecryptKey(candidate.key_cipher)
+      if (upstreamKey === null) {
+        lastFailure = `账户「${candidate.name}」的密钥无法解密`
+        await markAccountFailure(candidate.id, lastFailure, COOLDOWN.auth)
+        continue
       }
-    )
 
-    try {
-      const attempt = await upstreamFetch(
-        url,
-        { method: c.req.method, headers: headers.headers, body: plan.bodyText, signal },
-        pick.target.proxy
+      const headers = buildUpstreamHeaders(
+        upstreamKey,
+        c.req.header('content-type') ?? 'application/json',
+        {
+          // 渠道级请求头必须在网关路径同样生效，否则「能测通却转发失败」
+          extraHeaders: channel.extra_headers ?? {},
+          vendor: channel.vendor ?? 'generic',
+          protocol: plan.protocol,
+          channelId: channel.id,
+          payload,
+          contentEncoding: c.req.header('content-encoding')
+        }
       )
-      account = candidate
-      upstreamHeaders = headers
 
-      if (attempt.ok) {
-        await markAccountSuccess(candidate.id)
-        res = attempt
-        break
+      try {
+        const attempt = await upstreamFetch(
+          url,
+          { method: c.req.method, headers: headers.headers, body: plan.bodyText, signal },
+          target.proxy
+        )
+        account = candidate
+        upstreamHeaders = headers
+
+        if (attempt.ok) {
+          await markAccountSuccess(candidate.id)
+          res = attempt
+          break
+        }
+        if (!isRetriableStatus(attempt.status)) {
+          // 换号也没用：把上游原文原样交给后续处理
+          res = attempt
+          break
+        }
+
+        // 可重试：留下原文（全部失败时给客户端看这个，比网关自造的 502 有用）
+        const text = await attempt.text()
+        lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
+        const retryAfter = Number(attempt.headers.get('retry-after'))
+        await markAccountFailure(
+          candidate.id,
+          lastFailure,
+          cooldownFor(attempt.status, Number.isFinite(retryAfter) ? retryAfter : null)
+        )
+        lastUpstreamError = new Response(text, {
+          status: attempt.status,
+          headers: { 'content-type': attempt.headers.get('content-type') ?? 'application/json' }
+        })
+      } catch (err) {
+        const clientGone = c.req.raw.signal.aborted
+        const timedOut = !clientGone && signal.aborted
+        lastFailure = clientGone
+          ? '客户端已断开'
+          : timedOut
+            ? `上游响应超时（${channel.timeout_ms}ms）`
+            : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
+
+        await markAccountFailure(candidate.id, lastFailure, COOLDOWN.upstream)
+        // 客户端没了 / 整体预算耗尽 —— 换号没有意义
+        if (clientGone || timedOut) break
       }
-      if (!isRetriableStatus(attempt.status)) {
-        // 换号也没用：把上游原文原样交给后续处理
-        res = attempt
-        break
-      }
-
-      // 可重试：留下原文（全部失败时给客户端看这个，比网关自造的 502 有用）
-      const text = await attempt.text()
-      lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
-      const retryAfter = Number(attempt.headers.get('retry-after'))
-      await markAccountFailure(
-        candidate.id,
-        lastFailure,
-        cooldownFor(attempt.status, Number.isFinite(retryAfter) ? retryAfter : null)
-      )
-      lastUpstreamError = new Response(text, {
-        status: attempt.status,
-        headers: { 'content-type': attempt.headers.get('content-type') ?? 'application/json' }
-      })
-    } catch (err) {
-      const clientGone = c.req.raw.signal.aborted
-      const timedOut = !clientGone && signal.aborted
-      lastFailure = clientGone
-        ? '客户端已断开'
-        : timedOut
-          ? `上游响应超时（${channel.timeout_ms}ms）`
-          : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
-
-      await markAccountFailure(candidate.id, lastFailure, COOLDOWN.upstream)
-      // 客户端没了 / 整体预算耗尽 —— 换号没有意义
-      if (clientGone || timedOut) break
     }
+
+    if (res) break
+    // 这个渠道整层失败 → 换下一个候选渠道（若有）
+    if (pick.targets.indexOf(target) < channelLimit - 1) affinityDrifted = true
+  }
+
+  /*
+   * 会话亲和的落账。
+   *
+   * 只在**真正拿到响应**且是走映射的多目标场景才写：
+   *   - 响应失败（504/上游全挂）时写亲和没有意义，下一次自然会重选
+   *   - 单渠道（无别名）不需要渠道亲和，但账户亲和仍有用，所以照写
+   * `affinityDrifted` 时直接覆盖（旧记录指向已失败的渠道，留着会一直打回坏目标）。
+   */
+  if (session.hash && res && account) {
+    const pin: AffinityPin = { channelId: channel.id, accountId: account.id }
+    const changed =
+      !pick.affinity ||
+      pick.affinity.channelId !== pin.channelId ||
+      pick.affinity.accountId !== pin.accountId
+    if (changed || affinityDrifted) {
+      await setAffinity(model, session.hash, pin, env.affinityTtlSeconds)
+    }
+  } else if (session.hash && !res) {
+    // 这一轮彻底失败：清掉亲和，下一轮重新按哈希挑（避免一直粘在坏目标上）
+    await clearAffinity(model, session.hash)
   }
 
   const logCtx = {
     ...baseLog,
     channelId: channel.id,
     channelName: channel.name,
-    accountId: account.id,
-    accountName: account.name,
+    accountId: account?.id ?? null,
+    accountName: account?.name ?? '',
     upstreamModel
   }
 

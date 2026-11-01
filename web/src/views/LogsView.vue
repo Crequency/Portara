@@ -100,6 +100,7 @@ onMounted(load)
             <th>{{ t('logs.tokens') }}</th>
             <th>{{ t('logs.timing') }}</th>
             <th>{{ t('logs.ip') }}</th>
+            <th :title="t('logs.sessionHint')">{{ t('logs.session') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -132,9 +133,14 @@ onMounted(load)
                 {{ formatLatency(log.latencyMs) }}
               </td>
               <td class="mono dim">{{ log.clientIp }}</td>
+              <!--
+                会话哈希（前 8 位）：用来核对「同一会话是不是一直落在同一渠道」。
+                空 = 本次请求没有会话键（未启用亲和）。
+              -->
+              <td class="mono dim">{{ log.sessionHash || '—' }}</td>
             </tr>
             <tr v-if="log.error">
-              <td colspan="9" class="err-text" style="padding-top: 0">↳ {{ log.error }}</td>
+              <td colspan="10" class="err-text" style="padding-top: 0">↳ {{ log.error }}</td>
             </tr>
           </template>
         </tbody>

@@ -1488,3 +1488,118 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   width: 34px;
   min-width: 34px;
 }
+
+/* ---------------------------------------------------------------- 负载均衡 */
+
+/* 别名标题：等宽字，长 id 可截断 */
+.bal-alias {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 460px;
+}
+
+/*
+ * 节点图画布。
+ *
+ * 宽度用 viewBox + 100%，高度由行数算出来（SVG 里不能靠 flex 自动撑高）。
+ * overflow-x 允许横向滚动而不是压缩节点 —— 目标多时节点被挤扁就没法读了。
+ */
+.bal-graph { width: 100%; overflow-x: auto; padding: 4px 0 2px; }
+/*
+ * 上限 860px：超宽屏把三个节点拉成一米宽只会更难读；
+ * 窄屏则允许横向滚动，而不是把节点压扁到文字放不下。
+ */
+.bal-graph svg { display: block; width: 100%; min-width: 620px; max-width: 860px; }
+
+.bal-node {
+  fill: var(--bg-elev-2);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.bal-node-src {
+  fill: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-2));
+  stroke: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+}
+.bal-node-dst.is-off {
+  stroke: color-mix(in srgb, var(--danger) 55%, var(--border-strong));
+  fill: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
+}
+
+.bal-src-label {
+  font-size: 10.5px;
+  fill: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.bal-src-id { font-size: 12.5px; fill: var(--text); font-family: var(--mono); }
+.bal-dst-channel { font-size: 12.5px; fill: var(--text); font-weight: 560; }
+.bal-dst-model { font-size: 11.5px; fill: var(--text-dim); font-family: var(--mono); }
+
+/* 连线：默认强调色；备用梯队（priority 更大）用虚线 + 淡色，避免误读成同一层 */
+.bal-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 65%, transparent);
+  transition: stroke 0.12s ease, opacity 0.12s ease;
+}
+.bal-edge.is-tier2 {
+  stroke: color-mix(in srgb, var(--text-faint) 70%, transparent);
+  stroke-dasharray: 5 4;
+}
+.bal-graph:hover .bal-edge { opacity: 0.55; }
+.bal-graph .bal-edge:hover { opacity: 1; stroke: var(--accent); }
+.bal-target { cursor: pointer; }
+.bal-target:hover .bal-node-dst { stroke: var(--accent); }
+
+.bal-weight-bg { fill: color-mix(in srgb, var(--text) 12%, transparent); }
+.bal-weight { font-size: 10.5px; fill: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.bal-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  padding: 0 2px 4px;
+}
+.bal-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.bal-legend-line {
+  width: 22px;
+  height: 0;
+  border-top: 2.5px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  border-radius: 2px;
+}
+.bal-legend-line.is-tier2 { border-top-style: dashed; border-top-color: var(--text-faint); }
+
+/* 目标编辑行：渠道 | 上游模型 | 优先级 | 权重 | 删除 */
+.bal-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(160px, 1.4fr) 96px 88px 34px;
+  gap: 8px;
+  align-items: center;
+}
+.bal-row .bal-num { text-align: center; }
+.bal-row-head {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(160px, 1.4fr) 96px 88px 34px;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+/* 负载均衡卡片头：整行可点（折叠/展开），所以要有可点的视觉暗示 */
+.bal-card-head { cursor: pointer; user-select: none; }
+.bal-card-head:hover .bal-alias { color: var(--accent); }
+.bal-collapsed {
+  font-size: 11.5px;
+  padding: 2px 2px 6px 24px;
+}
+/* 开关态的次级按钮（「显示全部」） */
+.btn.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}

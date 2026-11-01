@@ -23,6 +23,8 @@ export interface LogInput {
   error: string
   /** 请求来源：gateway（经网关）/ playground（对话测试页直连） */
   source: string
+  /** 会话键哈希前 8 位（亲和排查用）；空串 = 无会话键 */
+  sessionHash?: string
 }
 
 /**
@@ -35,8 +37,8 @@ export async function writeLog(input: LogInput): Promise<void> {
        (api_key_id, api_key_name, channel_id, channel_name, account_id, account_name,
         model, upstream_model, path,
         status_code, prompt_tokens, completion_tokens, total_tokens, estimated,
-        latency_ms, ttft_ms, client_ip, error, source)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        latency_ms, ttft_ms, client_ip, error, source, session_hash)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
     [
       input.apiKeyId,
       input.apiKeyName,
@@ -56,7 +58,8 @@ export async function writeLog(input: LogInput): Promise<void> {
       input.ttftMs,
       input.clientIp,
       input.error.slice(0, 500),
-      input.source
+      input.source,
+      input.sessionHash ?? ''
     ]
   )
 

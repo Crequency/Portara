@@ -81,6 +81,8 @@ logRoutes.get('/logs', async (c) => {
       latencyMs: r.latency_ms,
       ttftMs: r.ttft_ms,
       clientIp: r.client_ip,
+      // 会话键哈希（前 8 位）—— 用来核对「同一会话是否落在同一渠道」
+      sessionHash: r.session_hash,
       error: r.error
     }))
   })

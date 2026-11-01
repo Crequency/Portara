@@ -68,8 +68,39 @@ function loadSessionSecret(): string {
   return raw
 }
 
+/**
+ * 会话亲和的 TTL（秒）。
+ *
+ * 取值对齐上游前缀缓存的存活窗口：太短等于没记住，太长会让「渠道恢复后
+ * 也回不去」以及 Redis 里堆积无用键。默认 30 分钟。
+ */
+const affinityTtlSeconds = num(process.env.PORTARA_AFFINITY_TTL_SECONDS, 1800)
+
+/**
+ * 一次请求最多尝试几个**渠道**（别名映射的多个目标）。
+ *
+ * 与账户上限分开：账户上限管「同一个渠道换号」，这个管「换到下一个渠道」。
+ * 会话粘性一旦失败，换渠道会丢缓存，所以默认只多试一个（2 个渠道封顶）。
+ */
+const maxChannelAttempts = Math.max(1, Number(process.env.PORTARA_MAX_CHANNEL_ATTEMPTS ?? 2))
+
+/**
+ * 是否允许用「上下文指纹」做会话亲和。
+ *
+ * **默认关闭**，只认客户端显式给的 `prompt_cache_key`。
+ *
+ * 原因（本分支实测踩到）：指纹取自「system + 首条 user」，
+ * 于是「固定系统提示 + 相同首条消息」的所有调用（探活、模板化调用）
+ * 会被判成同一个会话 → 全部钉死在一个渠道上，加权轮转与负载均衡同时失效。
+ * 显式键没有这个问题，因为它天然带会话身份。
+ */
+const affinityContext = process.env.PORTARA_AFFINITY_CONTEXT === 'true'
+
 export const env = {
   port: num(process.env.PORTARA_PORT, 52740),
+  affinityTtlSeconds,
+  maxChannelAttempts,
+  affinityContext,
   host: process.env.PORTARA_HOST ?? '0.0.0.0',
 
   databaseUrl:

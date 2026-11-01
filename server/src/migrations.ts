@@ -423,5 +423,17 @@ export const migrations: { id: string; sql: string }[] = [
       alter table channels
         add column if not exists hide_unmapped_models boolean not null default false;
     `
+  },
+  {
+    id: '018_request_log_session_hash',
+    sql: `
+      -- 会话亲和的排查字段。
+      --
+      -- 只存哈希的**前 8 位**：够用来核对「这些请求是不是同一个会话」，
+      -- 又不至于让人反推出客户端原始会话键（那可能是 prompt_cache_key）。
+      -- 空串 = 本次没有可用的会话键（未启用亲和）。
+      alter table request_logs
+        add column if not exists session_hash text not null default '';
+    `
   }
 ]
