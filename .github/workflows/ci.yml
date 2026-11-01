@@ -1,0 +1,125 @@
+# Portara · 最小可用 CI
+#
+# 目标只有一件事：在 GitHub Actions 上把四条验收命令跑通
+#   typecheck → build → test → smoke
+# 不含任何部署 / 发布步骤。
+#
+# 为什么不需要 docker compose：
+#   冒烟测试（scripts/smoke.mjs）自带伪上游与伪正向代理（纯 node:http，不连外网），
+#   并在前台自己拉起被测服务（node server/dist/index.js）。它只需要外部提供 PG 与 Redis，
+#   这里用 workflow 的 services 起。
+#
+# 冒烟的两条硬约束（见 scripts/smoke.mjs）：
+#   1. 必须先 pnpm build —— 它 spawn 的是构建产物 server/dist/index.js，不是 tsx 直跑源码。
+#   2. schema 名必须含 "smoke" —— 脚本第 104 行有防呆守卫，防止破坏性用例误伤开发/生产数据。
+#      故 PORTARA_DB_SCHEMA / SMOKE_DB_SCHEMA 统一取 "smoke"。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支的新推送取消上一轮，避免排队烧 runner
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (typecheck → build → test → smoke)
+    runs-on: ubuntu-latest
+    # 冒烟跑完整链路（含真实服务进程与伪上游），给足余量
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          # 与 docker-compose.yml 的本地开发值保持一致
+          POSTGRES_USER: portara
+          POSTGRES_PASSWORD: portara
+          POSTGRES_DB: portara
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U portara -d portara"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
+    env:
+      # ---- 依赖：services 容器映射到 runner 的 127.0.0.1 ----
+      DATABASE_URL: postgres://portara:portara@127.0.0.1:5432/portara
+      REDIS_URL: redis://127.0.0.1:6379
+
+      # ---- 冒烟隔离：schema 名必须含 "smoke"，否则脚本直接退出 ----
+      PORTARA_DB_SCHEMA: smoke
+      SMOKE_DB_SCHEMA: smoke
+
+      # ---- 应用配置：全部是一次性假值，不是任何真实凭据 ----
+      # 32 字节全 0 的 base64（env.ts 要求解出恰好 32 字节）
+      PORTARA_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      PORTARA_SESSION_SECRET: ci-only-session-secret-not-real
+      PORTARA_ADMIN_USERNAME: admin
+      PORTARA_ADMIN_PASSWORD: ci-admin-password
+      PORTARA_COOKIE_SECURE: "false"
+      # 下面两个只是默认值来源；冒烟脚本会用自己的空闲端口覆盖它们
+      # （见 scripts/smoke.mjs 的 startServer：PORTARA_PORT / PORTARA_HOST 均显式重设）
+      PORTARA_PORT: "52740"
+      PORTARA_HOST: 127.0.0.1
+      # 冒烟的服务端口起点；伪上游 / 伪代理端口由脚本在其后自动探测空闲端口
+      SMOKE_API_PORT: "52750"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pnpm/action-setup 必须在 setup-node 之前，后者才能用 cache: pnpm
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # 不写 version，由 action 读 package.json 的 packageManager（当前 pnpm@11.25.0）。
+        # 这是唯一真源：显式写 version 时，一旦与 packageManager 不一致，
+        # action-setup v4 会直接报 "Multiple versions of pnpm specified" 并失败。
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # 22.x 最新即可（当前为 22.23.4）。
+          # 实际下限由依赖抬到 >= 22.19.0（undici@8）/ >= 22.13（pnpm@11.25），
+          # 均高于根 package.json 声明的 >= 22.12 —— 取 22 大版本不会踩到。
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # 注意：build 会先跑 pnpm brand，重新生成 web/public/favicon.svg。
+      # 仓库里的该文件若与 web/src/logo.json 同步，构建后 worktree 不变；
+      # 若不同步，这里不会失败，只是产物与提交的 favicon 有差异（无碍 CI 通过）。
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+      # 冒烟：真实起服务 + 伪上游，覆盖登录→建渠道→派 Key→转发→限流→配额→映射
+      - name: Smoke tests
+        run: pnpm smoke
