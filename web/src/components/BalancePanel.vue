@@ -18,6 +18,7 @@ import {
 } from '../api'
 import BalanceGraph, { type BalanceTarget } from './BalanceGraph.vue'
 import Modal from './Modal.vue'
+import PCombobox from './PCombobox.vue'
 import PInfo from './PInfo.vue'
 import PSelect from './PSelect.vue'
 import { toastError } from '../error'
@@ -380,6 +381,15 @@ defineExpose({ load })
             <button class="btn btn-sm" @click="addRow">＋ {{ t('balance.addTarget') }}</button>
           </div>
 
+          <!-- 列标题必须在行**上方**：放在下面会读成"上一行的小结" -->
+          <div class="bal-row-head">
+            <span>{{ t('balance.colChannel') }}</span>
+            <span>{{ t('balance.colUpstream') }}</span>
+            <span>{{ t('channels.priority') }}</span>
+            <span>{{ t('channels.weight') }}</span>
+            <span />
+          </div>
+
           <div class="stack" style="gap: 8px">
             <div
               v-for="(row, i) in targetForms"
@@ -391,14 +401,16 @@ defineExpose({ load })
                 :options="channelOptions"
                 :placeholder="t('balance.pickChannel')"
               />
-              <input
+              <!--
+                上游模型用可输入下拉（PCombobox）而不是裸 input：
+                渠道声明的模型直接可点选，列表不全时仍能手输 ——
+                映射不要求渠道声明过该模型（上游可能临时上架）。
+              -->
+              <PCombobox
                 v-model="row.upstreamModel"
+                :options="modelOptions(row.channelId)"
                 :placeholder="t('balance.upstreamModel')"
-                :list="'bal-models-' + i"
               />
-              <datalist :id="'bal-models-' + i">
-                <option v-for="m in modelOptions(row.channelId)" :key="m" :value="m" />
-              </datalist>
               <input
                 v-model.number="row.priority"
                 type="number"
@@ -424,13 +436,6 @@ defineExpose({ load })
             </div>
           </div>
 
-          <div class="bal-row-head">
-            <span>{{ t('balance.colChannel') }}</span>
-            <span>{{ t('balance.colUpstream') }}</span>
-            <span>{{ t('channels.priority') }}</span>
-            <span>{{ t('channels.weight') }}</span>
-            <span />
-          </div>
           <span class="hint">{{ t('balance.targetsHint') }}</span>
         </div>
       </div>
