@@ -156,6 +156,9 @@ a { color: var(--accent); text-decoration: none; }
   gap: 16px;
   flex-wrap: wrap;
   min-height: 58px;
+  /* 顶栏常驻：不许被内容区挤压。缺这一行时，内容最高的页面（模型映射）
+     会把 .main 撑高，浏览器从 .topbar 收回 4.4px —— 表现为顶栏变矮、整页上移。 */
+  flex: 0 0 auto;
   padding: 9px 22px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-sidebar) 88%, transparent);
@@ -232,7 +235,9 @@ a { color: var(--accent); text-decoration: none; }
   min-height: 0;
 }
 .view-tabbar { flex: 0 0 auto; margin-bottom: 12px; }
-.view-panel { flex: 1 1 auto; min-height: 0; height: auto; }
+/* 面板高度取「剩余空间」而不是「内容高度」：flex-basis 用 0 才不会让
+   内容量反向决定容器高度（否则内容多的面板会撑高外层、连带压矮顶栏）。 */
+.view-panel { flex: 1 1 0; min-height: 0; height: auto; }
 
 /* 面板内非表格结构的滚动区（如按前缀分组的映射列表） */
 .fill-view .fill-scroll,
@@ -1624,6 +1629,13 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   fill: none;
   stroke: color-mix(in srgb, var(--text-faint) 55%, transparent);
   stroke-width: 1;
+}
+
+/* 打满账户的连线也标红并虚化，避免红节点挂在一条灰线上显得割裂 */
+.bal-acct-edge.is-bad {
+  stroke: var(--danger);
+  stroke-opacity: 0.55;
+  stroke-dasharray: 4 3;
 }
 
 /* 窗口打满：描边 / 文字 / 圆点全部用危险色，并在节点上留短标记 */

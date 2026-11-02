@@ -287,6 +287,7 @@ function onLeave(): void {
         <template v-for="(account, i) in p.accounts" :key="account.id">
           <path
             class="bal-acct-edge"
+            :class="{ 'is-bad': isExhausted(p.tg, account) }"
             :d="accountPath(p.nodeY, p.accTop + i * (ACC_H + ACC_GAP))"
           />
           <g
