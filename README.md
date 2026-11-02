@@ -85,7 +85,7 @@ Other `/v1/*` paths pass through the same authentication, rate limiting and acco
 
 [AGPL-3.0](LICENSE). Running a modified copy as a network service requires offering its complete corresponding source.
 
-Copyright © 2025-2026 Crequency Open Source Organization （云矩创频开源组织）
+Copyright © 2025-2026 Crequency Open Source Organization (云矩创频开源组织)
 
 ## Star History
 
