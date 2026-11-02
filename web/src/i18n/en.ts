@@ -678,7 +678,11 @@ export const en = {
     collapsed: 'collapsed · {n} targets (click the title to expand)',
     filteredEmpty: 'No multi-target balancers yet ({n} single-target mappings hidden — press "Show all")',
     legendWeight: 'thickness = weight',
-    legendFallback: 'dashed = fallback tier'
+    legendFallback: 'dashed = fallback tier',
+    legendAccounts: 'right column = channel accounts',
+    legendExhausted: 'red = this account\'s usage window is exhausted',
+    legendCooling: 'dashed grey = account cooling down',
+    windowExhaustedTag: 'window full'
   },
   mapping: {
     title: 'Model mapping',

@@ -275,6 +275,12 @@ export interface ChannelAccount {
   usageUrl: string
   /** 冷却截止时间；非空表示当前不可用 */
   cooldownUntil: string | null
+  /** 用量/余额已耗尽（迁移 019 的硬事实列） */
+  quotaExhausted: boolean
+  quotaCheckedAt: string | null
+  /** 任意用量窗口已打满；只有上游/适配器检查过才可能为 true */
+  windowExhausted: boolean
+  windowCheckedAt: string | null
   lastError: string
   consecutiveFailures: number
   lastUsedAt: string | null

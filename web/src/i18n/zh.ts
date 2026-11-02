@@ -678,7 +678,11 @@ export const zh = {
     collapsed: '已折叠 · {n} 个目标（点击标题展开）',
     filteredEmpty: '没有多目标的负载均衡配置（还有 {n} 个单目标映射，点「显示全部」查看）',
     legendWeight: '粗细 = 权重',
-    legendFallback: '虚线 = 备用梯队'
+    legendFallback: '虚线 = 备用梯队',
+    legendAccounts: '右侧 = 渠道账户',
+    legendExhausted: '红色 = 该账户用量窗口已打满',
+    legendCooling: '灰色虚线 = 账户冷却中',
+    windowExhaustedTag: '窗口打满'
   },
   mapping: {
     title: '模型映射',

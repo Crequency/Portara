@@ -13,6 +13,7 @@ import { computed, onMounted, ref } from 'vue'
 import {
   api,
   type Channel,
+  type ChannelAccount,
   type ModelRoute,
   type User
 } from '../api'
@@ -32,6 +33,13 @@ const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
 
 const routes = ref<ModelRoute[]>([])
+/**
+ * 渠道账户缓存：channelId → 账户列表。
+ *
+ * 账户是「窗口打满」红标的唯一事实来源；拉不到就整个键缺席，
+ * 图里该渠道不画账户列（退回两列），不影响页面其余部分。
+ */
+const accountsByChannel = ref<Map<string, ChannelAccount[]>>(new Map())
 const loading = ref(true)
 const search = ref('')
 /**
@@ -46,11 +54,37 @@ const expanded = ref<Set<string>>(new Set())
 const saving = ref(false)
 const isAdmin = computed(() => props.user?.role === 'admin')
 
+/**
+ * 并行拉全部相关渠道的账户。
+ *
+ * 单个渠道失败只让该渠道"没有账户信息"，不抛错、不 toast、不打 console：
+ * 负载均衡主图（routes）已经成功时，账户只是锦上添花。
+ */
+async function loadAccounts(channelIds: string[]): Promise<void> {
+  const results = await Promise.all(
+    channelIds.map(async (id) => {
+      try {
+        const res = await api.get<{ accounts: ChannelAccount[] }>(`/api/channels/${id}/accounts`)
+        return [id, Array.isArray(res.accounts) ? res.accounts : []] as const
+      } catch {
+        return [id, null] as const
+      }
+    })
+  )
+  const next = new Map<string, ChannelAccount[]>()
+  for (const [id, accounts] of results) {
+    if (accounts && accounts.length > 0) next.set(id, accounts)
+  }
+  accountsByChannel.value = next
+}
+
 async function load(): Promise<void> {
   loading.value = true
   try {
     const res = await api.get<{ routes: ModelRoute[] }>('/api/model-routes')
     routes.value = res.routes
+    // 每次 load 都重拉账户：优先级/窗口状态变了，图要跟着变
+    await loadAccounts([...new Set(res.routes.map((r) => r.channelId))])
   } catch {
     toast.error(t('mapping.loadFailed'))
   } finally {
@@ -60,6 +94,7 @@ async function load(): Promise<void> {
 
 /** 按别名分组，并算出该组的优先级梯队数（>1 说明有备用渠道） */
 const groups = computed(() => {
+  const channelById = new Map(props.channels.map((c) => [c.id, c]))
   const map = new Map<string, ModelRoute[]>()
   for (const r of routes.value) {
     const list = map.get(r.alias) ?? []
@@ -77,7 +112,19 @@ const groups = computed(() => {
           channelStatus: r.channelStatus ?? 'active',
           upstreamModel: r.upstreamModel,
           priority: r.priority,
-          weight: r.weight
+          weight: r.weight,
+          channelUsageAdapter: channelById.get(r.channelId)?.usageAdapter ?? '',
+          accounts: (accountsByChannel.value.get(r.channelId) ?? []).map((a) => ({
+            id: a.id,
+            name: a.name,
+            priority: a.priority,
+            weight: a.weight,
+            status: a.status,
+            usageAdapter: a.usageAdapter ?? '',
+            cooldownUntil: a.cooldownUntil ?? null,
+            windowExhausted: Boolean(a.windowExhausted),
+            windowCheckedAt: a.windowCheckedAt ?? null
+          }))
         }))
       const tierCount = new Set(targets.map((tg) => tg.priority)).size
       return { alias, targets, tierCount }
@@ -270,7 +317,7 @@ defineExpose({ load })
 <template>
   <div class="stack" style="min-height: 0">
     <div class="card">
-      <div class="card-head">
+      <div class="card-head panel-head">
         <div>
           <div class="card-title">{{ t('balance.title') }}</div>
           <div class="dim" style="font-size: 12px">{{ t('balance.sub') }}</div>

@@ -520,7 +520,7 @@ onMounted(async () => {
     </div>
 
     <div v-show="tab === 'channels'" class="card fill-view view-panel">
-      <div class="card-head">
+      <div class="card-head panel-head">
         <div>
           <div class="card-title">{{ t('nav.channels') }}</div>
           <div class="dim" style="font-size: 12px">{{ t('channels.hint') }}</div>
@@ -674,7 +674,7 @@ onMounted(async () => {
     </div>
 
     <div v-show="tab === 'mapping'" class="card fill-view view-panel">
-      <div class="card-head">
+      <div class="card-head panel-head">
         <div>
           <div class="card-title">{{ t('mapping.title') }}</div>
           <div class="dim" style="font-size: 12px">{{ t('mapping.sub') }}</div>

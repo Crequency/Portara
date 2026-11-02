@@ -377,6 +377,37 @@ table .col-center { text-align: center; }
   flex-wrap: wrap;
 }
 
+/*
+ * 渠道页三个子页（上游渠道 / 模型映射 / 负载均衡）的顶栏。
+ *
+ * 三个页签按钮数量不同（3 / 6 / 6），原来的 flex-wrap: wrap 让「模型映射」
+ * 在中等视口折成两行，顶栏就比另外两个高一截。这里统一：
+ *   - 永远单行（nowrap），高度由 min-height 兜到同一个值；
+ *   - 右侧按钮组不收缩、不换行，放不下时横向滚动（不裁切、不叠高）；
+ *   - 标题块允许收缩，长副标题省略而不是把按钮挤下去。
+ */
+.panel-head {
+  flex-wrap: nowrap;
+  align-items: center;
+  min-height: 56px;
+}
+.panel-head > :first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.panel-head :is(.row, .row-wrap) {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.panel-head :is(.row, .row-wrap)::-webkit-scrollbar { display: none; }
+/* 按钮不参与收缩：flex 默认 shrink 会把文字挤成两行，顶栏又变高 */
+.panel-head :is(.row, .row-wrap) > * { flex: 0 0 auto; }
+.panel-head .btn { white-space: nowrap; }
+
 .card-title { font-weight: 620; font-size: 14.5px; }
 
 .grid { display: grid; gap: 14px; min-width: 0; }
@@ -1573,6 +1604,53 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   border-radius: 2px;
 }
 .bal-legend-line.is-tier2 { border-top-style: dashed; border-top-color: var(--text-faint); }
+
+/* 有账户列时是三列图：放宽画布上限，否则会等比缩得读不清 */
+.bal-graph svg.has-accounts { min-width: 720px; max-width: 1000px; }
+
+/* 账户节点：渠道节点右侧的一列 */
+.bal-node-acc {
+  fill: var(--bg-elev-2);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.bal-account.is-off { opacity: 0.72; }
+.bal-acc-dot { fill: color-mix(in srgb, var(--accent) 70%, transparent); }
+.bal-acc-name { font-size: 11.5px; fill: var(--text); font-weight: 560; }
+.bal-acc-meta { font-size: 10.5px; fill: var(--text-dim); font-variant-numeric: tabular-nums; }
+.bal-acc-adapter { font-size: 9.5px; fill: var(--text-faint); font-family: var(--mono); }
+/* 渠道 → 账户：细实线，只表达归属 */
+.bal-acct-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-faint) 55%, transparent);
+  stroke-width: 1;
+}
+
+/* 窗口打满：描边 / 文字 / 圆点全部用危险色，并在节点上留短标记 */
+.bal-account.is-exhausted .bal-node-acc {
+  stroke: var(--danger);
+  fill: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+}
+.bal-account.is-exhausted .bal-acc-name,
+.bal-account.is-exhausted .bal-acc-meta,
+.bal-account.is-exhausted .bal-acc-dot,
+.bal-account.is-exhausted .bal-acc-warn { fill: var(--danger); }
+.bal-acc-warn { font-size: 9.5px; fill: var(--danger); font-weight: 600; }
+
+/* 冷却中：灰色虚线圈（不引入新颜色） */
+.bal-account.is-cooling .bal-node-acc { stroke: var(--text-faint); stroke-dasharray: 4 3; }
+.bal-account.is-cooling .bal-acc-dot { fill: var(--text-faint); }
+
+.bal-legend-account {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg-elev-2);
+}
+.bal-legend-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); }
+.bal-legend-ring { width: 11px; height: 11px; border-radius: 50%; border: 1.5px dashed var(--text-faint); }
+.bal-legend-item.is-danger { color: var(--danger); }
 
 /* 目标编辑行：渠道 | 上游模型 | 优先级 | 权重 | 删除 */
 .bal-row {
