@@ -94,3 +94,9 @@ Copyright © 2025-2026 Crequency Open Source Organization (云矩创频开源组
     <img src="https://api.star-history.com/svg?repos=Crequency/Portara&type=Date&theme=dark" alt="Star History Chart" width="720">
   </a>
 </p>
+
+## The Name
+
+**Portara** (πόρτα, "door") is the great marble door frame that is all that remains of the Temple of
+Apollo on Naxos: no walls, no hall, only the entrance itself. This project is meant to be the same
+kind of thing — every AI request passes through it, and the door itself should never be a burden.
