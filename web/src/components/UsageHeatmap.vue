@@ -183,8 +183,9 @@ const yLabelItems = computed(() => {
     .map((label, y) => ({ label, y }))
     .filter((item) => {
       if (!item.label) return false
-      // 年历只标 Mon / Wed / Fri（GitHub 的做法）：7 行挤在一起时更好读
-      if (isCalendar.value) return item.y === 0 || item.y === 2 || item.y === 4
+      // 年历标 周一 / 周三 / 周五 / 周日：四个 label 既能认出周次节奏，
+      // 又不至于 7 行挤在一起；首行固定周一，末行周日正好标出周末边界。
+      if (isCalendar.value) return item.y === 0 || item.y === 2 || item.y === 4 || item.y === 6
       return true
     })
 })
