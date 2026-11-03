@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License"></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/version-0.2.1-informational.svg" alt="Version"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/version-0.2.2-informational.svg" alt="Version"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg" alt="Node"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/pnpm-11-orange.svg" alt="pnpm"></a>
   <a href="https://github.com/Crequency/Portara/actions/workflows/ci.yml"><img src="https://github.com/Crequency/Portara/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
