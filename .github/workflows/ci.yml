@@ -1,8 +1,12 @@
 # Portara · 最小可用 CI
 #
-# 目标只有一件事：在 GitHub Actions 上把四条验收命令跑通
-#   typecheck → build → test → smoke
-# 不含任何部署 / 发布步骤。
+# 两件事：
+#   1. verify —— 在 GitHub Actions 上把四条验收命令跑通
+#      typecheck → build → test → smoke （main 推送与 PR 都跑）
+#   2. docker —— 仅「严格符合 vX.Y.Z 的 tag」推 GHCR（编译 + 构建 + 推送）
+#      使用 Dockerfile.caddy（Caddy + Node 单镜像，对外 8080）。
+#      main 推送只跑 verify，不再发布镜像；tag glob 'v*' 只是粗筛，
+#      严格校验在 docker job 的第一个 step（构建之前）执行。
 #
 # 为什么不需要 docker compose：
 #   冒烟测试（scripts/smoke.mjs）自带伪上游与伪正向代理（纯 node:http，不连外网），
@@ -127,10 +131,16 @@ jobs:
         run: pnpm smoke
 
   # ---------------------------------------------------------------------------
-  # 镜像发布：四条验收门全绿（needs: verify）之后才构建并推送到 GHCR
+  # 镜像发布：仅在「版本 tag」上发生（编译 + 构建 + 推送 GHCR）
   #
-  # 只在 main 推送与 v* 标签上跑。PR 上由于 if 不成立会整体 skip —— 这是预期的，
-  # PR 不该有 packages: write 的推送能力。
+  # 触发面收敛的两层设计（GitHub Actions 的 tag glob 不支持完整正则）：
+  #   1. 粗筛：on.push.tags 的 'v*' —— 决定是否进入 workflow；
+  #   2. 严格校验：下面的 "Validate release tag" step —— 只放行
+  #      ^v[0-9]+\.[0-9]+\.[0-9]+$ ；不匹配立即 exit 1，整轮 fail，
+  #      且该校验排在 build 之前，保证不会推送任何镜像。
+  #
+  # job 级 if 只对 tag 生效：main 推送时本 job 整体 skip（main 仍跑 verify）。
+  # PR 同样 skip —— PR 不该拿到 packages: write 的推送能力。
   #
   # 镜像名必须小写：GHCR 的仓库路径不接受大写字母，而本仓库是 Crequency/Portara
   # （含大写 P）。故用 bash 的 ${VAR,,} 转小写，不能直接写 ghcr.io/${{ github.repository }}。
@@ -138,7 +148,7 @@ jobs:
   docker:
     name: docker (build & push to GHCR)
     needs: verify
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -149,6 +159,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 必须是 docker job 的第一步：任何 build / login 之前就拦住不合规的 tag。
+      # REF_NAME 即 push 的 tag 名（job 级 if 已确保是 refs/tags/*）。
+      - name: Validate release tag (vX.Y.Z)
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tag="$REF_NAME"
+          echo "tag: $tag"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$tag' 不符合版本号规则 vX.Y.Z（正则 ^v[0-9]+\.[0-9]+\.[0-9]+$），拒绝发布镜像。"
+            echo "允许的形式示例：v0.2.1；拒绝的形式示例：v0.2、v0.2.1-rc1、v1.2.3.4、0.2.1"
+            exit 1
+          fi
+          echo "tag '$tag' 通过 vX.Y.Z 校验，允许发布"
 
       # GHCR 路径必须全小写；从 GITHUB_REPOSITORY 推导，避免硬编码仓库名
       - name: Compute lowercase image name
@@ -165,23 +190,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 标签口径只有 semver（与 tag 一一对应）+ sha；不再产出 latest / 分支名，
+      # 避免 main 与 tag 两套口径互相覆盖。
       - name: Extract metadata (tags & labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
             type=sha,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.caddy
           push: true
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
