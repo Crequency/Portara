@@ -190,8 +190,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 标签口径只有 semver（与 tag 一一对应）+ sha；不再产出 latest / 分支名，
-      # 避免 main 与 tag 两套口径互相覆盖。
+      # 标签口径：semver 三档（与 tag 一一对应）+ sha；不再产出分支名，避免 main 与 tag 两套口径互相覆盖。
+      # 注意 latest 仍会出现：metadata-action 对"正式 semver tag"默认追加 latest（flavor latest=auto），
+      # 语义是"最新正式版本"。若要关闭，在这里加 `flavor: latest=false`。
       - name: Extract metadata (tags & labels)
         id: meta
         uses: docker/metadata-action@v5
