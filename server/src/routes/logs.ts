@@ -429,6 +429,267 @@ logRoutes.get('/stats/series', async (c) => {
   })
 })
 
+/* ------------------------------------------------------------------ */
+/* 使用频率二维热力图                                                   */
+/* ------------------------------------------------------------------ */
+
+type HeatmapGridProfile = 'today' | '7d' | '30d' | '90d'
+
+/**
+ * 每个档位先把范围按「最小粒度」切成一维桶，再在 TS 里 fold 成二维矩阵。
+ * - today：1 分钟 × 1440 → 96 列 × 15 行（列=刻钟，行=刻钟内第几分钟）
+ * - 7d：10 分钟 × 1008 → 84 列 × 12 行（列=天×时辰，行=时辰内第几个十分钟）
+ * - 30d：30 分钟 × 天数×48 → 天数×3 列 × 16 行（列=每天三个「午」）
+ * - 90d：2 小时 × 天数×12 → 天数 列 × 12 行（列=天，行=时辰）
+ * - 365d：1 天 → GitHub 贡献墙（列=周，行=周一..周日）
+ */
+interface HeatmapPlan {
+  mode: 'grid' | 'calendar'
+  profile: HeatmapGridProfile | 'calendar'
+  bucketCount: number
+  /** SQL interval：最小桶宽度 */
+  interval: string
+  /** SQL interval：相对当地 00:00 的起点偏移（30d 的「午」从 04:00 起算） */
+  startOffset: string
+  /** 覆盖的当地天数（网格档用于算列数 / 日期标签） */
+  dayCount: number
+}
+
+interface HeatmapBucketRow {
+  idx: number
+  requests: number
+  tokens: string
+  errors: number
+}
+
+interface HeatmapCell {
+  requests: number
+  tokens: number
+  errors: number
+}
+
+const HEATMAP_MONTHS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+]
+const HEATMAP_WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+
+/** 某个 UTC 瞬时在目标时区的当地日期 */
+function localDateParts(iso: string, timeZone: string): {
+  year: number
+  month: number
+  day: number
+} {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+    .formatToParts(new Date(iso))
+    .map((p) => [p.type, p.value])
+  const get = (type: string): number => Number(parts.find(([t]) => t === type)?.[1] ?? '0')
+  return { year: get('year'), month: get('month'), day: get('day') }
+}
+
+/** 当地日历日的整数序号（以 UTC 日期做纯日历运算，不受时区影响） */
+const dayNumber = (p: { year: number; month: number; day: number }): number =>
+  Math.floor(Date.UTC(p.year, p.month - 1, p.day) / 86_400_000)
+
+/** 序号 → 当地日期 */
+function datePartsOfDay(day: number): { year: number; month: number; day: number } {
+  const d = new Date(day * 86_400_000)
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() }
+}
+
+/** 周一=0 … 周日=6（ISO 周） */
+const weekdayIndexMonday = (day: number): number =>
+  (new Date(day * 86_400_000).getUTCDay() + 6) % 7
+
+const monthDayLabel = (day: number): string => {
+  const p = datePartsOfDay(day)
+  return `${pad2(p.month)}-${pad2(p.day)}`
+}
+
+function resolveHeatmapPlan(
+  range: 'today' | '7d' | '30d' | '90d' | '365d' | 'custom',
+  spanHours: number,
+  spanDays: number
+): HeatmapPlan {
+  const gridPlan = (profile: HeatmapGridProfile): HeatmapPlan => {
+    if (profile === 'today') {
+      // 今日档固定一整天：00:00–24:00，未来为 0
+      return {
+        mode: 'grid',
+        profile,
+        bucketCount: 1440,
+        interval: '1 minute',
+        startOffset: '0',
+        dayCount: 1
+      }
+    }
+    if (profile === '7d') {
+      return {
+        mode: 'grid',
+        profile,
+        bucketCount: spanDays * 144,
+        interval: '10 minutes',
+        startOffset: '0',
+        dayCount: spanDays
+      }
+    }
+    if (profile === '30d') {
+      return {
+        mode: 'grid',
+        profile,
+        // 每天 48 个半小时桶，但起点是当地 04:00（当天 00:00–04:00 归前一天）
+        bucketCount: spanDays * 48,
+        interval: '30 minutes',
+        startOffset: '4 hours',
+        dayCount: spanDays
+      }
+    }
+    return {
+      mode: 'grid',
+      profile: '90d',
+      bucketCount: spanDays * 12,
+      interval: '2 hours',
+      startOffset: '0',
+      dayCount: spanDays
+    }
+  }
+
+  if (range === 'custom') {
+    if (spanHours <= 26) return gridPlan('today')
+    if (spanHours <= 8 * 24) return gridPlan('7d')
+    if (spanHours <= 31 * 24) return gridPlan('30d')
+    if (spanHours <= 92 * 24) return gridPlan('90d')
+    return {
+      mode: 'calendar',
+      profile: 'calendar',
+      bucketCount: spanDays,
+      interval: '1 day',
+      startOffset: '0',
+      dayCount: spanDays
+    }
+  }
+
+  switch (range) {
+    case 'today':
+      return gridPlan('today')
+    case '7d':
+      return gridPlan('7d')
+    case '30d':
+      return gridPlan('30d')
+    case '90d':
+      return gridPlan('90d')
+    case '365d':
+      return {
+        mode: 'calendar',
+        profile: 'calendar',
+        bucketCount: 365,
+        interval: '1 day',
+        startOffset: '0',
+        dayCount: 365
+      }
+  }
+}
+
+/** 一维桶序号 → 二维单元格坐标 */
+function foldHeatmapBucket(
+  plan: HeatmapPlan,
+  idx: number,
+  fromDay: number
+): { row: number; col: number } {
+  switch (plan.profile) {
+    case 'today': {
+      // idx = 当天第几分钟；列 = 第几个刻钟，行 = 刻钟内第几分钟
+      return { row: idx % 15, col: Math.floor(idx / 15) }
+    }
+    case '7d': {
+      const day = Math.floor(idx / 144)
+      const slot = idx % 144
+      return { row: slot % 12, col: day * 12 + Math.floor(slot / 12) }
+    }
+    case '30d': {
+      const day = Math.floor(idx / 48)
+      const slot = idx % 48
+      return { row: slot % 16, col: day * 3 + Math.floor(slot / 16) }
+    }
+    case '90d': {
+      return { row: idx % 12, col: Math.floor(idx / 12) }
+    }
+    case 'calendar': {
+      // 第一列第一行必须是周一：把范围起点前面空出的几天算进偏移
+      const pos = idx + weekdayIndexMonday(fromDay)
+      return { row: pos % 7, col: Math.floor(pos / 7) }
+    }
+  }
+}
+
+function buildHeatmapLabels(
+  plan: HeatmapPlan,
+  fromDay: number,
+  cols: number
+): { xLabels: string[]; yLabels: string[]; monthLabels?: { col: number; label: string }[]; weekdayLabels?: string[] } {
+  if (plan.mode === 'calendar') {
+    /*
+     * 月份标签：范围里第一次出现某个月时，在它所在的列标一次；
+     * 同一列只标一个。365d 恰好跨 13 个「月份出现」（如今年 11 月
+     * 与去年 11 月都在范围内），因此标签数可能是 13 而不是 12。
+     */
+    const monthLabels: { col: number; label: string }[] = []
+    let lastMonth = -1
+    let lastCol = -1
+    for (let idx = 0; idx < plan.bucketCount; idx++) {
+      const month = datePartsOfDay(fromDay + idx).month
+      if (month === lastMonth) continue
+      lastMonth = month
+      const { col } = foldHeatmapBucket(plan, idx, fromDay)
+      if (col !== lastCol) {
+        monthLabels.push({ col, label: HEATMAP_MONTHS[month - 1]! })
+        lastCol = col
+      }
+    }
+    return {
+      xLabels: [],
+      yLabels: [...HEATMAP_WEEKDAYS],
+      monthLabels,
+      weekdayLabels: [...HEATMAP_WEEKDAYS]
+    }
+  }
+
+  const xLabels = Array.from({ length: cols }, () => '')
+  const yLabels = Array.from({ length: plan.profile === 'today' ? 15 : plan.profile === '30d' ? 16 : 12 }, () => '')
+
+  if (plan.profile === 'today') {
+    // 96 列 = 每 15 分钟一列；每 24 列（6 小时）标一个整点
+    for (let col = 0; col < cols; col += 24) {
+      xLabels[col] = `${pad2(col / 4)}:00`
+    }
+    for (let row = 0; row < 15; row += 3) yLabels[row] = String(row + 1)
+  } else if (plan.profile === '7d') {
+    for (let col = 0; col < cols; col += 12) {
+      xLabels[col] = monthDayLabel(fromDay + col / 12)
+    }
+    for (let row = 0; row < 12; row += 3) yLabels[row] = String(row * 10)
+  } else if (plan.profile === '30d') {
+    for (let col = 0; col < cols; col += 3) {
+      xLabels[col] = monthDayLabel(fromDay + col / 3)
+    }
+    for (let row = 0; row < 16; row += 4) yLabels[row] = `${Math.floor(row / 2)}:00`
+  } else {
+    for (let col = 0; col < cols; col += 7) {
+      xLabels[col] = monthDayLabel(fromDay + col)
+    }
+    for (let row = 0; row < 12; row += 3) yLabels[row] = pad2(row * 2)
+  }
+
+  return { xLabels, yLabels }
+}
+
 logRoutes.get('/stats/heatmap', async (c) => {
   const q = parseQuery(c, rangeQuery)
   const tz = await resolveQueryTimeZone(q.tz)
@@ -436,74 +697,101 @@ logRoutes.get('/stats/heatmap', async (c) => {
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
-  const hourly = q.range === 'today' || q.range === '7d' ||
-    (q.range === 'custom' && spanHours <= 48)
-  const granularity = hourly ? 'hour' : 'day'
-  const interval = hourly ? '1 hour' : '1 day'
-  const labelFormat = hourly ? 'HH24:00' : 'MM-DD'
+  const fromDay = dayNumber(localDateParts(from, tz))
+  const toDay = dayNumber(localDateParts(to, tz))
+  const spanDays = Math.max(1, toDay - fromDay + 1)
+  const plan = resolveHeatmapPlan(q.range, spanHours, spanDays)
 
   /*
-   * 热力图要铺满**整个范围**，不能截止到 now：
-   * 今日 24 个桶、7d 168 个，其余按天。预设范围直接按 from 对齐后
-   * 生成固定数量的当地桶；未来时间自然落在 0 值桶里。
+   * 一维最小桶：起点是目标时区的当地 00:00（30d 档为当地 04:00），
+   * 桶数固定 / 按天数算，未来时间自然落进 0 值桶。
+   * 桶结束取下一个桶开始，首尾 join 都裁剪到 [from, to]。
+   * 用 ordinality 带出 idx：夏令时回拨造成两个墙钟时间落到同一瞬时，
+   * 也不会因为 group by bucket_start 把两个桶并掉。
    */
-  const presetBuckets: Record<string, number> = {
-    today: 24,
-    '7d': 168,
-    '30d': 30,
-    '90d': 90,
-    '365d': 365
-  }
-  const bucketCount = q.range === 'custom' ? null : (presetBuckets[q.range] ?? null)
-
-  const rows = await query<{ label: string; requests: number; tokens: string; errors: number }>(
+  const rows = await query<HeatmapBucketRow>(
     `
-    with bucket_starts as (
-      select (b at time zone $6) as bucket_start
-        from generate_series(
-          date_trunc($4, ($1::timestamptz at time zone $6)),
-          case
-            when $8::int is null
-              then date_trunc($4, ($2::timestamptz at time zone $6))
-            else date_trunc($4, ($1::timestamptz at time zone $6))
-                 + ($8::int - 1) * $3::interval
-          end,
-          $3::interval
-        ) as b
+    with bounds as (
+      select date_trunc('day', ($1::timestamptz at time zone $2)) as day_start
+    ),
+    bucket_starts as (
+      select g.ord as idx,
+             (g.b at time zone $2) as bucket_start
+        from bounds,
+             generate_series(
+               day_start + $3::interval,
+               day_start + $3::interval + ($4::int - 1) * $5::interval,
+               $5::interval
+             ) with ordinality as g(b, ord)
     ),
     spans as (
-      select bucket_start,
+      select idx,
+             bucket_start,
              coalesce(
-               lead(bucket_start) over (order by bucket_start),
-               bucket_start + $3::interval
+               lead(bucket_start) over (order by idx),
+               bucket_start + $5::interval
              ) as bucket_end
         from bucket_starts
     )
-    select to_char(s.bucket_start at time zone $6, $5) as label,
+    select s.idx as idx,
            coalesce(count(l.id), 0)::int as requests,
            coalesce(sum(l.total_tokens), 0)::text as tokens,
            coalesce(count(l.id) filter (where l.status_code >= 400), 0)::int as errors
       from spans s
       left join request_logs l
              on l.ts >= greatest(s.bucket_start, $1::timestamptz)
-            and l.ts <  least(s.bucket_end, $2::timestamptz)
+            and l.ts <  least(s.bucket_end, $6::timestamptz)
             and ($7::uuid is null or l.channel_id = $7)
-     group by s.bucket_start
-     order by s.bucket_start asc
+     group by s.idx, s.bucket_start
+     order by s.idx asc
     `,
-    [from, to, interval, granularity, labelFormat, tz, channelFilter, bucketCount]
+    [from, tz, plan.startOffset, plan.bucketCount, plan.interval, to, channelFilter]
   )
+
+  const cols =
+    plan.mode === 'calendar'
+      ? Math.ceil((plan.bucketCount + weekdayIndexMonday(fromDay)) / 7)
+      : plan.profile === 'today'
+        ? 96
+        : plan.profile === '7d'
+          ? plan.dayCount * 12
+          : plan.profile === '30d'
+            ? plan.dayCount * 3
+            : plan.dayCount
+  const rowCount = plan.mode === 'calendar' ? 7 : plan.profile === 'today' ? 15 : plan.profile === '30d' ? 16 : 12
+
+  const cells: HeatmapCell[][] = Array.from({ length: rowCount }, () =>
+    Array.from({ length: cols }, () => ({ requests: 0, tokens: 0, errors: 0 }))
+  )
+
+  for (const row of rows) {
+    const idx = Number(row.idx) - 1
+    if (idx < 0 || idx >= plan.bucketCount) continue
+    const { row: y, col: x } = foldHeatmapBucket(plan, idx, fromDay)
+    if (y < 0 || y >= rowCount || x < 0 || x >= cols) continue
+    const cell = cells[y]![x]!
+    cell.requests += num(row.requests)
+    cell.tokens += num(row.tokens)
+    cell.errors += num(row.errors)
+  }
+
+  const labels = buildHeatmapLabels(plan, fromDay, cols)
 
   return c.json({
     timezone: tz,
-    granularity,
     range: { preset: q.range, from, to },
-    buckets: rows.map((row) => ({
-      label: row.label,
-      requests: num(row.requests),
-      tokens: num(row.tokens),
-      errors: num(row.errors)
-    }))
+    mode: plan.mode,
+    cols,
+    rows: rowCount,
+    xLabels: labels.xLabels,
+    yLabels: labels.yLabels,
+    cells,
+    ...(plan.mode === 'calendar'
+      ? {
+          monthLabels: labels.monthLabels,
+          weekdayLabels: labels.weekdayLabels
+        }
+      : {})
   })
 })
 

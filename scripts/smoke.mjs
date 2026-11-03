@@ -170,6 +170,22 @@ function expectedWeekBuckets(fromIso, toIso, timeZone) {
   const toMonday = to - ((weekdayOf(to) + 6) % 7)
   return Math.floor((toMonday - fromMonday) / 7) + 1
 }
+/** 二维热力图的月份标签数：范围内每个「月份首次出现」记一次（365d 通常 12 或 13）。 */
+function expectedMonthLabelCount(fromIso, toIso, timeZone) {
+  const from = dayNumber(localDateParts(fromIso, timeZone))
+  const to = dayNumber(localDateParts(toIso, timeZone))
+  let count = 0
+  let lastMonth = -1
+  for (let day = from; day <= to; day++) {
+    const month = new Date(day * 86_400_000).getUTCMonth()
+    if (month !== lastMonth) {
+      count++
+      lastMonth = month
+    }
+  }
+  return count
+}
+
 /** 半月桶：落在 [from, to] 内的当地 1 日 / 16 日边界数。 */
 function expectedHalfMonthBuckets(fromIso, toIso, timeZone) {
   const fromParts = localDateParts(fromIso, timeZone)
@@ -895,39 +911,146 @@ async function main() {
       )
     })
 
-    // ---------------------------------------------------------- 使用频率热力图
-    // 与 series 不同：热力图必须铺满整个范围、不截止到 now，未来桶为 0。
+    // ---------------------------------------------------------- 使用频率热力图（二维矩阵）
+    // 契约：cells 永远是 rows×cols 的完整矩阵；xLabels/yLabels 长度分别为 cols/rows；
+    // 365d 走 GitHub 贡献墙（列=周、行=周一..周日、只在月份切换处标月份）。
     const heatToday = await apiCall('GET', '/api/stats/heatmap?range=today')
-    check('今日热力图铺满 24 个小时桶', () => {
+    check('today 热力图：96 刻钟列 × 15 分钟行', () => {
       const body = heatToday.body
-      assert.equal(body?.granularity, 'hour')
-      assert.equal(body.buckets.length, 24)
-      assert.equal(body.buckets[0].label, '00:00')
-      assert.equal(body.buckets.at(-1).label, '23:00')
+      assert.equal(body?.mode, 'grid')
+      assert.equal(body.cols, 96)
+      assert.equal(body.rows, 15)
+      assert.equal(body.cells.length, 15)
+      assert.ok(body.cells.every((row) => row.length === 96))
+      assert.equal(body.xLabels.length, 96)
+      assert.equal(body.yLabels.length, 15)
+      assert.equal(body.xLabels[0], '00:00')
+      assert.equal(body.xLabels[24], '06:00')
+      assert.equal(body.xLabels[48], '12:00')
+      assert.equal(body.xLabels[72], '18:00')
+      assert.equal(body.yLabels[0], '1')
+      assert.ok(
+        body.cells.every((row) =>
+          row.every(
+            (cell) =>
+              typeof cell.requests === 'number' &&
+              cell.requests >= 0 &&
+              typeof cell.tokens === 'number' &&
+              typeof cell.errors === 'number'
+          )
+        )
+      )
     })
 
     const heat7d = await apiCall('GET', '/api/stats/heatmap?range=7d')
-    check('近 7 天热力图按小时铺满 168 个桶', () => {
+    check('7d 热力图：84 时辰列 × 12 十分钟行', () => {
       const body = heat7d.body
-      assert.equal(body?.granularity, 'hour')
-      assert.equal(body.buckets.length, 168)
-      assert.equal(body.buckets[0].label, '00:00')
-      assert.equal(body.buckets.at(-1).label, '23:00')
+      assert.equal(body?.mode, 'grid')
+      assert.equal(body.cols, 84)
+      assert.equal(body.rows, 12)
+      assert.equal(body.cells.length, 12)
+      assert.ok(body.cells.every((row) => row.length === 84))
+      assert.equal(body.xLabels.length, 84)
+      assert.equal(body.yLabels.length, 12)
+      assert.match(body.xLabels[0], /^\d{2}-\d{2}$/)
+      assert.equal(body.xLabels[1], '')
     })
 
-    for (const [preset, count] of [
-      ['30d', 30],
-      ['90d', 90],
-      ['365d', 365]
-    ]) {
-      const heat = await apiCall('GET', `/api/stats/heatmap?range=${preset}`)
-      check(`近 ${preset} 热力图按天铺满 ${count} 个桶`, () => {
-        const body = heat.body
-        assert.equal(body?.granularity, 'day')
-        assert.equal(body.buckets.length, count)
-        assert.ok(body.buckets.every((b) => typeof b.requests === 'number' && b.requests >= 0))
-      })
-    }
+    const heat30d = await apiCall('GET', '/api/stats/heatmap?range=30d')
+    check('30d 热力图：90 午列（30 天 × 3）× 16 半小时行', () => {
+      const body = heat30d.body
+      assert.equal(body?.mode, 'grid')
+      assert.equal(body.cols, 90)
+      assert.equal(body.rows, 16)
+      assert.equal(body.cells.length, 16)
+      assert.ok(body.cells.every((row) => row.length === 90))
+      assert.equal(body.xLabels.length, 90)
+      assert.equal(body.yLabels.length, 16)
+      assert.match(body.xLabels[0], /^\d{2}-\d{2}$/)
+      assert.equal(body.xLabels[1], '')
+      assert.equal(body.xLabels[2], '')
+    })
+
+    const heat90d = await apiCall('GET', '/api/stats/heatmap?range=90d')
+    check('90d 热力图：90 天列 × 12 时辰行', () => {
+      const body = heat90d.body
+      assert.equal(body?.mode, 'grid')
+      assert.equal(body.cols, 90)
+      assert.equal(body.rows, 12)
+      assert.equal(body.cells.length, 12)
+      assert.ok(body.cells.every((row) => row.length === 90))
+      assert.equal(body.xLabels.length, 90)
+      assert.equal(body.yLabels.length, 12)
+      assert.match(body.xLabels[0], /^\d{2}-\d{2}$/)
+      assert.equal(body.xLabels[1], '')
+      assert.equal(body.xLabels[6], '')
+      assert.match(body.xLabels[7], /^\d{2}-\d{2}$/)
+    })
+
+    const heat365d = await apiCall('GET', '/api/stats/heatmap?range=365d')
+    check('365d 热力图：GitHub 风格年历（周列 × 周一..周日）', () => {
+      const body = heat365d.body
+      assert.equal(body?.mode, 'calendar')
+      assert.equal(body.rows, 7)
+      assert.ok(body.cols >= 52 && body.cols <= 54, `cols=${body.cols}`)
+      assert.equal(body.cells.length, 7)
+      assert.ok(body.cells.every((row) => row.length === body.cols))
+      assert.equal(body.xLabels.length, 0)
+      assert.equal(body.yLabels.length, 7)
+      assert.deepEqual(body.weekdayLabels, [
+        'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'
+      ])
+      // 第一列第一行必须是周一：列数 = 覆盖范围（365 天 + 前置对齐）所需周数
+      const fromDay = dayNumber(localDateParts(body.range.from, body.timezone))
+      const offset = (weekdayOf(fromDay) + 6) % 7
+      assert.equal(body.cols, Math.ceil((365 + offset) / 7))
+      // 月份标签：范围内每个「月份首次出现」标一次；365 天通常跨 12 或 13 个
+      // 月份出现（起点恰为 1 日时 12，否则 13 —— 首月与次年同月各一次）。
+      const expectedMonths = expectedMonthLabelCount(
+        body.range.from,
+        body.range.to,
+        body.timezone
+      )
+      assert.ok(expectedMonths === 12 || expectedMonths === 13, `月份数 ${expectedMonths}`)
+      assert.equal(body.monthLabels.length, expectedMonths)
+      assert.ok(
+        body.monthLabels.every(
+          (m) =>
+            Number.isInteger(m.col) &&
+            m.col >= 0 &&
+            m.col < body.cols &&
+            /^[A-Z][a-z]{2}$/.test(m.label)
+        )
+      )
+      // 同一列不重复标月份；列号严格递增
+      const cols = body.monthLabels.map((m) => m.col)
+      assert.deepEqual(cols, [...new Set(cols)])
+      assert.deepEqual(cols, [...cols].sort((a, b) => a - b))
+    })
+
+    const sumCellRequests = (cells) =>
+      cells.reduce(
+        (total, row) => total + row.reduce((line, cell) => line + cell.requests, 0),
+        0
+      )
+
+    const overviewTodayForHeat = await apiCall('GET', '/api/stats/overview?range=today')
+    check('today 矩阵求和 == overview today 的 requests（fold 不丢格/不重复）', () =>
+      assert.equal(
+        sumCellRequests(heatToday.body.cells),
+        overviewTodayForHeat.body.totals.requests,
+        `heatmap=${sumCellRequests(heatToday.body.cells)} overview=${overviewTodayForHeat.body.totals.requests}`
+      )
+    )
+
+    const overviewYearForHeat = await apiCall('GET', '/api/stats/overview?range=365d')
+    check('365d 矩阵求和 == overview 365d 的 requests（日历对齐不丢天）', () =>
+      assert.equal(
+        sumCellRequests(heat365d.body.cells),
+        overviewYearForHeat.body.totals.requests,
+        `heatmap=${sumCellRequests(heat365d.body.cells)} overview=${overviewYearForHeat.body.totals.requests}`
+      )
+    )
 
     check('更大区间的请求数只多不少（90d >= 30d）', () =>
       assert.ok(
