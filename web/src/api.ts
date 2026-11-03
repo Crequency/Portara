@@ -474,9 +474,35 @@ export interface SeriesPoint {
 export interface StatsSeries {
   /** 本次查询实际使用的时区 */
   timezone?: string
-  granularity: 'hour' | 'day'
+  /**
+   * 分桶粒度：按小时 / 按天 / 按周 / 按半月。
+   * 90d → week，365d → halfmonth（后端按范围自动选择）。
+   */
+  granularity: 'hour' | 'day' | 'week' | 'halfmonth'
   range: StatsRange
   series: SeriesPoint[]
+}
+
+/** 热力图的一个时间桶：label 是 HH:00（hour）或 MM-DD（day） */
+export interface HeatmapBucket {
+  label: string
+  requests: number
+  tokens: number
+  errors: number
+}
+
+/**
+ * 使用频率热力图。
+ *
+ * 与 series 同参数；hour 覆盖今日 24 桶 / 7d 168 桶，
+ * day 覆盖 30 / 90 / 365 个日桶（未来时间为 0）。
+ */
+export interface StatsHeatmap {
+  /** 本次查询实际使用的时区 */
+  timezone?: string
+  granularity: 'hour' | 'day'
+  range: StatsRange
+  buckets: HeatmapBucket[]
 }
 
 export interface ChannelTestResult {

@@ -8,6 +8,7 @@ import {
   type UsageSnapshot,
   type StatsOverview,
   type StatsSeries,
+  type StatsHeatmap,
   type User
 } from '../api'
 import {
@@ -20,6 +21,7 @@ import {
   quotaPercent
 } from '../format'
 import PSelect from '../components/PSelect.vue'
+import UsageHeatmap from '../components/UsageHeatmap.vue'
 import UsageTrendChart from '../components/UsageTrendChart.vue'
 import { useI18n } from '../i18n'
 import { loadRangePreference, saveRangePreference } from '../rangePreference'
@@ -37,9 +39,26 @@ const appliedCustom = ref<{ from: string; to: string } | null>(null)
 
 const stats = ref<StatsOverview | null>(null)
 const series = ref<SeriesPoint[]>([])
-const granularity = ref<'hour' | 'day'>('hour')
+const granularity = ref<StatsSeries['granularity']>('hour')
 const recent = ref<RequestLog[]>([])
 const loading = ref(true)
+
+/**
+ * 「用量趋势」卡片内的两个视图：趋势图 / 使用频率。
+ * 记住最后的选择；非法值（坏数据、旧版本残留）一律回退趋势图。
+ */
+type TrendView = 'chart' | 'heatmap'
+const TREND_VIEW_KEY = 'portara.overview.trendView'
+const trendView = ref<TrendView>('chart')
+
+function loadTrendView(): void {
+  try {
+    const raw = localStorage.getItem(TREND_VIEW_KEY)
+    if (raw === 'chart' || raw === 'heatmap') trendView.value = raw
+  } catch {
+    /* 隐私模式：用默认值即可 */
+  }
+}
 
 /** 记住上次用的统计粒度（键与渠道详情页**不同**，两处记忆彼此独立） */
 const RANGE_KEY = 'portara.overview.range'
@@ -324,11 +343,15 @@ function topMax(key: 'models' | 'channels' | 'keys'): number {
 
 function rangeQuery(): string {
   if (preset.value === 'custom' && appliedCustom.value) {
-    return new URLSearchParams({
-      range: 'custom',
-      from: new Date(appliedCustom.value.from).toISOString(),
-      to: new Date(appliedCustom.value.to).toISOString()
-    }).toString()
+    return (
+      new URLSearchParams({
+        range: 'custom',
+        from: new Date(appliedCustom.value.from).toISOString(),
+        to: new Date(appliedCustom.value.to).toISOString()
+      }).toString() +
+      '&' +
+      tzQueryParam()
+    )
   }
   return 'range=' + preset.value + '&' + tzQueryParam()
 }
@@ -336,8 +359,89 @@ function rangeQuery(): string {
 /** 本次统计实际使用的时区：以服务端回报为准（它可能回落到网关设置） */
 const effectiveTz = computed(() => stats.value?.timezone ?? CLIENT_TZ)
 
+/**
+ * 使用频率热力图。
+ *
+ * **按需请求**：只有切到「使用频率」才拉；结果连同 range query 一起缓存，
+ * 切回趋势图再切回来不会重复打接口。range 变了缓存键自然对不上，
+ * 下次切过去时重新请求（正在看热力图时由 load() 直接重新请求）。
+ */
+const heatmap = ref<StatsHeatmap | null>(null)
+const heatmapKey = ref('')
+const heatmapLoading = ref(false)
+const heatmapLoadingKey = ref('')
+let heatmapSeq = 0
+
+async function loadHeatmap(): Promise<void> {
+  const q = rangeQuery()
+  // 同一范围的请求已经在路上，别重复发
+  if (heatmapLoading.value && heatmapLoadingKey.value === q) return
+  const seq = ++heatmapSeq
+  heatmapLoadingKey.value = q
+  heatmapLoading.value = true
+  try {
+    const res = await api.get<StatsHeatmap>('/api/stats/heatmap?' + q)
+    if (seq !== heatmapSeq) return
+    heatmap.value = res
+    heatmapKey.value = q
+  } catch (err) {
+    if (seq !== heatmapSeq) return
+    heatmap.value = null
+    heatmapKey.value = ''
+    toast.error(err instanceof Error ? err.message : t('overview.loadFailed'))
+  } finally {
+    if (seq === heatmapSeq) {
+      heatmapLoading.value = false
+      heatmapLoadingKey.value = ''
+    }
+  }
+}
+
+/** 缓存命中就不请求；切回趋势图不触发（因为根本不会调用这里） */
+function ensureHeatmap(): void {
+  if (heatmapKey.value === rangeQuery()) return
+  void loadHeatmap()
+}
+
+function setTrendView(view: TrendView): void {
+  trendView.value = view
+  try {
+    localStorage.setItem(TREND_VIEW_KEY, view)
+  } catch {
+    /* 写不进去不影响功能 */
+  }
+  if (view === 'heatmap') ensureHeatmap()
+}
+
+/**
+ * 卡片右上角显示的粒度。
+ * 热力图只有 hour / day 两种；series 则是四值，90d/365d 分别是 week / halfmonth。
+ */
+const activeGranularity = computed(() => {
+  if (trendView.value === 'heatmap') {
+    // 正在加载新范围时先不显示粒度，避免把上一个范围的粒度挂在新数字上
+    if (heatmapLoading.value || !heatmap.value) return ''
+    return heatmap.value.granularity === 'hour'
+      ? t('overview.perHour')
+      : t('overview.perDay')
+  }
+  switch (granularity.value) {
+    case 'hour':
+      return t('overview.perHour')
+    case 'week':
+      return t('overview.perWeek')
+    case 'halfmonth':
+      return t('overview.perHalfMonth')
+    default:
+      return t('overview.perDay')
+  }
+})
+
 async function load(): Promise<void> {
   loading.value = true
+  // 当前正停在热力图：切范围 / 点刷新都要拿新数据。
+  // 停在趋势图时不动热力图缓存，交给切过去时的 ensureHeatmap 判定。
+  if (trendView.value === 'heatmap') void loadHeatmap()
   try {
     const q = rangeQuery()
     const [overview, s, logs] = await Promise.all([
@@ -395,6 +499,7 @@ onMounted(() => {
   // 先恢复偏好，再加载 —— 否则首屏会先按默认值渲染一次
   restoreRange()
   loadTopSort()
+  loadTrendView()
   void loadUsage()
   void load()
 
@@ -447,8 +552,10 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <span class="spacer" />
         <span class="dim row" style="font-size: 12px; gap: 8px">
           <span>{{ rangeLabel }}</span>
-          <span>·</span>
-          <span>{{ granularity === 'hour' ? t('overview.perHour') : t('overview.perDay') }}</span>
+          <template v-if="activeGranularity">
+            <span>·</span>
+            <span>{{ activeGranularity }}</span>
+          </template>
           <span>·</span>
           <!-- 让用户明确知道统计口径用的是哪个时区，否则改了设置也看不出来 -->
           <span :title="t('overview.timezoneLabel') + '：' + effectiveTz">
@@ -505,21 +612,45 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
 
     <div class="card">
       <div class="card-head">
-        <div class="card-title">{{ t('overview.trend') }}</div>
-        <span class="dim" style="font-size: 12px">
-          {{
-            t('overview.resources', {
-              active: formatNumber(stats?.resources.activeChannels),
-              total: formatNumber(stats?.resources.channels),
-              keys: formatNumber(stats?.resources.keys),
-              users: formatNumber(stats?.resources.users)
-            })
-          }}
-        </span>
+        <div class="row row-wrap" style="gap: 10px; align-items: baseline; min-width: 0">
+          <div class="card-title">{{ t('overview.trend') }}</div>
+          <span class="dim" style="font-size: 12px">
+            {{
+              t('overview.resources', {
+                active: formatNumber(stats?.resources.activeChannels),
+                total: formatNumber(stats?.resources.channels),
+                keys: formatNumber(stats?.resources.keys),
+                users: formatNumber(stats?.resources.users)
+              })
+            }}
+          </span>
+        </div>
+        <!-- 右上角：趋势图 / 使用频率，同一张卡片内切换 -->
+        <div class="segmented segmented-sm" role="group" :aria-label="t('overview.trend')">
+          <button
+            :class="{ on: trendView === 'chart' }"
+            @click="setTrendView('chart')"
+          >
+            {{ t('overview.trendViewChart') }}
+          </button>
+          <button
+            :class="{ on: trendView === 'heatmap' }"
+            @click="setTrendView('heatmap')"
+          >
+            {{ t('overview.trendViewHeatmap') }}
+          </button>
+        </div>
       </div>
 
       <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
-      <UsageTrendChart v-else :series="series" />
+      <UsageTrendChart v-else-if="trendView === 'chart'" :series="series" />
+      <div v-else-if="heatmapLoading" class="loading">{{ t('common.loading') }}</div>
+      <UsageHeatmap
+        v-else-if="heatmap"
+        :buckets="heatmap.buckets"
+        :granularity="heatmap.granularity"
+      />
+      <div v-else class="empty">{{ t('common.empty') }}</div>
     </div>
 
     <div class="grid grid-3">
