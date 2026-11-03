@@ -1,0 +1,65 @@
+# Portara — Caddy 多阶段镜像
+#
+#   build   ：node:24-alpine 装依赖、构建前后端产物（与 Dockerfile 保持同一套逻辑）
+#   runtime ：caddy:2-alpine 作为最终镜像；Caddy 对外 8080，Node 只监听 127.0.0.1:52740
+#
+# 选 caddy:2-alpine 而不是 node:24-alpine + apk add caddy 的理由：
+#   - 最终镜像里不需要 npm / corepack / yarn，只复制 node 二进制；
+#   - Caddy 版本与官方镜像一致（构建时 2.11.x），不受 Alpine 仓库版本滞后的影响；
+#   - 官方镜像的 /etc/caddy、/data、/config 布局可直接复用（本镜像改用 /app/.caddy）。
+# node 二进制在 Alpine 上动态链接 libstdc++/libgcc，故 runtime 显式安装这两个包。
+
+
+FROM node:24-alpine AS build
+WORKDIR /app
+RUN npm i -g pnpm@11
+COPY pnpm-workspace.yaml package.json ./
+COPY server/package.json ./server/
+COPY web/package.json ./web/
+RUN pnpm install --no-frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM caddy:2-alpine AS runtime
+
+# node 二进制（约 131MB）+ 其动态库依赖；不引入 npm/yarn/corepack
+COPY --from=build /usr/local/bin/node /usr/local/bin/node
+RUN apk add --no-cache libstdc++ libgcc \
+ && addgroup -S -g 10001 portara \
+ && adduser -S -u 10001 -G portara -h /app -s /sbin/nologin portara
+
+WORKDIR /app
+
+# 对外由 Caddy 监听 8080；Node 只绑定回环，避免绕过 Caddy 直连
+ENV NODE_ENV=production \
+    HOME=/app \
+    XDG_DATA_HOME=/app/.caddy/data \
+    XDG_CONFIG_HOME=/app/.caddy/config \
+    PORTARA_PORT=52740 \
+    PORTARA_HOST=127.0.0.1 \
+    PORTARA_WEB_DIST=/srv/web \
+    PORTARA_SITE_ADDR=:8080 \
+    PORTARA_UPSTREAM=127.0.0.1:52740 \
+    PORTARA_WEB_ROOT=/srv/web
+
+COPY --from=build --chown=portara:portara /app/node_modules ./node_modules
+COPY --from=build --chown=portara:portara /app/server/node_modules ./server/node_modules
+COPY --from=build --chown=portara:portara /app/server/package.json ./server/package.json
+COPY --from=build --chown=portara:portara /app/server/dist ./server/dist
+COPY --from=build --chown=portara:portara /app/web/dist /srv/web
+COPY --from=build --chown=portara:portara /app/package.json ./package.json
+
+COPY --chown=portara:portara docker/Caddyfile /etc/caddy/Caddyfile
+COPY --chown=portara:portara docker/entrypoint.sh /usr/local/bin/portara-entrypoint
+RUN chmod 0755 /usr/local/bin/portara-entrypoint \
+ && mkdir -p /app/.caddy/data /app/.caddy/config \
+ && chown -R portara:portara /app /srv/web
+
+USER portara
+EXPOSE 8080
+
+# 健康检查走 Caddy（/healthz 由 Caddy 反代到 Node），与 compose 保持一致
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD wget -qO- http://127.0.0.1:8080/healthz | grep -q '"ok":true'
+
+ENTRYPOINT ["/usr/local/bin/portara-entrypoint"]

@@ -8,6 +8,11 @@
 #
 # 端口分配见决策记录 D-008（内部资料）；宿主机端口刻意避开既有容器占用
 # （55432 已被 other-project-pg 占用，故 PG 用 52744）。
+#
+# 所有宿主端口都可用环境变量覆盖（默认值不变）；这样用独立 project name 起测试栈时
+# 不会撞上常驻的 portara-postgres-1 / portara-redis-1：
+#   PORTARA_HTTP_PORT（默认 52740）、PORTARA_PG_PORT（默认 52744）、
+#   PORTARA_REDIS_PORT（默认 52745）。
 
 name: portara
 
@@ -21,7 +26,7 @@ services:
       POSTGRES_DB: portara
     # 只绑回环，避免把数据库暴露到局域网
     ports:
-      - "127.0.0.1:52744:5432"
+      - "127.0.0.1:${PORTARA_PG_PORT:-52744}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -35,7 +40,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "127.0.0.1:52745:6379"
+      - "127.0.0.1:${PORTARA_REDIS_PORT:-52745}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -46,10 +51,11 @@ services:
 
   portara:
     profiles: ["app"]
+    # Caddy 多阶段镜像：Caddy 对外 8080，Node 仅在容器内 127.0.0.1:52740
     build:
       context: .
-      dockerfile: Dockerfile
-    image: portara:latest
+      dockerfile: Dockerfile.caddy
+    image: portara-caddy:latest
     restart: unless-stopped
     depends_on:
       postgres:
@@ -58,7 +64,10 @@ services:
         condition: service_healthy
     environment:
       PORTARA_PORT: "52740"
-      PORTARA_HOST: "0.0.0.0"
+      PORTARA_HOST: "127.0.0.1"
+      PORTARA_SITE_ADDR: ":8080"
+      PORTARA_UPSTREAM: "127.0.0.1:52740"
+      PORTARA_WEB_ROOT: "/srv/web"
       DATABASE_URL: postgres://portara:${POSTGRES_PASSWORD:-portara}@postgres:5432/portara
       REDIS_URL: redis://redis:6379
       PORTARA_MASTER_KEY: ${PORTARA_MASTER_KEY:?生产部署必须设置 PORTARA_MASTER_KEY}
@@ -67,13 +76,14 @@ services:
       PORTARA_ADMIN_PASSWORD: ${PORTARA_ADMIN_PASSWORD:?必须设置初始管理员密码}
       PORTARA_COOKIE_SECURE: ${PORTARA_COOKIE_SECURE:-false}
     ports:
-      - "52740:52740"
+      - "${PORTARA_HTTP_PORT:-52740}:8080"
+    # 健康检查走 Caddy（/healthz 反代到 Node）
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:52740/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 20s
+      start_period: 30s
 
 volumes:
   pgdata:

@@ -1,0 +1,37 @@
+# Portara — Caddy 站点配置（镜像内路径 /etc/caddy/Caddyfile）
+#
+# 所有变量都有默认值，容器可直接启动；需要改上游 / 站点根目录时注入环境变量即可：
+#   PORTARA_SITE_ADDR   监听地址，默认 :8080
+#   PORTARA_UPSTREAM    Node 上游，默认 127.0.0.1:52740
+#   PORTARA_WEB_ROOT    前端产物目录，默认 /srv/web
+{
+	# 单容器部署不需要 Caddy 的本地 admin API；关掉可少一个监听端口
+	admin off
+	# 容器内是纯 HTTP（TLS 由外层入口终止），禁用自动 HTTPS
+	auto_https off
+}
+
+{$PORTARA_SITE_ADDR::8080} {
+	encode zstd gzip
+
+	# 控制面 / 数据面 / 运维端点全部反代到 Node
+	@backend path /api /api/* /v1 /v1/* /healthz /readyz
+	handle @backend {
+		reverse_proxy {$PORTARA_UPSTREAM:127.0.0.1:52740}
+	}
+
+	# 带指纹的构建产物：长缓存，immutable
+	handle /assets/* {
+		root * {$PORTARA_WEB_ROOT:/srv/web}
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# SPA：其余路径先找静态文件，找不到回退 index.html；入口文件必须每次校验
+	handle {
+		root * {$PORTARA_WEB_ROOT:/srv/web}
+		try_files {path} /index.html
+		header Cache-Control "no-cache"
+		file_server
+	}
+}
