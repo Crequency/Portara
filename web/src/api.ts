@@ -483,26 +483,44 @@ export interface StatsSeries {
   series: SeriesPoint[]
 }
 
-/** 热力图的一个时间桶：label 是 HH:00（hour）或 MM-DD（day） */
-export interface HeatmapBucket {
-  label: string
+/** 热力图的单个格子：cells[row][col] */
+export interface HeatmapCell {
   requests: number
   tokens: number
   errors: number
 }
 
+/** 年历模式顶部的月份标签：第 col 列（从 0 起）出现该月 */
+export interface HeatmapMonthLabel {
+  col: number
+  label: string
+}
+
 /**
- * 使用频率热力图。
+ * 使用频率热力图（二维矩阵）。
  *
- * 与 series 同参数；hour 覆盖今日 24 桶 / 7d 168 桶，
- * day 覆盖 30 / 90 / 365 个日桶（未来时间为 0）。
+ * 后端把一维时间桶折成「按天分列」的矩阵：同一列里是连续的若干个小桶，
+ * 列数 / 行数随档位不同（today 96×15、7d 84×12、30d 90×16、90d 90×12）；
+ * 365d 是 GitHub 年历（53 列 × 7 行，第一行周一）。
+ * 颜色与时间换算都由前端按 cells 的行列位置推算。
  */
 export interface StatsHeatmap {
   /** 本次查询实际使用的时区 */
-  timezone?: string
-  granularity: 'hour' | 'day'
+  timezone: string
   range: StatsRange
-  buckets: HeatmapBucket[]
+  mode: 'grid' | 'calendar'
+  cols: number
+  rows: number
+  /** 长度 = cols，空串表示该列不标 */
+  xLabels: string[]
+  /** 长度 = rows，空串表示该行不标 */
+  yLabels: string[]
+  /** cells[row][col]，完整 rows × cols */
+  cells: HeatmapCell[][]
+  /** 仅 calendar 模式 */
+  monthLabels?: HeatmapMonthLabel[]
+  /** 仅 calendar 模式 */
+  weekdayLabels?: string[]
 }
 
 export interface ChannelTestResult {

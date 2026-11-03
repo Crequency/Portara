@@ -415,16 +415,11 @@ function setTrendView(view: TrendView): void {
 
 /**
  * 卡片右上角显示的粒度。
- * 热力图只有 hour / day 两种；series 则是四值，90d/365d 分别是 week / halfmonth。
+ * 趋势图按 series 的四值（hour/day/week/halfmonth）；
+ * 热力图是二维矩阵，每格时长由组件自己写在脚注里，这里不再重复。
  */
 const activeGranularity = computed(() => {
-  if (trendView.value === 'heatmap') {
-    // 正在加载新范围时先不显示粒度，避免把上一个范围的粒度挂在新数字上
-    if (heatmapLoading.value || !heatmap.value) return ''
-    return heatmap.value.granularity === 'hour'
-      ? t('overview.perHour')
-      : t('overview.perDay')
-  }
+  if (trendView.value === 'heatmap') return ''
   switch (granularity.value) {
     case 'hour':
       return t('overview.perHour')
@@ -645,11 +640,7 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
       <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
       <UsageTrendChart v-else-if="trendView === 'chart'" :series="series" />
       <div v-else-if="heatmapLoading" class="loading">{{ t('common.loading') }}</div>
-      <UsageHeatmap
-        v-else-if="heatmap"
-        :buckets="heatmap.buckets"
-        :granularity="heatmap.granularity"
-      />
+      <UsageHeatmap v-else-if="heatmap" :data="heatmap" />
       <div v-else class="empty">{{ t('common.empty') }}</div>
     </div>
 
