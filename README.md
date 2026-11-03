@@ -1,10 +1,6 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" width="112" height="112" alt="Portara" />
+  <img src="docs/assets/banner.svg" alt="Portara" width="100%">
 </p>
-
-<h1 align="center">Portara</h1>
-
-<p align="center">Enterprise-grade AI API Gateway</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License"></a>
@@ -42,6 +38,66 @@ pnpm install && pnpm build && pnpm start
 
 Open <http://127.0.0.1:52740/>, sign in with the administrator account from `.env`, issue a key
 and call the gateway with any OpenAI SDK.
+
+## How to Dev
+
+Prerequisites: **Node.js >= 22.12** and **pnpm 11** (`corepack enable && corepack prepare pnpm@11 --activate`),
+plus **Docker** with **Compose v2**; PostgreSQL and Redis come from Compose.
+
+| Path | What lives there |
+| --- | --- |
+| `server/src/routes/` · `services/` | `/v1/*` data plane, `/api/*` control plane, routing, quota, audit |
+| `server/src/migrations.ts` | Ordered, additive, idempotent SQL migrations |
+| `web/src/views/` · `components/` · `i18n/` | Console pages, hand-built controls and charts, EN/ZH copy |
+| `scripts/smoke.mjs` · `scripts/ui/` | End-to-end suite; headless-browser UI checks |
+| `docker/` · `Dockerfile.caddy` | Caddyfile and entrypoint; multi-stage Caddy + Node image |
+
+**Dependencies** — both bind loopback only, `127.0.0.1:52744` and `:52745`:
+
+```bash
+docker compose up -d postgres redis
+```
+
+**Two ways to run it** — the first serves sources, the second serves built artifacts:
+
+```bash
+pnpm dev                    # terminal 1: tsx watch on :52740
+pnpm dev:web                # terminal 2: Vite on :52741, proxies /api and /v1 to :52740
+pnpm build && pnpm start    # single port :52740, server/dist + web/dist, no watchers
+```
+
+`pnpm start` runs `server/dist`, not the sources: after touching `server/src` or `web/src` you
+must rebuild, or a stale `dist` keeps answering and your change looks ignored — the easiest trap here.
+
+**Environment** — `cp .env.example .env`, then set `PORTARA_MASTER_KEY` (`openssl rand -base64 32`,
+must decode to exactly 32 bytes) and `PORTARA_SESSION_SECRET` (`openssl rand -hex 32`). The
+administrator account is created on first start only and only while that username is absent;
+changing `PORTARA_ADMIN_PASSWORD` later does not rotate it.
+
+**Checks before a PR** — four gates, then two UI passes against a running instance:
+
+```bash
+pnpm typecheck && pnpm build && pnpm test   # gates 1-3
+pnpm smoke                                  # gate 4: PG + Redis, isolated schema
+pnpm ui:check && pnpm ui:keys               # pages render; no raw i18n keys on screen
+```
+
+`pnpm smoke` spawns `server/dist/index.js` (build first) and refuses to run unless
+`PORTARA_DB_SCHEMA` contains `smoke`, so it never touches the development database. The UI checks
+need `playwright-core` — `pnpm add -D playwright-core && npx playwright-core install
+chromium-headless-shell`, or set `PLAYWRIGHT_CORE_PATH` to an existing install and
+`CHROME_HEADLESS_SHELL` to an existing browser; export `PORTARA_ADMIN_PASSWORD` for the sign-in.
+
+**Database changes** — migrations live in `server/src/migrations.ts`: additive only, never edit a
+published one, each must be idempotent, and a change of meaning must backfill existing rows in the
+same migration. Destructive steps need a snapshot; tests always use their own schema.
+
+**Docker** — `docker compose --profile app up -d --build` builds `Dockerfile.caddy` (Caddy +
+console + Node) and publishes it on `${PORTARA_HTTP_PORT:-52740}`; or pull
+`ghcr.io/crequency/portara:0.2.2`.
+
+**CI** — pushes to `main` and PRs run `verify` (typecheck → build → test → smoke); a `vX.Y.Z`
+tag also builds `Dockerfile.caddy` and pushes it to GHCR with semver tags (`0.2.2`, `0.2`, `0`).
 
 ## Architecture
 

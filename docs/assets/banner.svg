@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="banner-title banner-desc">
+  <!-- Portara 顶部横幅：纯矢量、无外链、无位图。
+       品牌渐变与门形标记取自 web/src/logo.json（唯一事实来源），与 docs/assets/logo.svg 同色同形。 -->
+  <title id="banner-title">Portara — Enterprise-grade AI API Gateway</title>
+  <desc id="banner-desc">Dark banner with the Portara gate mark, the PORTARA wordmark and a usage heatmap motif.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#121a2e"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#8f6bff"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#c2cef2"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow-left" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#5b8cff" stop-opacity="0.22"/>
+      <stop offset="0.6" stop-color="#5b8cff" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#5b8cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-right" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8f6bff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#8f6bff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0v32" fill="none" stroke="#93a4c8" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+    <clipPath id="frame">
+      <rect width="1280" height="320" rx="18"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="320" fill="url(#bg)"/>
+    <rect width="1280" height="320" fill="url(#grid)"/>
+    <circle cx="150" cy="190" r="300" fill="url(#glow-left)"/>
+    <circle cx="1180" cy="40" r="280" fill="url(#glow-right)"/>
+    <rect width="1280" height="140" fill="url(#sheen)"/>
+
+    <!-- 门形标记：logo.json 的 path，32 视图缩放到 144 -->
+    <g transform="translate(56 88) scale(4.5)">
+      <path d="M6.5 27V13.2a9.5 9.5 0 0 1 19 0V27H6.5ZM11.3 27V13.7a4.7 4.7 0 0 1 9.4 0V27h-9.4Z" fill="url(#brand)" fill-rule="evenodd"/>
+    </g>
+
+    <!-- 字标：textLength 钉宽，避免不同系统的字体度量把标题撑出版面 -->
+    <text x="216" y="168" font-family="Inter, 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="92" font-weight="700" letter-spacing="4" textLength="470" lengthAdjust="spacing" fill="url(#wordmark)">PORTARA</text>
+    <rect x="218" y="188" width="88" height="4" rx="2" fill="url(#brand)"/>
+    <text x="218" y="228" font-family="Inter, 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="24" font-weight="400" letter-spacing="0.4" fill="#9aa5bd">Enterprise-grade AI API Gateway</text>
+
+    <!-- 使用频率热力图意象：低透明度强调色方块 -->
+    <g>
+    <rect x="776" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="808" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="840" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="872" y="68" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="904" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="936" y="68" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="968" y="68" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="1000" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1032" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1064" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1096" y="68" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1128" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1160" y="68" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1192" y="68" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="776" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="808" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="840" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="872" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="904" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="936" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="968" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.34"/>
+    <rect x="1000" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1032" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1064" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1096" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1128" y="100" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1160" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1192" y="100" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="776" y="132" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="808" y="132" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="840" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="872" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="904" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="936" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.62"/>
+    <rect x="968" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.62"/>
+    <rect x="1000" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="1032" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="1064" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1096" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1128" y="132" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1160" y="132" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1192" y="132" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="776" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="808" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="840" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="872" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="904" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="936" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.34"/>
+    <rect x="968" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.34"/>
+    <rect x="1000" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1032" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1064" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1096" y="164" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1128" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1160" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1192" y="164" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="776" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="808" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="840" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="872" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="904" y="196" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="936" y="196" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="968" y="196" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.2"/>
+    <rect x="1000" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1032" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1064" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1096" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1128" y="196" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1160" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1192" y="196" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="776" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="808" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="840" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="872" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="904" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="936" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="968" y="228" width="24" height="24" rx="5" fill="url(#brand)" opacity="0.11"/>
+    <rect x="1000" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1032" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1064" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1096" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1128" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1160" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    <rect x="1192" y="228" width="24" height="24" rx="5" fill="#5b8cff" opacity="0.05"/>
+    </g>
+  </g>
+
+  <rect x="0.5" y="0.5" width="1279" height="319" rx="17.5" fill="none" stroke="#ffffff" stroke-opacity="0.07"/>
+</svg>
