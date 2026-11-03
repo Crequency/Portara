@@ -45,18 +45,84 @@ const loading = ref(true)
 
 /**
  * 「用量趋势」卡片内的两个视图：趋势图 / 使用频率。
- * 记住最后的选择；非法值（坏数据、旧版本残留）一律回退趋势图。
+ *
+ * **按时间范围分别记忆**：在「今日」习惯看热力图、在「近一个月」习惯看走势，
+ * 本来就是两件事。只记一个全局值的话，每换一次范围都得再手动点一遍。
+ *
+ * 存的是 JSON map（键 = range preset，值 = 视图）：
+ * `{"today":"heatmap","30d":"chart"}`。
+ * 存储**不可信**：坏 JSON、未知键名、未知值一律忽略该条并回退趋势图 ——
+ * 宁可退回默认，也不能因为一条坏数据白屏。
  */
 type TrendView = 'chart' | 'heatmap'
 const TREND_VIEW_KEY = 'portara.overview.trendView'
-const trendView = ref<TrendView>('chart')
+const TREND_VIEWS: TrendView[] = ['chart', 'heatmap']
+/** 必须与下面 `presets` 的 id 一致；也决定写入 map 时的键顺序 */
+const TREND_RANGE_KEYS: RangePreset[] = ['today', '7d', '30d', '90d', '365d', 'custom']
 
-function loadTrendView(): void {
+const trendView = ref<TrendView>('chart')
+/** 各范围记住的视图；没有条目 = 趋势图 */
+const trendViews = reactive<Partial<Record<RangePreset, TrendView>>>({})
+/**
+ * **旧版格式**（裸字符串 `'chart'` / `'heatmap'`）的语义是「所有范围的默认视图」。
+ * 读到它时记在这里兜底，等下次写入时自然升级成 map —— 不主动清掉、也不报错。
+ */
+let legacyTrendView: TrendView | null = null
+
+function isTrendView(value: unknown): value is TrendView {
+  return typeof value === 'string' && TREND_VIEWS.includes(value as TrendView)
+}
+
+/** 读取偏好；坏数据只丢坏的那条，不连坐整个 map */
+function loadTrendViews(): void {
+  for (const key of TREND_RANGE_KEYS) delete trendViews[key]
+  legacyTrendView = null
   try {
     const raw = localStorage.getItem(TREND_VIEW_KEY)
-    if (raw === 'chart' || raw === 'heatmap') trendView.value = raw
+    if (!raw) return
+    // 老格式：裸字符串 = 所有范围的默认视图，先放内存，下次写入时升级
+    if (isTrendView(raw)) {
+      legacyTrendView = raw
+      return
+    }
+    const parsed: unknown = JSON.parse(raw)
+    // JSON 字符串形式的旧格式（手写过 "heatmap"）也按老格式处理
+    if (isTrendView(parsed)) {
+      legacyTrendView = parsed
+      return
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!TREND_RANGE_KEYS.includes(key as RangePreset)) continue
+      if (!isTrendView(value)) continue
+      trendViews[key as RangePreset] = value
+    }
   } catch {
-    /* 隐私模式：用默认值即可 */
+    /* 隐私模式 / 坏 JSON：用默认值即可 */
+  }
+}
+
+/** 某范围该用哪个视图：本范围的记录 → 旧版全局默认 → 趋势图 */
+function trendViewFor(range: RangePreset): TrendView {
+  return trendViews[range] ?? legacyTrendView ?? 'chart'
+}
+
+/**
+ * 写入偏好。
+ *
+ * 顺带把旧版全局默认落到每个范围：map 里写全量条目，升级后行为与升级前一致
+ * （不只是当前范围，否则其余范围会因为「少了回退」而悄悄变回趋势图）。
+ * 写不进去（隐私模式）就静默忽略，内存也保持原样，避免与存储各说各话。
+ */
+function persistTrendViews(): void {
+  const data = {} as Record<RangePreset, TrendView>
+  for (const range of TREND_RANGE_KEYS) data[range] = trendViewFor(range)
+  try {
+    localStorage.setItem(TREND_VIEW_KEY, JSON.stringify(data))
+    for (const range of TREND_RANGE_KEYS) trendViews[range] = data[range]
+    legacyTrendView = null
+  } catch {
+    /* 写不进去不影响功能 */
   }
 }
 
@@ -403,14 +469,39 @@ function ensureHeatmap(): void {
   void loadHeatmap()
 }
 
+/**
+ * 换范围专用：先丢掉旧范围的缓存键，再按新范围取数。
+ *
+ * 只靠 ensureHeatmap() 也能发出请求（range 变了，key 对不上），
+ * 但新数据回来之前界面上会挂着上一范围的热力图 —— 那是错的数字。
+ * 这里先清空让卡片回到 loading；路上还没回来的旧请求由 heatmapSeq 作废。
+ */
+function reloadHeatmap(): void {
+  heatmap.value = null
+  heatmapKey.value = ''
+  void loadHeatmap()
+}
+
+/** 切视图并写进**当前范围**的条目；切到热力图时按当前范围拉数（缓存命中不重复请求） */
 function setTrendView(view: TrendView): void {
   trendView.value = view
-  try {
-    localStorage.setItem(TREND_VIEW_KEY, view)
-  } catch {
-    /* 写不进去不影响功能 */
-  }
+  trendViews[preset.value] = view
+  persistTrendViews()
   if (view === 'heatmap') ensureHeatmap()
+}
+
+/**
+ * 切到某范围后**立刻**套用该范围记住的视图。
+ *
+ * 必须在 `preset` 已经改好之后调用 —— loadHeatmap() 用的是 rangeQuery()，
+ * 拿的还是 preset 的当前值；用旧 preset 去请求就会拉到错范围的热力图。
+ */
+function applyTrendViewForRange(): void {
+  trendView.value = trendViewFor(preset.value)
+  if (trendView.value !== 'heatmap') return
+  // 已经缓存了同一范围（切走再切回）就直接复用，否则清掉旧范围的再拉
+  if (heatmapKey.value === rangeQuery()) return
+  reloadHeatmap()
 }
 
 /**
@@ -466,9 +557,12 @@ function choosePreset(id: RangePreset): void {
     customFrom.value = local(before)
     customTo.value = local(now)
     appliedCustom.value = { from: customFrom.value, to: customTo.value }
+    // 顺序要紧：preset / appliedCustom 改完再套视图，热力图才会按新范围请求
+    applyTrendViewForRange()
     void load()
     return
   }
+  applyTrendViewForRange()
   void load()
 }
 
@@ -483,6 +577,9 @@ function applyCustom(): void {
   }
   appliedCustom.value = { from: customFrom.value, to: customTo.value }
   persistRange()
+  // 区间变了就是换范围：同样按 custom 条目恢复视图（在 appliedCustom 改完之后，
+  // 否则热力图会带着旧区间去请求）
+  applyTrendViewForRange()
   void load()
 }
 
@@ -491,10 +588,13 @@ function go(id: string): void {
 }
 
 onMounted(() => {
-  // 先恢复偏好，再加载 —— 否则首屏会先按默认值渲染一次
+  // 先恢复偏好，再加载 —— 否则首屏会先按默认值渲染一次。
+  // 视图必须在 restoreRange() **之后**读：它要按恢复出来的范围取自己那条记录，
+  // 反过来会先按今日的默认 chart 渲染一帧，热力图用户能看见闪一下。
   restoreRange()
   loadTopSort()
-  loadTrendView()
+  loadTrendViews()
+  trendView.value = trendViewFor(preset.value)
   void loadUsage()
   void load()
 
