@@ -67,6 +67,8 @@ export const en = {
     today: 'Today',
     d7: 'Last 7 days',
     d30: 'Last 30 days',
+    d90: 'Last quarter',
+    d365: 'Last year',
     custom: 'Custom',
     apply: 'Apply',
     perHour: 'hourly',

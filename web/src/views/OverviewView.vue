@@ -64,6 +64,8 @@ const presets = computed<{ id: RangePreset; label: string }[]>(() => [
   { id: 'today', label: t('overview.today') },
   { id: '7d', label: t('overview.d7') },
   { id: '30d', label: t('overview.d30') },
+  { id: '90d', label: t('overview.d90') },
+  { id: '365d', label: t('overview.d365') },
   { id: 'custom', label: t('overview.custom') }
 ])
 

@@ -90,7 +90,7 @@ logRoutes.get('/logs', async (c) => {
 
 /** 时间范围解析：预设走 SQL 的 date_trunc，自定义用前端传入的边界 */
 const rangeQuery = z.object({
-  range: z.enum(['today', '7d', '30d', 'custom']).default('today'),
+  range: z.enum(['today', '7d', '30d', '90d', '365d', 'custom']).default('today'),
   from: z.string().optional(),
   to: z.string().optional(),
   /** 可选：只看某个渠道的流量（渠道详情页用） */
@@ -129,7 +129,7 @@ interface Bounds {
  * 导致 UTC+8 的用户选「今日」时会丢掉本地 00:00–08:00 的数据。
  */
 async function resolveBounds(
-  range: 'today' | '7d' | '30d' | 'custom',
+  range: 'today' | '7d' | '30d' | '90d' | '365d' | 'custom',
   tz: string,
   from?: string,
   to?: string
@@ -152,6 +152,8 @@ async function resolveBounds(
          when 'today' then (date_trunc('day', now() at time zone $2)) at time zone $2
          when '7d'    then (date_trunc('day', now() at time zone $2) - interval '6 days') at time zone $2
          when '30d'   then (date_trunc('day', now() at time zone $2) - interval '29 days') at time zone $2
+         when '90d'   then (date_trunc('day', now() at time zone $2) - interval '89 days') at time zone $2
+         when '365d'  then (date_trunc('day', now() at time zone $2) - interval '364 days') at time zone $2
        end as from_ts,
        now() as to_ts`,
     [range, tz]

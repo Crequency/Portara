@@ -805,6 +805,50 @@ async function main() {
       assert.ok(monthOverview.body.totals.requests >= 2)
     })
 
+    // 90d / 365d：新增大粒度。区间按「含今天」计 —— 90d 从当地日界前 89 天起算，
+    // 365d 从前 364 天起算，因此按天分桶的点数正好是 90 / 365。
+    const quarterOverview = await apiCall('GET', '/api/stats/overview?range=90d')
+    check('近一个季度统计可用（range.preset=90d）', () => {
+      assert.equal(quarterOverview.status, 200)
+      assert.equal(quarterOverview.body?.range?.preset, '90d')
+    })
+
+    const quarterSeries = await apiCall('GET', '/api/stats/series?range=90d')
+    check('近一个季度序列按天分桶返回 90 个点', () => {
+      // 起点是当地日界前 89 天、终点是当地今日日界：含今天正好 90 个按天桶。
+      // （生成序列用当地日界对齐，夏令时切换也不会多出/少掉一点）
+      assert.equal(quarterSeries.body?.granularity, 'day')
+      assert.equal(
+        quarterSeries.body.series.length,
+        90,
+        `series length = ${quarterSeries.body.series.length}`
+      )
+    })
+
+    const yearOverview = await apiCall('GET', '/api/stats/overview?range=365d')
+    check('近一年统计可用（range.preset=365d）', () => {
+      assert.equal(yearOverview.status, 200)
+      assert.equal(yearOverview.body?.range?.preset, '365d')
+    })
+
+    const yearSeries = await apiCall('GET', '/api/stats/series?range=365d')
+    check('近一年序列按天分桶返回 365 个点', () => {
+      // 同理：前 364 天 + 今天 = 365 个按天桶。
+      assert.equal(yearSeries.body?.granularity, 'day')
+      assert.equal(
+        yearSeries.body.series.length,
+        365,
+        `series length = ${yearSeries.body.series.length}`
+      )
+    })
+
+    check('更大区间的请求数只多不少（90d >= 30d）', () =>
+      assert.ok(
+        quarterOverview.body.totals.requests >= monthOverview.body.totals.requests,
+        `90d=${quarterOverview.body.totals.requests} 30d=${monthOverview.body.totals.requests}`
+      )
+    )
+
     const customFrom = new Date(Date.now() - 3600_000).toISOString()
     const customTo = new Date(Date.now() + 60_000).toISOString()
     const customOverview = await apiCall(

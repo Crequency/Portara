@@ -419,7 +419,7 @@ export interface RequestLog {
   error: string
 }
 
-export type RangePreset = 'today' | '7d' | '30d' | 'custom'
+export type RangePreset = 'today' | '7d' | '30d' | '90d' | '365d' | 'custom'
 
 export interface StatsRange {
   preset: RangePreset

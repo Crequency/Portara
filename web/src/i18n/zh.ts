@@ -67,6 +67,8 @@ export const zh = {
     today: '今日',
     d7: '近 7 天',
     d30: '近一个月',
+    d90: '近一个季度',
+    d365: '近一年',
     custom: '自定义',
     apply: '应用',
     perHour: '按小时',

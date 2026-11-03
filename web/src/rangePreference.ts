@@ -11,7 +11,7 @@
  */
 import type { RangePreset } from './api'
 
-const VALID_PRESETS: RangePreset[] = ['today', '7d', '30d', 'custom']
+const VALID_PRESETS: RangePreset[] = ['today', '7d', '30d', '90d', '365d', 'custom']
 
 export interface StoredRange {
   preset: RangePreset
