@@ -142,6 +142,55 @@ function section(title) {
   console.log(`\n\u001b[36m${title}\u001b[0m`)
 }
 
+/**
+ * 统计分桶的预期点数：按服务端返回的时区，用同一套「当地日历」规则算。
+ * 这样断言是精确的，但不会因为跑在周中/周末、或 365d 是否跨到 16 日而飘。
+ */
+function localDateParts(iso, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    })
+      .formatToParts(new Date(iso))
+      .map((p) => [p.type, p.value])
+  )
+  return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day) }
+}
+
+const dayNumber = (p) => Math.floor(Date.UTC(p.year, p.month - 1, p.day) / 86_400_000)
+const weekdayOf = (n) => new Date(n * 86_400_000).getUTCDay() // 0=周日
+/** 周桶：从 from 所在周的周一到 to 所在周的周一，每 7 天一个。 */
+function expectedWeekBuckets(fromIso, toIso, timeZone) {
+  const from = dayNumber(localDateParts(fromIso, timeZone))
+  const to = dayNumber(localDateParts(toIso, timeZone))
+  const fromMonday = from - ((weekdayOf(from) + 6) % 7)
+  const toMonday = to - ((weekdayOf(to) + 6) % 7)
+  return Math.floor((toMonday - fromMonday) / 7) + 1
+}
+/** 半月桶：落在 [from, to] 内的当地 1 日 / 16 日边界数。 */
+function expectedHalfMonthBuckets(fromIso, toIso, timeZone) {
+  const fromParts = localDateParts(fromIso, timeZone)
+  const toParts = localDateParts(toIso, timeZone)
+  const from = dayNumber(fromParts)
+  const to = dayNumber(toParts)
+  let count = 0
+  for (let year = fromParts.year, month = fromParts.month; ; month++) {
+    if (month > 12) {
+      month = 1
+      year++
+    }
+    const first = Date.UTC(year, month - 1, 1) / 86_400_000
+    const sixteenth = Date.UTC(year, month - 1, 16) / 86_400_000
+    if (first >= from && first <= to) count++
+    if (sixteenth >= from && sixteenth <= to) count++
+    if (year === toParts.year && month === toParts.month) break
+  }
+  return count
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // ------------------------------------------------------------ 伪上游
@@ -805,8 +854,9 @@ async function main() {
       assert.ok(monthOverview.body.totals.requests >= 2)
     })
 
-    // 90d / 365d：新增大粒度。区间按「含今天」计 —— 90d 从当地日界前 89 天起算，
-    // 365d 从前 364 天起算，因此按天分桶的点数正好是 90 / 365。
+    // 90d / 365d：更粗的分桶 —— 90d 按当地周（周一起），365d 按半月（1 日 / 16 日）。
+    // 首尾桶按 [from, to] 裁剪；周桶点数随 from 落在周几而 13/14 变化，
+    // 半月桶点数随 to 是否已过 16 日而 24/25 变化，故用同一套当地日历规则算精确预期。
     const quarterOverview = await apiCall('GET', '/api/stats/overview?range=90d')
     check('近一个季度统计可用（range.preset=90d）', () => {
       assert.equal(quarterOverview.status, 200)
@@ -814,14 +864,15 @@ async function main() {
     })
 
     const quarterSeries = await apiCall('GET', '/api/stats/series?range=90d')
-    check('近一个季度序列按天分桶返回 90 个点', () => {
-      // 起点是当地日界前 89 天、终点是当地今日日界：含今天正好 90 个按天桶。
-      // （生成序列用当地日界对齐，夏令时切换也不会多出/少掉一点）
-      assert.equal(quarterSeries.body?.granularity, 'day')
+    check('近一个季度序列按周（周一起）分桶', () => {
+      const body = quarterSeries.body
+      assert.equal(body?.granularity, 'week')
+      const expected = expectedWeekBuckets(body.range.from, body.range.to, body.timezone)
+      assert.ok(expected >= 13 && expected <= 14, `预期周桶数异常：${expected}`)
       assert.equal(
-        quarterSeries.body.series.length,
-        90,
-        `series length = ${quarterSeries.body.series.length}`
+        body.series.length,
+        expected,
+        `series length = ${body.series.length}, expected = ${expected}`
       )
     })
 
@@ -832,15 +883,51 @@ async function main() {
     })
 
     const yearSeries = await apiCall('GET', '/api/stats/series?range=365d')
-    check('近一年序列按天分桶返回 365 个点', () => {
-      // 同理：前 364 天 + 今天 = 365 个按天桶。
-      assert.equal(yearSeries.body?.granularity, 'day')
+    check('近一年序列按半月（1 日 / 16 日）分桶', () => {
+      const body = yearSeries.body
+      assert.equal(body?.granularity, 'halfmonth')
+      const expected = expectedHalfMonthBuckets(body.range.from, body.range.to, body.timezone)
+      assert.ok(expected === 24 || expected === 25, `预期半月桶数异常：${expected}`)
       assert.equal(
-        yearSeries.body.series.length,
-        365,
-        `series length = ${yearSeries.body.series.length}`
+        body.series.length,
+        expected,
+        `series length = ${body.series.length}, expected = ${expected}`
       )
     })
+
+    // ---------------------------------------------------------- 使用频率热力图
+    // 与 series 不同：热力图必须铺满整个范围、不截止到 now，未来桶为 0。
+    const heatToday = await apiCall('GET', '/api/stats/heatmap?range=today')
+    check('今日热力图铺满 24 个小时桶', () => {
+      const body = heatToday.body
+      assert.equal(body?.granularity, 'hour')
+      assert.equal(body.buckets.length, 24)
+      assert.equal(body.buckets[0].label, '00:00')
+      assert.equal(body.buckets.at(-1).label, '23:00')
+    })
+
+    const heat7d = await apiCall('GET', '/api/stats/heatmap?range=7d')
+    check('近 7 天热力图按小时铺满 168 个桶', () => {
+      const body = heat7d.body
+      assert.equal(body?.granularity, 'hour')
+      assert.equal(body.buckets.length, 168)
+      assert.equal(body.buckets[0].label, '00:00')
+      assert.equal(body.buckets.at(-1).label, '23:00')
+    })
+
+    for (const [preset, count] of [
+      ['30d', 30],
+      ['90d', 90],
+      ['365d', 365]
+    ]) {
+      const heat = await apiCall('GET', `/api/stats/heatmap?range=${preset}`)
+      check(`近 ${preset} 热力图按天铺满 ${count} 个桶`, () => {
+        const body = heat.body
+        assert.equal(body?.granularity, 'day')
+        assert.equal(body.buckets.length, count)
+        assert.ok(body.buckets.every((b) => typeof b.requests === 'number' && b.requests >= 0))
+      })
+    }
 
     check('更大区间的请求数只多不少（90d >= 30d）', () =>
       assert.ok(

@@ -288,29 +288,186 @@ logRoutes.get('/stats/overview', async (c) => {
   })
 })
 
+type SeriesGranularity = 'hour' | 'day' | 'week' | 'halfmonth'
+
+/**
+ * 序列分桶口径：
+ * - today 按小时；7d/30d 按天；
+ * - 90d 按当地周（周一起）；365d 按半月（每月 1 日、16 日起）；
+ * - custom 保持原来的「跨度 ≤48h 按小时，否则按天」。
+ */
+function resolveSeriesPlan(
+  range: 'today' | '7d' | '30d' | '90d' | '365d' | 'custom',
+  spanHours: number
+): { granularity: SeriesGranularity; interval: string; labelFormat: string } {
+  switch (range) {
+    case 'today':
+      return { granularity: 'hour', interval: '1 hour', labelFormat: 'MM-DD HH24:00' }
+    case '7d':
+    case '30d':
+      return { granularity: 'day', interval: '1 day', labelFormat: 'MM-DD' }
+    case '90d':
+      return { granularity: 'week', interval: '7 days', labelFormat: 'MM-DD' }
+    case '365d':
+      return { granularity: 'halfmonth', interval: '1 month', labelFormat: 'MM-DD' }
+    case 'custom':
+      return spanHours <= 48
+        ? { granularity: 'hour', interval: '1 hour', labelFormat: 'MM-DD HH24:00' }
+        : { granularity: 'day', interval: '1 day', labelFormat: 'MM-DD' }
+  }
+}
+
 logRoutes.get('/stats/series', async (c) => {
   const q = parseQuery(c, rangeQuery)
   const tz = await resolveQueryTimeZone(q.tz)
   const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
-  // 跨度 ≤ 48 小时按小时分桶，否则按天 —— 否则今日范围只会有一个点
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
-  const hourly = spanHours <= 48
-  const interval = hourly ? '1 hour' : '1 day'
-  const gran = hourly ? 'hour' : 'day'
-  const labelFormat = hourly ? 'MM-DD HH24:00' : 'MM-DD'
+  const plan = resolveSeriesPlan(q.range, spanHours)
 
-  // 分桶要在**目标时区**里生成：先把起止换算成当地墙钟、取当地整点/日界，
-  // 再逐个转回 timestamptz。桶的结束取下一个桶的开始（而不是 +24h），
-  // 这样夏令时切换那天（23/25 小时）也切得准。
+  /*
+   * 分桶仍然在**目标时区**的当地墙钟上生成：先把起止换算成当地墙钟、
+   * 按当地周/月对齐，再逐个转回 timestamptz。桶的结束取下一个桶的开始
+   * （而不是机械 +24h），这样夏令时切换那天（23/25 小时）也切得准。
+   *
+   * 所有 join 都裁剪到 [from, to]：周桶首桶可能早于 from，半月桶的
+   * 首尾桶也可能越界，不裁剪会把范围外的请求算进来。
+   */
+  let rows: { label: string; requests: number; tokens: string; errors: number }[]
+
+  if (plan.granularity === 'halfmonth') {
+    // 每月 1 日与 16 日各起一桶：月起点序列 ∪ 月起点 + 15 天，再排序去重；
+    // 只保留落在 [from, to] 内的边界（首尾不足半月的区间不单独成桶）。
+    rows = await query(
+      `
+      with month_starts as (
+        select generate_series(
+          date_trunc('month', ($1::timestamptz at time zone $4)),
+          date_trunc('month', ($2::timestamptz at time zone $4)),
+          interval '1 month'
+        ) as m
+      ),
+      candidates as (
+        select m as b from month_starts
+        union
+        select m + interval '15 days' as b from month_starts
+      ),
+      bucket_starts as (
+        select (b at time zone $4) as bucket_start
+          from candidates
+         where b >= ($1::timestamptz at time zone $4)
+           and b <= ($2::timestamptz at time zone $4)
+      ),
+      spans as (
+        select bucket_start,
+               coalesce(
+                 lead(bucket_start) over (order by bucket_start),
+                 bucket_start + interval '1 month'
+               ) as bucket_end
+          from bucket_starts
+      )
+      select to_char(s.bucket_start at time zone $4, $3) as label,
+             coalesce(count(l.id), 0)::int as requests,
+             coalesce(sum(l.total_tokens), 0)::text as tokens,
+             coalesce(count(l.id) filter (where l.status_code >= 400), 0)::int as errors
+        from spans s
+        left join request_logs l
+               on l.ts >= greatest(s.bucket_start, $1::timestamptz)
+              and l.ts <  least(s.bucket_end, $2::timestamptz)
+              and ($5::uuid is null or l.channel_id = $5)
+       group by s.bucket_start
+       order by s.bucket_start asc
+      `,
+      [from, to, plan.labelFormat, tz, channelFilter]
+    )
+  } else {
+    rows = await query(
+      `
+      with bucket_starts as (
+        select (b at time zone $6) as bucket_start
+          from generate_series(
+            date_trunc($4, ($1::timestamptz at time zone $6)),
+            date_trunc($4, ($2::timestamptz at time zone $6)),
+            $3::interval
+          ) as b
+      ),
+      spans as (
+        select bucket_start,
+               coalesce(
+                 lead(bucket_start) over (order by bucket_start),
+                 bucket_start + $3::interval
+               ) as bucket_end
+          from bucket_starts
+      )
+      select to_char(s.bucket_start at time zone $6, $5) as label,
+             coalesce(count(l.id), 0)::int as requests,
+             coalesce(sum(l.total_tokens), 0)::text as tokens,
+             coalesce(count(l.id) filter (where l.status_code >= 400), 0)::int as errors
+        from spans s
+        left join request_logs l
+               on l.ts >= greatest(s.bucket_start, $1::timestamptz)
+              and l.ts <  least(s.bucket_end, $2::timestamptz)
+              and ($7::uuid is null or l.channel_id = $7)
+       group by s.bucket_start
+       order by s.bucket_start asc
+      `,
+      [from, to, plan.interval, plan.granularity, plan.labelFormat, tz, channelFilter]
+    )
+  }
+
+  return c.json({
+    granularity: plan.granularity,
+    timezone: tz,
+    range: { preset: q.range, from, to },
+    series: rows.map((row) => ({
+      day: row.label,
+      requests: num(row.requests),
+      tokens: num(row.tokens),
+      errors: num(row.errors)
+    }))
+  })
+})
+
+logRoutes.get('/stats/heatmap', async (c) => {
+  const q = parseQuery(c, rangeQuery)
+  const tz = await resolveQueryTimeZone(q.tz)
+  const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
+  const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
+
+  const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
+  const hourly = q.range === 'today' || q.range === '7d' ||
+    (q.range === 'custom' && spanHours <= 48)
+  const granularity = hourly ? 'hour' : 'day'
+  const interval = hourly ? '1 hour' : '1 day'
+  const labelFormat = hourly ? 'HH24:00' : 'MM-DD'
+
+  /*
+   * 热力图要铺满**整个范围**，不能截止到 now：
+   * 今日 24 个桶、7d 168 个，其余按天。预设范围直接按 from 对齐后
+   * 生成固定数量的当地桶；未来时间自然落在 0 值桶里。
+   */
+  const presetBuckets: Record<string, number> = {
+    today: 24,
+    '7d': 168,
+    '30d': 30,
+    '90d': 90,
+    '365d': 365
+  }
+  const bucketCount = q.range === 'custom' ? null : (presetBuckets[q.range] ?? null)
+
   const rows = await query<{ label: string; requests: number; tokens: string; errors: number }>(
     `
     with bucket_starts as (
       select (b at time zone $6) as bucket_start
         from generate_series(
           date_trunc($4, ($1::timestamptz at time zone $6)),
-          date_trunc($4, ($2::timestamptz at time zone $6)),
+          case
+            when $8::int is null
+              then date_trunc($4, ($2::timestamptz at time zone $6))
+            else date_trunc($4, ($1::timestamptz at time zone $6))
+                 + ($8::int - 1) * $3::interval
+          end,
           $3::interval
         ) as b
     ),
@@ -328,23 +485,25 @@ logRoutes.get('/stats/series', async (c) => {
            coalesce(count(l.id) filter (where l.status_code >= 400), 0)::int as errors
       from spans s
       left join request_logs l
-             on l.ts >= s.bucket_start and l.ts < s.bucket_end
+             on l.ts >= greatest(s.bucket_start, $1::timestamptz)
+            and l.ts <  least(s.bucket_end, $2::timestamptz)
             and ($7::uuid is null or l.channel_id = $7)
      group by s.bucket_start
      order by s.bucket_start asc
     `,
-    [from, to, interval, gran, labelFormat, tz, channelFilter]
+    [from, to, interval, granularity, labelFormat, tz, channelFilter, bucketCount]
   )
 
   return c.json({
-    granularity: hourly ? 'hour' : 'day',
     timezone: tz,
+    granularity,
     range: { preset: q.range, from, to },
-    series: rows.map((row) => ({
-      day: row.label,
+    buckets: rows.map((row) => ({
+      label: row.label,
       requests: num(row.requests),
       tokens: num(row.tokens),
       errors: num(row.errors)
     }))
   })
 })
+
