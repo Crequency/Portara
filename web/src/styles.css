@@ -1648,6 +1648,8 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .bal-account.is-exhausted .bal-acc-dot,
 .bal-account.is-exhausted .bal-acc-warn { fill: var(--danger); }
 .bal-acc-warn { font-size: 9.5px; fill: var(--danger); font-weight: 600; }
+/* 额度用尽冷冻：视觉沿用冷却虚线圈，标签用 warn 色与「窗口打满」区分 */
+.bal-acc-quota { font-size: 9.5px; fill: var(--warn); font-weight: 600; }
 
 /* 冷却中：灰色虚线圈（不引入新颜色） */
 .bal-account.is-cooling .bal-node-acc { stroke: var(--text-faint); stroke-dasharray: 4 3; }

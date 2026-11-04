@@ -13,8 +13,13 @@ import {
   isRetriableStatus,
   markAccountFailure,
   markAccountSuccess,
+  markQuotaExhaustedResponse,
   pickAccounts
 } from '../services/accounts.js'
+import {
+  formatQuotaCooldown,
+  isQuotaExhaustionResponse
+} from '../services/quotaSignal.js'
 import { tryDecryptKey } from '../services/channels.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import {
@@ -408,11 +413,34 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
          *   ② 上游明确给了 Retry-After，且比设置值更大 —— 尊重上游
          * 这样"最近一次失败的上游默认 1 小时不路由"就是可预期的默认行为。
          */
-        const base = cooldownFor(
-          attempt.status,
-          Number.isFinite(retryAfter) ? retryAfter : null
-        )
-        await markAccountFailure(candidate.id, lastFailure, Math.max(base, routing.accountFailureCooldownSec))
+        if (isQuotaExhaustionResponse(attempt.status, text)) {
+          /*
+           * 上游明确说「额度用尽」→ 阶梯冷冻，而**不是**通用失败冷却。
+           *
+           * 两套计时必须分开写：markQuotaExhaustedResponse 只动
+           * quota_cooldown_*，不碰 cooldown_until；否则一次 5xx 的短冷却
+           * 就能把这里 3 天的冷冻冲掉。
+           *
+           * 幂等：同一冷冻期内重复命中不会递增/延长（SQL 条件更新保证）。
+           */
+          const quota = await markQuotaExhaustedResponse(candidate.id, lastFailure)
+          if (quota) {
+            console.warn(
+              `[portara] 账户「${candidate.name}」额度用尽，第 ${quota.level} 次冷冻 ` +
+                `${formatQuotaCooldown(quota.secs)}${quota.applied ? '' : '（冷冻期内，保持原样）'}`
+            )
+          }
+        } else {
+          const base = cooldownFor(
+            attempt.status,
+            Number.isFinite(retryAfter) ? retryAfter : null
+          )
+          await markAccountFailure(
+            candidate.id,
+            lastFailure,
+            Math.max(base, routing.accountFailureCooldownSec)
+          )
+        }
         lastUpstreamError = new Response(text, {
           status: attempt.status,
           headers: { 'content-type': attempt.headers.get('content-type') ?? 'application/json' }

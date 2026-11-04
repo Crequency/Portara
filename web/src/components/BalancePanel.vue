@@ -122,6 +122,7 @@ const groups = computed(() => {
             status: a.status,
             usageAdapter: a.usageAdapter ?? '',
             cooldownUntil: a.cooldownUntil ?? null,
+            quotaCooldownUntil: a.quotaCooldownUntil ?? null,
             windowExhausted: Boolean(a.windowExhausted),
             windowCheckedAt: a.windowCheckedAt ?? null
           }))

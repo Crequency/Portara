@@ -26,8 +26,12 @@ export interface ChannelAccountRow {
   priority: number
   weight: number
   note: string
-  /** 故障转移维护的冷却截止时间；null = 正常 */
+  /** 故障转移维护的通用冷却截止时间；null = 正常 */
   cooldown_until: Date | null
+  /** 上游明确返回「额度用尽」的触发次数（0 = 从未） */
+  quota_cooldown_level: number
+  /** 额度用尽的阶梯冷冻到期时间；与 cooldown_until 分开计时 */
+  quota_cooldown_until: Date | null
   last_error: string
   last_used_at: Date | null
   consecutive_failures: number
@@ -258,6 +262,11 @@ export function toAccountDto(a: ChannelAccountRow, maskedKey: string) {
     usageUrl: a.usage_url ?? '',
     /** 冷却中：面板显示倒计时；到点后自动恢复可用 */
     cooldownUntil: a.cooldown_until ? new Date(a.cooldown_until).toISOString() : null,
+    /** 额度用尽触发的阶梯冷冻：等级 + 到期时间（与 cooldownUntil 分开） */
+    quotaCooldownLevel: a.quota_cooldown_level ?? 0,
+    quotaCooldownUntil: a.quota_cooldown_until
+      ? new Date(a.quota_cooldown_until).toISOString()
+      : null,
     lastError: a.last_error ?? '',
     consecutiveFailures: a.consecutive_failures ?? 0,
     quotaExhausted: Boolean(a.quota_exhausted),

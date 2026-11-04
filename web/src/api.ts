@@ -273,8 +273,12 @@ export interface ChannelAccount {
   hasKey: boolean
   usageAdapter: string
   usageUrl: string
-  /** 冷却截止时间；非空表示当前不可用 */
+  /** 通用失败冷却截止时间；非空表示当前不可用 */
   cooldownUntil: string | null
+  /** 上游明确返回「额度用尽」的触发次数（0 = 从未，迁移 020） */
+  quotaCooldownLevel: number
+  /** 额度用尽阶梯冷冻的到期时间；与 cooldownUntil 分开计时 */
+  quotaCooldownUntil: string | null
   /** 用量/余额已耗尽（迁移 019 的硬事实列） */
   quotaExhausted: boolean
   quotaCheckedAt: string | null

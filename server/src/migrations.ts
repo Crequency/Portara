@@ -452,5 +452,23 @@ export const migrations: { id: string; sql: string }[] = [
         add column if not exists window_exhausted boolean not null default false,
         add column if not exists window_checked_at timestamptz;
     `
+  },
+  {
+    id: '020_account_quota_cooldown',
+    sql: `
+      -- 上游明确返回「额度用尽」时触发的**幂等递增冷冻期**。
+      --
+      -- 与 cooldown_until 分开存：
+      --   cooldown_until      —— 通用失败冷却（401/5xx/网络错误…），一次一算；
+      --   quota_cooldown_*    —— 额度用尽的软冷冻，阶梯递增（5m→15m→45m→2h→12h→24h→3d）。
+      -- 两套计时若共用一个列会互相覆盖：一次 5xx 就能把「额度用尽 3 天」冲掉。
+      --
+      -- quota_cooldown_level：已触发次数（0 = 从未触发）。只有"冷冻已过期/从未冷冻"
+      -- 后再次检测到额度用尽才会 +1；冷冻期内重复检测不递增、不延长（幂等）。
+      -- 成功请求（markAccountSuccess）会把 level 与 until 一起清零。
+      alter table channel_accounts
+        add column if not exists quota_cooldown_level integer not null default 0,
+        add column if not exists quota_cooldown_until timestamptz;
+    `
   }
 ]

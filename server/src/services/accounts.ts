@@ -13,6 +13,8 @@
  */
 import { query } from '../db.js'
 import { pickWeighted } from './routing.js'
+import { classifyAccountState, orderByDegradation, type AccountState } from './accountState.js'
+import { QUOTA_COOLDOWN_LADDER_SEC } from './quotaSignal.js'
 import type { ChannelAccountRow } from '../types.js'
 
 export type AccountRow = ChannelAccountRow
@@ -56,10 +58,6 @@ export async function countAccounts(channelId: string): Promise<number> {
   return Number(rows[0]?.n ?? 0)
 }
 
-function isCooling(a: AccountRow, now: number): boolean {
-  return Boolean(a.cooldown_until) && new Date(a.cooldown_until!).getTime() > now
-}
-
 /**
  * 选出可用的账户，**按优先级排成候选序列**。
  *
@@ -95,18 +93,22 @@ export async function pickAccounts(
   if (opts.excludeIds?.size) pool = pool.filter((a) => !opts.excludeIds!.has(a.id))
 
   /*
-   * 三级退化（不动点：永远有账户可用，宁可让上游裁决也不自己造 503）：
-   *   ① 既没冷却、额度也没耗尽
-   *   ② 全耗尽了 → 允许用耗尽的（余额可能刚回升、缓存还没刷新）
-   *   ③ 全冷却了 → 连冷却也忽略
+   * 四级分类 + 退化阶梯（不动点：永远有账户可用，宁可让上游裁决也不自己造 503）。
+   *
+   * 分类顺序即优先级，见 classifyAccountState：
+   *   usageLimited（用量限额硬事实） > quotaCooling（额度用尽软冷冻）
+   *   > genericCooling（通用失败冷却） > ok
+   *
+   * 退化阶梯：ok → quotaCooling → genericCooling → usageLimited → 全部。
+   * 即：宁可先用「软冷冻」账户，也不先用「硬限额」账户；
+   * 全部不可用时仍然退到「全部」交给上游裁决。
    */
   const skipWindows = opts.skipExhaustedWindows === true
-  const exhausted = (a: AccountRow): boolean =>
-    a.quota_exhausted || (skipWindows && a.window_exhausted === true)
-
-  const healthy = pool.filter((a) => !isCooling(a, now) && !exhausted(a))
-  const quotaFree = pool.filter((a) => !isCooling(a, now))
-  const usable = healthy.length > 0 ? healthy : quotaFree.length > 0 ? quotaFree : pool
+  const states = new Map<string, AccountState>()
+  for (const account of pool) {
+    states.set(account.id, classifyAccountState(account, now, skipWindows))
+  }
+  const usable = orderByDegradation(pool, states, (a) => a.id)
   if (usable.length === 0) return []
 
   const tiers = [...new Set(usable.map((a) => a.priority))].sort((a, b) => a - b)
@@ -155,6 +157,8 @@ export async function markAccountSuccess(accountId: string): Promise<void> {
   await query(
     `update channel_accounts
         set cooldown_until = null,
+            quota_cooldown_level = 0,
+            quota_cooldown_until = null,
             last_error = '',
             consecutive_failures = 0,
             last_used_at = now(),
@@ -162,6 +166,8 @@ export async function markAccountSuccess(accountId: string): Promise<void> {
       where id = $1
         and (
           cooldown_until is not null
+          or quota_cooldown_level > 0
+          or quota_cooldown_until is not null
           or consecutive_failures > 0
           or last_used_at is null
           or last_used_at < now() - interval '1 minute'
@@ -189,6 +195,69 @@ export async function markAccountFailure(
       where id = $1`,
     [accountId, Math.max(0, Math.round(cooldownSec)), error.slice(0, 500)]
   )
+}
+
+export interface QuotaCooldownResult {
+  /** 决策后的等级（本次递增后，或冷冻期内保持的原等级） */
+  level: number
+  /** 本次冷冻时长 / 冷冻剩余，单位秒 */
+  secs: number
+  /** 本次是否真的递增并重新计时（false = 命中冷冻期，幂等未变） */
+  applied: boolean
+}
+
+/**
+ * 标记「上游明确返回额度用尽」→ 进入阶梯冷冻。
+ *
+ * 与 markAccountFailure **分开**：这里只写 quota_cooldown_*，
+ * 不碰通用 cooldown_until，避免两套计时互相覆盖。
+ *
+ * 幂等性由 SQL 的条件更新保证（并发下也只有一个 UPDATE 能命中）：
+ *   - quota_cooldown_until > now() → WHERE 不成立 → 不递增、不延长
+ *   - 已过期 / 从未冷冻 → level + 1，按阶梯重设 until
+ *
+ * 阶梯数组作为参数传入，SQL 只负责按下标取值（level 封顶在最后一项），
+ * 避免把阶梯数字硬编码进 SQL。
+ */
+export async function markQuotaExhaustedResponse(
+  accountId: string,
+  errorText: string
+): Promise<QuotaCooldownResult | null> {
+  const updated = await query<{ level: number; secs: number }>(
+    `update channel_accounts
+        set quota_cooldown_level = quota_cooldown_level + 1,
+            quota_cooldown_until = now() + make_interval(
+              secs => ($2::int[])[least(quota_cooldown_level + 1, $3)]
+            ),
+            last_error = $4,
+            last_used_at = now(),
+            updated_at = now()
+      where id = $1
+        and (quota_cooldown_until is null or quota_cooldown_until <= now())
+      returning quota_cooldown_level as level,
+                extract(epoch from (quota_cooldown_until - now()))::int as secs`,
+    [
+      accountId,
+      [...QUOTA_COOLDOWN_LADDER_SEC],
+      QUOTA_COOLDOWN_LADDER_SEC.length,
+      errorText.slice(0, 500)
+    ]
+  )
+  if (updated[0]) return { ...updated[0], applied: true }
+
+  // 仍在冷冻期内（或账户刚被删除）：读回现值，保证调用方拿到的等级/剩余一致
+  const current = await query<{ level: number; secs: number }>(
+    `select quota_cooldown_level as level,
+            greatest(
+              0,
+              extract(epoch from (quota_cooldown_until - now()))::int
+            ) as secs
+       from channel_accounts
+      where id = $1`,
+    [accountId]
+  )
+  if (!current[0]) return null
+  return { ...current[0], applied: false }
 }
 
 /**

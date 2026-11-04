@@ -227,6 +227,7 @@ export const en = {
     addAccount: 'Add account',
     accountNoKey: '(no key)',
     accountCooling: 'cooling down {n}s',
+    accountQuotaCooling: 'quota cooldown {n} (trigger #{level})',
     accountPriority: 'priority {p} · weight {w}',
     accountReset: 'Reset health',
     accountHealthReset: 'Account health reset',
@@ -697,7 +698,9 @@ export const en = {
     legendAccounts: 'right column = channel accounts',
     legendExhausted: 'red = this account\'s usage window is exhausted',
     legendCooling: 'dashed grey = account cooling down',
-    windowExhaustedTag: 'window full'
+    legendQuotaCooling: 'dashed grey + quota cooldown = upstream explicitly reported quota exhausted (stepped)',
+    windowExhaustedTag: 'window full',
+    quotaCoolingTag: 'quota cooldown'
   },
   mapping: {
     title: 'Model mapping',

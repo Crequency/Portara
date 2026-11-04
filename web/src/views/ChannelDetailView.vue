@@ -165,10 +165,27 @@ const accountSaving = ref(false)
 /** 正在显示的账户明文（仅管理员） */
 const accountReveal = ref<{ name: string; key: string } | null>(null)
 
-/** 冷却剩余秒数；0 表示可用 */
+/** 通用冷却剩余秒数；0 表示可用 */
 function cooldownLeft(a: ChannelAccount): number {
   if (!a.cooldownUntil) return 0
   return Math.max(0, Math.round((new Date(a.cooldownUntil).getTime() - Date.now()) / 1000))
+}
+
+/** 额度用尽冷冻的剩余秒数；0 表示不在冷冻期 */
+function quotaCooldownLeft(a: ChannelAccount): number {
+  if (!a.quotaCooldownUntil) return 0
+  return Math.max(
+    0,
+    Math.round((new Date(a.quotaCooldownUntil).getTime() - Date.now()) / 1000)
+  )
+}
+
+/** 倒计时的人类可读形式：3d2h / 2h15m / 14m / 45s */
+function cooldownText(secs: number): string {
+  if (secs >= 86400) return `${Math.floor(secs / 86400)}d${Math.floor((secs % 86400) / 3600)}h`
+  if (secs >= 3600) return `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60)}m`
+  if (secs >= 60) return `${Math.floor(secs / 60)}m`
+  return `${secs}s`
 }
 
 function openAccountForm(account?: ChannelAccount): void {
@@ -596,6 +613,15 @@ onMounted(loadChannel)
           <span v-if="cooldownLeft(a) > 0" class="badge badge-warn">
             {{ t('channels.accountCooling', { n: cooldownLeft(a) }) }}
           </span>
+          <!-- 额度用尽触发的阶梯冷冻：与通用冷却分开显示，避免误读 -->
+          <span v-if="quotaCooldownLeft(a) > 0" class="badge badge-err">
+            {{
+              t('channels.accountQuotaCooling', {
+                n: cooldownText(quotaCooldownLeft(a)),
+                level: a.quotaCooldownLevel
+              })
+            }}
+          </span>
           <span class="mono dim acct-key">{{ a.apiKeyMasked || t('channels.accountNoKey') }}</span>
           <span class="dim acct-meta">
             {{ t('channels.accountPriority', { p: a.priority, w: a.weight }) }}
@@ -606,7 +632,7 @@ onMounted(loadChannel)
           </button>
           <button class="btn btn-sm" @click="openAccountForm(a)">{{ t('common.edit') }}</button>
           <button
-            v-if="cooldownLeft(a) > 0"
+            v-if="cooldownLeft(a) > 0 || quotaCooldownLeft(a) > 0"
             class="btn btn-sm"
             @click="resetAccountHealth(a)"
           >

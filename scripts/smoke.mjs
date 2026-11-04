@@ -112,6 +112,13 @@ if (!SMOKE_SCHEMA.includes('smoke')) {
 }
 
 const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
+/**
+ * 触发「额度用尽」的伪上游密钥。
+ *
+ * 网关把它当普通上游 Key 加密存储；伪上游识别它并返回
+ * 429 + insufficient_quota，用于验证阶梯冷冻与幂等。
+ */
+const QUOTA_ERROR_KEY = 'sk-quota-error-account'
 // 固定管理凭据：配合「按用户名引导」语义，脚本可无限次重复运行
 const ADMIN_USER = 'smoke-admin'
 const ADMIN_PASS = 'smoke-admin-password'
@@ -232,7 +239,11 @@ function startMockUpstream() {
       // 具体用了哪种由断言去校验（伪上游不该替应用规定用哪种）。
       const auth = req.headers.authorization ?? ''
       const xApiKey = req.headers['x-api-key'] ?? ''
-      const authed = auth === `Bearer ${UPSTREAM_KEY}` || xApiKey === UPSTREAM_KEY
+      const authed =
+        auth === `Bearer ${UPSTREAM_KEY}` ||
+        xApiKey === UPSTREAM_KEY ||
+        auth === `Bearer ${QUOTA_ERROR_KEY}` ||
+        xApiKey === QUOTA_ERROR_KEY
       if (url.startsWith('/v1') && !authed) {
         res.writeHead(401, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { message: 'bad upstream key' } }))
@@ -385,6 +396,20 @@ function startMockUpstream() {
           body = JSON.parse(raw)
         } catch {
           /* 忽略 */
+        }
+        // 额度用尽：429 + insufficient_quota，用于验证阶梯冷冻
+        if (auth === `Bearer ${QUOTA_ERROR_KEY}` || xApiKey === QUOTA_ERROR_KEY) {
+          res.writeHead(429, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'insufficient_quota',
+                type: 'insufficient_quota',
+                message: 'You exceeded your current quota, please check your plan and billing details'
+              }
+            })
+          )
+          return
         }
         // 供「不可重试错误不该换号」的断言使用：这类错误换账户也一样失败
         if (String(body.model ?? '').includes('bad-request')) {
@@ -3983,6 +4008,88 @@ async function main() {
       assert.equal(winOn.status, 200, `实际 ${winOn.status}`)
       assert.equal(afterOn, beforeOn, `仍然打到了打满窗口的账户（${beforeOn} → ${afterOn}）`)
     })
+
+    /*
+     * ⑤ 上游明确返回额度用尽 → 阶梯冷冻（迁移 020）
+     *
+     * 用单账户渠道：第一次 429 后账户进入 quotaCooling，第二次请求
+     * 仍会选中它（ok 池为空，阶梯退化到 quotaCooling），从而能验证
+     * 「冷冻期内重复命中不递增、不延长」这条幂等语义。
+     */
+    const qcChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-qc-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: QUOTA_ERROR_KEY,
+      models: [MOCK_MODEL],
+      priority: 904
+    })
+    const qcId = qcChannel.body.channel.id
+    const qcAlias = `smoke-qc-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: qcAlias,
+      targets: [{ channelId: qcId, upstreamModel: MOCK_MODEL }]
+    })
+    const qcKey = await apiCall('POST', '/api/keys', { name: `smoke-qc-key-${RUN}` })
+    const qcHit = async () => {
+      const res = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${qcKey.body.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: qcAlias, messages: [{ role: 'user', content: 'hi' }] })
+      })
+      return { status: res.status, text: await res.text() }
+    }
+
+    const qcFirst = await qcHit()
+    check('额度用尽响应被识别（网关透传 429，不换成自造错误）', () => {
+      assert.equal(qcFirst.status, 429, `实际 ${qcFirst.status}`)
+      assert.match(qcFirst.text, /insufficient_quota/)
+    })
+
+    const qcAccs1 = await apiCall('GET', `/api/channels/${qcId}/accounts`)
+    const qcAcc1 = qcAccs1.body.accounts[0]
+    const qcUntil1 = qcAcc1.quotaCooldownUntil
+    check('首次命中：level=1、quotaCooldownUntil 在未来，且不写通用冷却', () => {
+      assert.equal(qcAcc1.quotaCooldownLevel, 1)
+      assert.ok(qcUntil1, 'quotaCooldownUntil 为空')
+      const secs = (new Date(qcUntil1).getTime() - Date.now()) / 1000
+      assert.ok(secs > 240 && secs <= 300, `首档冷冻应约 300s，实际 ${Math.round(secs)}s`)
+      // 两套计时分开：额度冷冻不能顺带写通用冷却
+      assert.equal(qcAcc1.cooldownUntil, null)
+      // 对外契约字段确实出现在端点上
+      assert.equal(typeof qcAcc1.quotaCooldownLevel, 'number')
+    })
+
+    const qcSecond = await qcHit()
+    const qcAccs2 = await apiCall('GET', `/api/channels/${qcId}/accounts`)
+    const qcAcc2 = qcAccs2.body.accounts[0]
+    check('冷冻期内第二次命中：level 不增长、到期时间不延长（幂等）', () => {
+      assert.equal(qcSecond.status, 429)
+      assert.equal(qcAcc2.quotaCooldownLevel, 1, 'level 被重复递增')
+      assert.equal(qcAcc2.quotaCooldownUntil, qcUntil1, '冷冻期被重复延长')
+    })
+
+    // 存在健康账户时，额度冷冻的账户应被跳过（阶梯：ok 先于 quotaCooling）
+    await apiCall('POST', `/api/channels/${qcId}/accounts`, {
+      name: '健康账户',
+      apiKey: UPSTREAM_KEY,
+      priority: 100,
+      weight: 1
+    })
+    const qcHealthy = await qcHit()
+    const qcAccs3 = await apiCall('GET', `/api/channels/${qcId}/accounts`)
+    const qcAcc3 = qcAccs3.body.accounts.find((a) => a.name === '默认账户')
+    check('健康账户存在时先走健康账户，额度冷冻账户保持原样', () => {
+      assert.equal(qcHealthy.status, 200, `实际 ${qcHealthy.status}`)
+      assert.equal(qcAcc3.quotaCooldownLevel, 1)
+      assert.equal(qcAcc3.quotaCooldownUntil, qcUntil1)
+    })
+
+    await apiCall('POST', '/api/model-routes/purge', { alias: qcAlias })
+    await apiCall('DELETE', `/api/keys/${qcKey.body.apiKey.id}`)
+    await apiCall('DELETE', `/api/channels/${qcId}`)
 
     // 本段自建的映射自己清掉：残留会让下一轮的 replace 类用例撞 409
     await apiCall('POST', '/api/model-routes/purge', { alias: coolAlias })

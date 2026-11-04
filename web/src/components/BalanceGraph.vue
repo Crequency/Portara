@@ -24,6 +24,8 @@ export interface BalanceAccount {
   status: string
   usageAdapter: string
   cooldownUntil: string | null
+  /** 额度用尽触发的阶梯冷冻到期时间（与 cooldownUntil 分开） */
+  quotaCooldownUntil: string | null
   windowExhausted: boolean
   windowCheckedAt: string | null
 }
@@ -114,12 +116,22 @@ function isCooling(account: BalanceAccount): boolean {
   return Number.isFinite(until) && until > Date.now()
 }
 
+/** 额度用尽触发的阶梯冷冻；视觉与通用冷却一致，靠 tooltip/文案区分 */
+function isQuotaCooling(account: BalanceAccount): boolean {
+  if (!account.quotaCooldownUntil) return false
+  const until = new Date(account.quotaCooldownUntil).getTime()
+  return Number.isFinite(until) && until > Date.now()
+}
+
 const hasAccounts = computed(() => flat.value.some((tg) => accountsOf(tg).length > 0))
 const hasExhausted = computed(() =>
   flat.value.some((tg) => accountsOf(tg).some((account) => isExhausted(tg, account)))
 )
 const hasCooling = computed(() =>
   flat.value.some((tg) => accountsOf(tg).some((account) => isCooling(account)))
+)
+const hasQuotaCooling = computed(() =>
+  flat.value.some((tg) => accountsOf(tg).some((account) => isQuotaCooling(account)))
 )
 
 /**
@@ -294,7 +306,8 @@ function onLeave(): void {
             class="bal-account"
             :class="{
               'is-exhausted': isExhausted(p.tg, account),
-              'is-cooling': !isExhausted(p.tg, account) && isCooling(account),
+              'is-cooling':
+                !isExhausted(p.tg, account) && (isCooling(account) || isQuotaCooling(account)),
               'is-off': account.status !== 'active'
             }"
             :transform="`translate(${accX}, ${p.accTop + i * (ACC_H + ACC_GAP)})`"
@@ -326,9 +339,19 @@ function onLeave(): void {
             >
               {{ t('balance.windowExhaustedTag') }}
             </text>
+            <text
+              v-else-if="isQuotaCooling(account)"
+              class="bal-acc-quota"
+              :x="ACC_W - 10"
+              :y="18"
+              text-anchor="end"
+            >
+              {{ t('balance.quotaCoolingTag') }}
+            </text>
             <title>
               {{ account.name }} · P{{ account.priority }} / W{{ account.weight
-              }}{{ isExhausted(p.tg, account) ? ' · ' + t('balance.windowExhaustedTag') : '' }}
+              }}{{ isExhausted(p.tg, account) ? ' · ' + t('balance.windowExhaustedTag') : ''
+              }}{{ isQuotaCooling(account) ? ' · ' + t('balance.quotaCoolingTag') : '' }}
             </title>
           </g>
         </template>
@@ -355,6 +378,10 @@ function onLeave(): void {
       <span v-if="hasCooling" class="bal-legend-item">
         <i class="bal-legend-ring" />
         {{ t('balance.legendCooling') }}
+      </span>
+      <span v-if="hasQuotaCooling" class="bal-legend-item">
+        <i class="bal-legend-ring" />
+        {{ t('balance.legendQuotaCooling') }}
       </span>
       <span class="dim">{{ t('balance.targets', { n: targets.length }) }}</span>
     </div>

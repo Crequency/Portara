@@ -227,6 +227,7 @@ export const zh = {
     addAccount: '添加账户',
     accountNoKey: '（无密钥）',
     accountCooling: '冷却中 {n}s',
+    accountQuotaCooling: '额度冷冻 {n}（第 {level} 次）',
     accountPriority: '优先级 {p} · 权重 {w}',
     accountReset: '重置健康',
     accountHealthReset: '已重置该账户的健康状态',
@@ -697,7 +698,9 @@ export const zh = {
     legendAccounts: '右侧 = 渠道账户',
     legendExhausted: '红色 = 该账户用量窗口已打满',
     legendCooling: '灰色虚线 = 账户冷却中',
-    windowExhaustedTag: '窗口打满'
+    legendQuotaCooling: '灰色虚线 + 额度冷冻 = 上游明确返回额度用尽，按阶梯冷冻',
+    windowExhaustedTag: '窗口打满',
+    quotaCoolingTag: '额度冷冻'
   },
   mapping: {
     title: '模型映射',
