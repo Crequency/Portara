@@ -46,7 +46,8 @@ export const en = {
     noPermission: 'You do not have access to this page',
     backToOverview: 'Back to overview',
     language: 'Language',
-    theme: 'Theme'
+    theme: 'Theme',
+    account: 'Account'
   },
   theme: {
     system: 'System',

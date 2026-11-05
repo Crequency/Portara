@@ -24,8 +24,13 @@ const props = withDefaults(
     size?: 'sm' | 'md'
     disabled?: boolean
     align?: 'start' | 'end'
+    /**
+     * 触发按钮上显示的文案（可选）。缺省用选中项的 label。
+     * 用于「选项写全称、按钮写短标签」的场景（如 简体中文 → 中文 / English → EN）。
+     */
+    triggerLabel?: string
   }>(),
-  { placeholder: '', size: 'md', disabled: false, align: 'start' }
+  { placeholder: '', size: 'md', disabled: false, align: 'start', triggerLabel: '' }
 )
 
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
@@ -39,7 +44,9 @@ const pos = ref({ left: 0, top: 0, width: 0, maxHeight: 280 })
 const selected = computed(
   () => props.options.find((o) => o.value === props.modelValue) ?? null
 )
-const label = computed(() => selected.value?.label ?? props.placeholder)
+const label = computed(
+  () => props.triggerLabel || selected.value?.label || props.placeholder
+)
 
 const ITEM_H = 38
 
@@ -180,6 +187,8 @@ onBeforeUnmount(() => {
       @click="toggle"
       @keydown="onKeyNav"
     >
+      <!-- 可选前缀（图标等）：加法能力，不传时渲染结果与之前完全一致 -->
+      <slot name="prefix" />
       <span class="psel-label" :class="{ 'psel-placeholder': !selected }">{{ label }}</span>
       <svg class="psel-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
         <path

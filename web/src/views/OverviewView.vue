@@ -238,6 +238,11 @@ const topBlocks = computed(() => [
  * 失败详情在「余额用量」页看；但失败数量会以一行小字提示，不静默吞掉。
  */
 const usageSnapshots = ref<UsageSnapshot[]>([])
+/**
+ * 首次拉取尚未回来。初值必须是 true —— 否则 usageOk 在首帧为空，
+ * 会先闪一下「还没有渠道配置余额适配器」再被真实数据替换。
+ */
+const usageLoading = ref(true)
 const usageOk = computed(() => usageSnapshots.value.filter((s) => s.ok))
 const usageFailedCount = computed(
   () => usageSnapshots.value.length - usageOk.value.length
@@ -320,13 +325,20 @@ function windowLabel(key: string): string {
 }
 
 async function loadUsage(): Promise<void> {
-  if (!isAdmin.value) return
+  if (!isAdmin.value) {
+    usageLoading.value = false
+    return
+  }
+  usageLoading.value = true
   try {
     const res = await api.get<{ providers: UsageSnapshot[] }>('/api/usage')
     usageSnapshots.value = res.providers
   } catch {
     // 概览是次要信息，拿不到就不显示这张卡，不打扰用户
     usageSnapshots.value = []
+  } finally {
+    // 成功 / 失败都要收起骨架 —— 失败时展示的是空态而不是永久骨架
+    usageLoading.value = false
   }
 }
 
@@ -811,7 +823,27 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <button class="btn btn-sm" @click="go('usage')">{{ t('overview.usageMore') }} →</button>
       </div>
 
-      <div v-if="usageOk.length === 0" class="empty">
+      <!-- 加载中：与真实卡片同构的骨架（3 张，名称 / 余额 / 两条窗口） -->
+      <div v-if="usageLoading" class="usage-grid" aria-hidden="true">
+        <div v-for="n in 3" :key="n" class="usage-cell sk-cell">
+          <div class="sk-head">
+            <span class="sk sk-name"></span>
+            <span class="sk sk-tag"></span>
+          </div>
+          <span class="sk sk-balance"></span>
+          <div class="usage-windows sk-windows">
+            <div v-for="w in 2" :key="w" class="sk-window">
+              <div class="sk-window-head">
+                <span class="sk sk-window-label"></span>
+                <span class="sk sk-window-value"></span>
+              </div>
+              <div class="sk sk-window-track"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="usageOk.length === 0" class="empty">
         <template v-if="usageSnapshots.length > 0">{{ t('overview.usageAllFailed') }}</template>
         <template v-else>
           {{ t('overview.usageNone') }}

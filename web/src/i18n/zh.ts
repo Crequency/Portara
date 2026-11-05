@@ -46,7 +46,8 @@ export const zh = {
     noPermission: '无权访问该页面',
     backToOverview: '返回概览',
     language: '语言',
-    theme: '主题'
+    theme: '主题',
+    account: '账号'
   },
   theme: {
     system: '跟随系统',

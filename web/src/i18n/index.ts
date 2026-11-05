@@ -5,7 +5,7 @@ import { zh } from './zh'
 export type Locale = 'zh' | 'en'
 
 export const LOCALES: { value: Locale; label: string; short: string }[] = [
-  { value: 'zh', label: '简体中文', short: '中' },
+  { value: 'zh', label: '中文', short: '中文' },
   { value: 'en', label: 'English', short: 'EN' }
 ]
 

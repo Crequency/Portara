@@ -344,6 +344,85 @@ a { color: var(--accent); text-decoration: none; }
   .usage-window:not(.is-tightest) { display: none; }
 }
 
+/* ---- 骨架屏 ---- */
+
+/*
+ * 余额卡加载时的占位块。
+ *
+ * 颜色只走主题变量：底色 --bg-elev-2，流光用 --text-faint 的 12% 混出，
+ * 因此深 / 浅主题各自自动适配，没有写死的颜色。
+ * 动画在 prefers-reduced-motion 下关闭 —— 关掉后仍是完整的静态占位。
+ */
+.sk {
+  background: var(--bg-elev-2);
+  border-radius: 4px;
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text-faint) 12%, transparent),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes sk-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation: none; }
+}
+
+/*
+ * 骨架卡片沿用 .usage-cell 的几何（内边距 / 圆角 / 边框），
+ * 但底色换成 --bg-elev：真实卡片本身是 --bg-elev-2，若骨架块也用同色，
+ * 浅色主题下几乎看不见；这样 .sk 的 --bg-elev-2 才有对比。
+ */
+.usage-cell.sk-cell { background: var(--bg-elev); }
+
+/* 各块尺寸对齐真实结构：渠道名行 22、余额行 23、每条窗口 27 */
+.sk-head { display: flex; align-items: center; gap: 7px; height: 22px; }
+.sk-name { width: 96px; height: 12px; }
+.sk-tag { width: 52px; height: 16px; border-radius: 999px; }
+.sk-balance { width: 112px; height: 16px; margin: 3px 0 4px; }
+
+.sk-window { display: flex; flex-direction: column; }
+.sk-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 18px;
+}
+.sk-window-label { width: 56px; height: 10px; }
+.sk-window-value { width: 28px; height: 10px; }
+.sk-window-track { height: 5px; border-radius: 3px; margin-top: 4px; }
+
+/*
+ * 高度对齐：真实卡片里最高的一行由「多账户选择器 + 余额 + 3 条窗口」撑出来
+ * （实测 184.8px）。骨架按要求只有 2 条窗口，靠 min-height 补齐，
+ * 这样数据到达、骨架换成真实卡片时网格行高不变，页面不会上下跳。
+ * 只在桌面布局下生效 —— 窄屏的真实卡片是紧凑行，高度本来就不同。
+ */
+@media (min-width: 701px) {
+  .usage-cell.sk-cell { min-height: 185px; }
+}
+
+/* 窄屏：真实卡片压成紧凑行，骨架跟着走同一种排布，切换时高度不跳 */
+@media (max-width: 700px) {
+  .usage-cell.sk-cell {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 8px 10px;
+  }
+  .sk-head { flex: 1 1 100%; }
+  .sk-balance { margin: 0 0 0 auto; }
+  .sk-window + .sk-window { display: none; }
+}
+
 /* 余额页顶部展示的 API 地址：可选中、可换行，不撑破卡片 */
 .api-url {
   flex: 1 1 auto;
@@ -513,6 +592,35 @@ tbody tr:hover td { background: color-mix(in srgb, var(--text) 3%, transparent);
 .btn-ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-elev-2); border-color: var(--border); color: var(--text); }
 
+/*
+ * 顶栏的圆形图标按钮。直径与 .btn-sm 的实测高度一致（约 30px），
+ * 用固定宽高而不是 padding，图标才会真正居中、与其他控件基线对齐。
+ */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.icon-btn-on {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* 分段控件 */
 .segmented {
   display: inline-flex;
@@ -677,6 +785,121 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   color: var(--text-faint);
 }
 .psel-check { flex: 0 0 auto; }
+
+/* 自定义下拉的键盘焦点环：PSelect 之前只有 :hover / 展开态 */
+.psel-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/*
+ * 顶栏语言入口：地球图标 + 短标签（中文 / EN）。
+ *
+ * 不再套固定 136px 的壳 —— 宽度由内容 + padding 决定；
+ * 高度钉在 30px，与旁边的圆形主题 / 用户按钮同高。
+ */
+.lang-pick { flex: 0 0 auto; }
+.lang-pick .psel { width: auto; }
+.lang-pick .psel-trigger {
+  justify-content: flex-start;
+  width: auto;
+  height: 30px;
+  padding: 0 10px;
+  gap: 6px;
+  border-radius: 999px;
+  font-size: 12.5px;
+}
+.lang-pick .psel-chevron { margin-left: 1px; }
+.lang-globe { flex: 0 0 auto; color: var(--text-faint); }
+.lang-pick .psel-trigger:hover .lang-globe,
+.lang-pick .psel-open .lang-globe { color: var(--accent); }
+
+/* ---------------------------------------------------------------- 用户卡片 */
+
+/*
+ * 顶栏用户入口的悬浮卡片。
+ *
+ * 定位相对 .user-menu（按钮容器），右对齐贴住按钮下方；
+ * .topbar 本身 z-index: 30，卡片再抬到 60 —— 既在顶栏之上，也盖住内容区。
+ */
+.user-menu { position: relative; flex: 0 0 auto; }
+
+.user-card {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  width: 236px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+}
+.user-card:focus { outline: none; }
+
+.user-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.user-card-id { min-width: 0; }
+.user-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-card-handle {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-card-role { display: flex; }
+
+.user-card-divider { height: 1px; background: var(--border); }
+
+.user-card-logout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.user-card-logout:hover {
+  background: color-mix(in srgb, var(--text-faint) 14%, transparent);
+  color: var(--text);
+}
+.user-card-logout:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 /* ---------------------------------------------------------------- 自定义复选框 */
 

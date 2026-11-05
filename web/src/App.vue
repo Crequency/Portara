@@ -8,9 +8,10 @@ import {
 } from './api'
 import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
+import UserMenu from './components/UserMenu.vue'
 import { LOCALES, locale, setLocale, useI18n } from './i18n'
 import { loadMeta, meta, siteName } from './meta'
-import { THEME_MODES, setThemeMode, themeMode } from './theme'
+import { setThemeMode, themeMode, type ThemeMode } from './theme'
 import { toast } from './toast'
 import ChannelDetailView from './views/ChannelDetailView.vue'
 import ChannelFormView from './views/ChannelFormView.vue'
@@ -151,12 +152,40 @@ watchEffect(() => {
   document.title = `${siteName()} · ${pageTitle.value}`
 })
 
+/*
+ * 顶栏的语言入口是「地球 + 短标签」（中文 / EN），下拉里仍是完整语言名。
+ * PSelect 用加法加出来的 triggerLabel / #prefix 实现，复用它已有的
+ * 弹层定位、键盘与 ARIA 逻辑。
+ */
 const languageOptions = computed(() =>
-  LOCALES.map((l) => ({ value: l.value, label: l.label, hint: l.short }))
+  LOCALES.map((l) => ({ value: l.value, label: l.label }))
 )
-const themeOptions = computed(() =>
-  THEME_MODES.map((m) => ({ value: m.value, label: t(m.labelKey) }))
+const localeShort = computed(
+  () => LOCALES.find((l) => l.value === locale.value)?.short ?? locale.value
 )
+
+/*
+ * 主题：点击循环 system → light → dark → system。
+ * 顺序是刻意的 —— 「跟随系统」放回原位只需再点一次，不会在两种固定色之间来回卡住。
+ */
+const THEME_CYCLE: ThemeMode[] = ['system', 'light', 'dark']
+const THEME_ICONS: Record<ThemeMode, string> = {
+  // 显示器
+  system: 'M3 5h18v11H3zM8 20h8M12 16v4',
+  // 太阳（圆 + 八道光芒）
+  light:
+    'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
+  // 月亮
+  dark: 'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z'
+}
+const themeLabel = computed(() => t('theme.' + themeMode.value))
+const themeTitle = computed(() => `${t('nav.theme')} · ${themeLabel.value}`)
+const themeIcon = computed(() => THEME_ICONS[themeMode.value])
+
+function cycleTheme(): void {
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(themeMode.value) + 1) % THEME_CYCLE.length]
+  setThemeMode(next!)
+}
 
 function onHash(): void {
   route.value = parseRoute()
@@ -257,31 +286,59 @@ function go(id: string): void {
         </div>
 
         <div class="topbar-tools">
-          <div style="width: 136px">
+          <!-- 语言：地球图标 + 当前语言短标签（中文 / EN），下拉里是完整语言名 -->
+          <div class="lang-pick" :title="t('nav.language')">
             <PSelect
               :model-value="locale"
               :options="languageOptions"
+              :trigger-label="localeShort"
               size="sm"
               align="end"
               @update:model-value="(v) => setLocale(v as 'zh' | 'en')"
-            />
-          </div>
-          <div style="width: 132px">
-            <PSelect
-              :model-value="themeMode"
-              :options="themeOptions"
-              size="sm"
-              align="end"
-              @update:model-value="(v) => setThemeMode(v as 'system' | 'light' | 'dark')"
-            />
+            >
+              <template #prefix>
+                <svg
+                  class="lang-globe"
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" />
+                  <path
+                    d="M3 12h18M12 3c2.5 2.4 3.8 5.4 3.8 9S14.5 18.6 12 21c-2.5-2.4-3.8-5.4-3.8-9S9.5 5.4 12 3Z"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </template>
+            </PSelect>
           </div>
 
-          <span class="badge" :class="user.role === 'admin' ? 'badge-info' : 'badge-off'">
-            {{ user.displayName || user.username }} ·
-            {{ user.role === 'admin' ? t('nav.admin') : t('nav.operator') }}
-          </span>
+          <!-- 主题：圆形按钮，点击循环 system → light → dark -->
+          <button
+            type="button"
+            class="icon-btn"
+            :title="themeTitle"
+            :aria-label="themeTitle"
+            @click="cycleTheme"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                :d="themeIcon"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
 
-          <button class="btn btn-sm" @click="logout">{{ t('nav.logout') }}</button>
+          <!-- 用户：圆形图标 + 悬浮卡片（资料、角色、退出） -->
+          <UserMenu :user="user" @logout="logout" />
         </div>
       </div>
 
