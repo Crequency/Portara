@@ -98,6 +98,11 @@ const rangeQuery = z.object({
   /** Top 榜单的排序依据：调用次数 / 已用 token */
   sortBy: z.enum(['requests', 'tokens']).default('requests'),
   /**
+   * 可选：只看**当前登录用户自己**名下的 Key 产生的请求（个人资料页用）。
+   * '1' = 只算自己；不传 = 全局口径 —— 保持向后兼容，老调用方行为不变。
+   */
+  mine: z.enum(['0', '1']).optional(),
+  /**
    * 可选：请求方时区（IANA 名）。
    * 前端会带上**浏览器时区**，于是面板里的「今日」就是用户眼里的今日；
    * 不传则回落到系统设置里的网关时区。
@@ -347,6 +352,18 @@ logRoutes.get('/stats/series', async (c) => {
   const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
+  /*
+   * 「只看自己」：个人资料页的用量趋势只统计当前用户名下 API Key 的流量。
+   *
+   * 用户 id 来自 requireAuth 写入的 c.get('user') —— 本路由挂在
+   * `logRoutes.use('*', requireAuth)` 之下，未登录在中间件层就 401 了，
+   * 走到这里一定已登录。mine 不传（或 '0'）时为 null，SQL 退回全局口径。
+   *
+   * 过滤条件写成 `$n::uuid is null or ...`，这样参数个数与 SQL 形状
+   * 不随 mine 变化 —— 两种口径走的是同一条查询，分桶逻辑零改动。
+   */
+  const mineUserId = q.mine === '1' ? c.get('user').id : null
+
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
   const plan = resolveSeriesPlan(q.range, spanHours)
 
@@ -400,10 +417,13 @@ logRoutes.get('/stats/series', async (c) => {
                on l.ts >= greatest(s.bucket_start, $1::timestamptz)
               and l.ts <  least(s.bucket_end, $2::timestamptz)
               and ($5::uuid is null or l.channel_id = $5)
+              and ($6::uuid is null or l.api_key_id in (
+                    select k.id from api_keys k where k.user_id = $6
+                  ))
        group by s.bucket_start
        order by s.bucket_start asc
       `,
-      [from, to, plan.labelFormat, tz, channelFilter]
+      [from, to, plan.labelFormat, tz, channelFilter, mineUserId]
     )
   } else {
     rows = await query(
@@ -433,10 +453,13 @@ logRoutes.get('/stats/series', async (c) => {
                on l.ts >= greatest(s.bucket_start, $1::timestamptz)
               and l.ts <  least(s.bucket_end, $2::timestamptz)
               and ($7::uuid is null or l.channel_id = $7)
+              and ($8::uuid is null or l.api_key_id in (
+                    select k.id from api_keys k where k.user_id = $8
+                  ))
        group by s.bucket_start
        order by s.bucket_start asc
       `,
-      [from, to, plan.interval, plan.granularity, plan.labelFormat, tz, channelFilter]
+      [from, to, plan.interval, plan.granularity, plan.labelFormat, tz, channelFilter, mineUserId]
     )
   }
 
@@ -720,6 +743,9 @@ logRoutes.get('/stats/heatmap', async (c) => {
   const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
+  /** 「只看自己」——口径与 /stats/series 完全一致（见那里的注释） */
+  const mineUserId = q.mine === '1' ? c.get('user').id : null
+
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
   const fromDay = dayNumber(localDateParts(from, tz))
   const toDay = dayNumber(localDateParts(to, tz))
@@ -766,10 +792,13 @@ logRoutes.get('/stats/heatmap', async (c) => {
              on l.ts >= greatest(s.bucket_start, $1::timestamptz)
             and l.ts <  least(s.bucket_end, $6::timestamptz)
             and ($7::uuid is null or l.channel_id = $7)
+            and ($8::uuid is null or l.api_key_id in (
+                  select k.id from api_keys k where k.user_id = $8
+                ))
      group by s.idx, s.bucket_start
      order by s.idx asc
     `,
-    [from, tz, plan.startOffset, plan.bucketCount, plan.interval, to, channelFilter]
+    [from, tz, plan.startOffset, plan.bucketCount, plan.interval, to, channelFilter, mineUserId]
   )
 
   const cols =

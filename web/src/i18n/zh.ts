@@ -57,6 +57,7 @@ export const zh = {
   },
   profile: {
     sub: '账户资料与个人用量统计',
+    usageTrend: '用量趋势',
     keys: '密钥数',
     keysValueHint: '启用 / 总计',
     requests30d: '近 30 天请求',

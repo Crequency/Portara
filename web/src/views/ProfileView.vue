@@ -9,6 +9,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { api, type ProfileResponse, type User } from '../api'
+import UsageTrendCard from '../components/UsageTrendCard.vue'
 import { formatCompact, formatNumber, formatPercent, formatTime } from '../format'
 import { useI18n } from '../i18n'
 import { toast } from '../toast'
@@ -149,6 +150,12 @@ onMounted(() => void load())
           </div>
         </div>
       </div>
+
+      <!--
+        用户范围的用量趋势：数据只统计当前用户名下的 Key（mine=1）。
+        卡片内部自带范围选择 / 双视图 / 骨架屏，与概览页互不影响。
+      -->
+      <UsageTrendCard mine />
 
       <div v-if="user" class="card">
         <div class="card-title">{{ t('profile.accountInfo') }}</div>

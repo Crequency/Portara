@@ -57,6 +57,7 @@ export const en = {
   },
   profile: {
     sub: 'Account details and personal usage',
+    usageTrend: 'Usage trend',
     keys: 'API keys',
     keysValueHint: 'active / total',
     requests30d: 'Requests (30d)',

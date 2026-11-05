@@ -1552,6 +1552,106 @@ async function main() {
       )
     })
 
+    // ---------------------------------------------------------- 「只看自己」的统计过滤
+    /*
+     * 个人资料页的用量趋势走 mine=1：口径 = **当前登录用户名下 API Key** 的流量。
+     * 这是 /api/stats/series 与 /api/stats/heatmap 的可选过滤（不传 = 全局口径，
+     * 向后兼容）。分桶逻辑与响应结构必须与全局版完全一致 —— 只是过滤条件不同。
+     */
+    const sumSeriesRequests = (points) =>
+      (points ?? []).reduce((n, p) => n + p.requests, 0)
+    const sumMineCells = (cells) => sumCellRequests(cells ?? [])
+
+    const mineAnonSeries = await apiCall(
+      'GET',
+      '/api/stats/series?range=30d&mine=1',
+      undefined,
+      { cookie: '' }
+    )
+    const mineAnonHeatmap = await apiCall(
+      'GET',
+      '/api/stats/heatmap?range=30d&mine=1',
+      undefined,
+      { cookie: '' }
+    )
+    check('未登录访问 mine=1 统计仍被拒（401）', () => {
+      assert.equal(mineAnonSeries.status, 401)
+      assert.equal(mineAnonHeatmap.status, 401)
+    })
+
+    const series30Global = await apiCall('GET', '/api/stats/series?range=30d')
+    const series30Mine = await apiCall('GET', '/api/stats/series?range=30d&mine=1')
+    check('mine=1 的 30d 序列与全局版结构一致', () => {
+      assert.equal(series30Mine.status, 200, 'HTTP ' + series30Mine.status)
+      const global = series30Global.body
+      const mine = series30Mine.body
+      assert.equal(mine.granularity, global.granularity)
+      assert.equal(mine.series.length, global.series.length)
+      assert.ok(
+        mine.series.every(
+          (p) =>
+            typeof p.day === 'string' &&
+            typeof p.requests === 'number' &&
+            p.requests >= 0 &&
+            typeof p.tokens === 'number' &&
+            typeof p.errors === 'number'
+        )
+      )
+    })
+    check('mine=1 的请求数逐桶是全局的子集（各自求和 mine <= 全局）', () => {
+      const mine = sumSeriesRequests(series30Mine.body.series)
+      const global = sumSeriesRequests(series30Global.body.series)
+      assert.ok(mine <= global, 'mine=' + mine + ' global=' + global)
+    })
+
+    const heat30Global = await apiCall('GET', '/api/stats/heatmap?range=30d')
+    const heat30Mine = await apiCall('GET', '/api/stats/heatmap?range=30d&mine=1')
+    check('mine=1 的 30d 热力图与全局版结构一致（cols/rows/cells）', () => {
+      assert.equal(heat30Mine.status, 200, 'HTTP ' + heat30Mine.status)
+      const global = heat30Global.body
+      const mine = heat30Mine.body
+      assert.equal(mine.mode, global.mode)
+      assert.equal(mine.cols, global.cols)
+      assert.equal(mine.rows, global.rows)
+      assert.equal(mine.cells.length, global.cells.length)
+      assert.ok(mine.cells.every((row) => row.length === global.cols))
+      assert.equal(mine.xLabels.length, global.xLabels.length)
+      assert.equal(mine.yLabels.length, global.yLabels.length)
+    })
+    check('mine=1 的热力图请求数也是全局的子集', () => {
+      const mine = sumMineCells(heat30Mine.body.cells)
+      const global = sumMineCells(heat30Global.body.cells)
+      assert.ok(mine <= global, 'mine=' + mine + ' global=' + global)
+    })
+
+    // 操作员名下的 Key 从没打过流量 —— mine=1 全 0 是正确结果，只要不报错即可。
+    const operatorMineSeries = await apiCall(
+      'GET',
+      '/api/stats/series?range=30d&mine=1',
+      undefined,
+      { cookie: operatorCookie }
+    )
+    const operatorMineHeatmap = await apiCall(
+      'GET',
+      '/api/stats/heatmap?range=30d&mine=1',
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('操作员 mine=1 正常返回（名下无流量，全 0 不报错）', () => {
+      assert.equal(operatorMineSeries.status, 200)
+      assert.equal(operatorMineHeatmap.status, 200)
+      assert.equal(
+        sumSeriesRequests(operatorMineSeries.body?.series),
+        0,
+        '操作员名下出现了流量'
+      )
+      assert.equal(
+        sumMineCells(operatorMineHeatmap.body?.cells),
+        0,
+        '操作员名下出现了流量（热力图）'
+      )
+    })
+
     // ---------------------------------------------------------- 模型映射
     section('⑮ 模型映射：别名 → 上游模型')
 
