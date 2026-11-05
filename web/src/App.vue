@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue'
+import type { Component } from 'vue'
+import { Contrast, Moon, Sun } from 'lucide-vue-next'
 import {
   api,
   cancelScheduledRefresh,
@@ -169,14 +171,16 @@ const localeShort = computed(
  * 顺序是刻意的 —— 「跟随系统」放回原位只需再点一次，不会在两种固定色之间来回卡住。
  */
 const THEME_CYCLE: ThemeMode[] = ['system', 'light', 'dark']
-const THEME_ICONS: Record<ThemeMode, string> = {
-  // 显示器
-  system: 'M3 5h18v11H3zM8 20h8M12 16v4',
-  // 太阳（圆 + 八道光芒）
-  light:
-    'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
-  // 月亮
-  dark: 'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z'
+/*
+ * 图标一律来自 lucide（与侧栏 nav 的内联 path 同源风格）。
+ * system 用 Contrast —— lucide 里「圆 + 半圆」的那枚（CircleHalf 并不存在，
+ * 导出名查过：lucide-vue-next 0.x / 1.0 都只有 contrast）；light = Sun，dark = Moon。
+ * 尺寸与描边跟侧栏 nav 对齐：16px / 1.7 / currentColor。
+ */
+const THEME_ICONS: Record<ThemeMode, Component> = {
+  system: Contrast,
+  light: Sun,
+  dark: Moon
 }
 const themeLabel = computed(() => t('theme.' + themeMode.value))
 const themeTitle = computed(() => `${t('nav.theme')} · ${themeLabel.value}`)
@@ -326,15 +330,13 @@ function go(id: string): void {
             :aria-label="themeTitle"
             @click="cycleTheme"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                :d="themeIcon"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <component
+              :is="themeIcon"
+              :size="16"
+              :stroke-width="1.7"
+              color="currentColor"
+              aria-hidden="true"
+            />
           </button>
 
           <!-- 用户：圆形图标 + 悬浮卡片（资料、角色、退出） -->
