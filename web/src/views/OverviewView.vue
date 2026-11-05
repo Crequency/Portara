@@ -21,6 +21,7 @@ import {
   quotaPercent
 } from '../format'
 import PSelect from '../components/PSelect.vue'
+import TrendSkeleton from '../components/TrendSkeleton.vue'
 import UsageHeatmap from '../components/UsageHeatmap.vue'
 import UsageTrendChart from '../components/UsageTrendChart.vue'
 import { useI18n } from '../i18n'
@@ -759,9 +760,17 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         </div>
       </div>
 
-      <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
+      <!--
+        两个视图各有一套骨架。热力图视图下换范围会同时把 loading 与
+        heatmapLoading 置真，所以必须先按视图分流 —— 否则会先闪一下趋势图骨架。
+      -->
+      <TrendSkeleton
+        v-if="trendView === 'heatmap' && (loading || heatmapLoading)"
+        mode="heatmap"
+        :preset="preset"
+      />
+      <TrendSkeleton v-else-if="loading" mode="chart" />
       <UsageTrendChart v-else-if="trendView === 'chart'" :series="series" />
-      <div v-else-if="heatmapLoading" class="loading">{{ t('common.loading') }}</div>
       <UsageHeatmap v-else-if="heatmap" :data="heatmap" />
       <div v-else class="empty">{{ t('common.empty') }}</div>
     </div>

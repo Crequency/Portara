@@ -467,6 +467,177 @@ a { color: var(--accent); text-decoration: none; }
   .sk-window + .sk-window { display: none; }
 }
 
+/* ---- 趋势骨架屏 ---- */
+
+/*
+ * 「用量趋势」卡片两个视图的加载占位。
+ *
+ * 尺寸不是拍脑袋写的：趋势图沿用 .chart-wrap 的 14px 间距与 158px 绘图区，
+ * 热力图沿用 .hm-chart 的 2px 网格间距 / 1:1 格子与 24px 标签列，
+ * 因此骨架换成真实组件时卡片高度不变，页面不会上下跳。
+ * 所有色块都只带 .sk 类（底色与流光见上方骨架屏段），这里不写任何颜色。
+ */
+.sk-trend { min-width: 0; }
+
+/* 趋势图：图例（≈18px）→ 绘图区（158px）→ 横轴（≈21.7px） */
+.sk-chart-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sk-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 18px;
+}
+.sk-chart-legend-item { height: 10px; }
+
+.sk-chart-body {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  grid-template-rows: 158px auto;
+  column-gap: 7px;
+  row-gap: 5px;
+}
+
+.sk-chart-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 158px;
+}
+.sk-chart-axis-left { align-items: flex-end; }
+.sk-chart-axis-right { align-items: flex-start; }
+.sk-chart-tick { width: 22px; height: 8px; }
+
+.sk-chart-plot {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+  align-items: end;
+  height: 158px;
+  min-width: 0;
+}
+
+.sk-chart-col {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  height: 100%;
+  min-width: 0;
+}
+
+.sk-chart-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 20px;
+  border-radius: 3px 3px 0 0;
+}
+/* 两柱同色会让整列糊成一根，用透明度拉开层次（不是颜色） */
+.sk-chart-bar-tok { opacity: 0.62; }
+
+.sk-chart-labels {
+  grid-column: 2;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+  justify-items: center;
+  align-items: center;
+  /*
+   * 真实横轴行的高度不是 10.5px 字号的一行字，而是 `.chart-label-slot` 继承
+   * 根字号 14px 的行盒（14 × 1.55 ≈ 21.7px）；按 16px 写骨架会矮 5.5px。
+   */
+  min-height: 21.7px;
+}
+.sk-chart-label { width: 34px; height: 9px; }
+
+/* 使用频率：外层 10px 对齐 .heatmap，矩阵内部 2px 对齐 .hm-chart */
+.sk-heat-inner {
+  --sk-heat-label: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sk-heat-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 真实 .heatmap-scroll 的 padding-bottom：不计入 hm-chart，但占卡片高度 */
+  padding-bottom: 2px;
+  min-width: 0;
+}
+
+/*
+ * 纵轴列（24px）+ 3px 过渡列 + 矩阵，与真实组件
+ * grid-template-columns: max-content 3px repeat(cols, minmax(0,1fr)) 同构。
+ */
+.sk-heat-body {
+  display: grid;
+  grid-template-columns: var(--sk-heat-label) 3px minmax(0, 1fr);
+  column-gap: 2px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.sk-heat-ylabels {
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  min-height: 0;
+}
+.sk-heat-ylabel { width: 16px; height: 7px; }
+
+.sk-heat-grid {
+  grid-column: 3;
+  display: grid;
+  grid-template-columns: repeat(var(--sk-cols), minmax(0, 1fr));
+  gap: 2px;
+  min-width: 0;
+}
+.sk-heat-cell {
+  min-width: 0;
+  aspect-ratio: 1 / 1;
+  border-radius: 2px;
+}
+
+/* 月份行 / 横轴行从矩阵左边缘开始（与真实组件的 grid-column: 3 / -1 对齐） */
+.sk-heat-months,
+.sk-heat-xlabels {
+  margin-left: calc(var(--sk-heat-label) + 7px);
+  height: 16px;
+  min-width: 0;
+}
+.sk-heat-months {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 2px;
+  align-items: center;
+}
+.sk-heat-month { width: 60%; max-width: 30px; height: 8px; justify-self: start; }
+.sk-heat-xlabels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.sk-heat-xlabel { width: 34px; height: 9px; }
+
+.sk-heat-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+}
+.sk-heat-foot-item { height: 9px; }
+
 /* 余额页顶部展示的 API 地址：可选中、可换行，不撑破卡片 */
 .api-url {
   flex: 1 1 auto;
