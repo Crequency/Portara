@@ -83,45 +83,107 @@ a { color: var(--accent); text-decoration: none; }
 /* ---- 滚动条 ---- */
 
 /*
- * 全站自定义滚动条。只引用主题变量，深浅两套自动跟随。
- * 宽度固定 10px（不设 0），滚动容器出现/消失时不会让内容横向跳动。
- * track / corner 一律透明，视觉上只有一根悬浮的圆角滑块。
+ * 细滑块 + 内缩留白（GitHub / Vercel 那种「浮在边上」的滚动条）。
+ *
+ * 关键在于**可见宽度不等于轨道宽度**：轨道仍是 12px，但滑块用
+ * 「4px 实心透明边框 + background-clip: content-box」把背景色裁到中间 4px，
+ * 两侧各留 4px 空气。于是画面上只有一条 4px 的细胶囊浮在内容右边缘，
+ * 而不是一根 10px、贴着内容、常驻高对比度的实心灰条。
+ * 轨道与 corner 完全透明 —— 不画槽，滚动条不与内容抢边界。
+ *
+ * 四档存在感，指针越靠近操作越深（全部由 --text-faint 经 color-mix 混合，
+ * 深浅两套主题自动跟随）：
+ *   默认 --sb-rest → 容器悬停 --sb-scope → 滑块悬停 --sb-hover → 拖动 --sb-active
+ * 浅色主题整体再淡一档：白底上同样的灰更扎眼，需要更克制。
+ *
+ * 宽度固定 12px（不设 0、不用 scrollbar-gutter）：滚动条出现与否只改变内容可用宽度，
+ * 不会引起别的布局跳动。
  */
+:root {
+  --sb-rest: 24%;
+  --sb-scope: 34%;
+  --sb-hover: 56%;
+  --sb-active: 74%;
+  /* 当前档位：默认第一档；容器悬停时由下面的规则就地改写 */
+  --sb-alpha: var(--sb-rest);
+}
+
+[data-theme='light'] {
+  --sb-rest: 20%;
+  --sb-scope: 30%;
+  --sb-hover: 50%;
+  --sb-active: 68%;
+}
+
 /*
  * 标准属性只给 Firefox。Chromium 121+ 也认 scrollbar-width / scrollbar-color，
  * 而这两条一旦生效就会**整体压掉** ::-webkit-scrollbar 的定制（宽度、圆角、hover 全失效，
  * 实测 .content 滚动条回到原生 15px）。用 @supports (-moz-appearance: none) 把这段
  * 限定在 Gecko，Chrome/Edge 才能继续走下面的 WebKit 分支。
+ *
+ * Gecko 画不出「透明边框内缩」，thin 本身又只有 ~6px，所以这里直接用一档
+ * 略高于 WebKit 默认值的透明度 + 透明轨道，至少保证细得能看见。
  */
 @supports (-moz-appearance: none) {
   html {
-    /* Firefox：thumb 用 --border-strong，轨道用 --bg-elev-2 */
     scrollbar-width: thin;
-    scrollbar-color: var(--border-strong) var(--bg-elev-2);
+    scrollbar-color: color-mix(in srgb, var(--text-faint) 38%, transparent) transparent;
   }
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
+  /* 4px 透明边框 + content-box 裁切：可见 4px、两侧各内缩 4px */
+  border: 4px solid transparent;
+  background-color: color-mix(in srgb, var(--text-faint) var(--sb-alpha), transparent);
+  background-clip: content-box;
   border-radius: 999px;
-  /* 混合出半透明滑块：深色下淡、浅色下自然加深 */
-  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  /* 只过渡颜色：宽度 / 边框不参与，hover 时不会有任何位移或抖动 */
+  transition: background-color 160ms ease;
+}
+
+/*
+ * 容器悬停：指针进到这块滚动区就加深一档，暗示「这里能滚」。
+ *
+ * 这里**只改元素上的 --sb-alpha**，不写 ::-webkit-scrollbar-thumb ——
+ * Blink 的滚动条伪元素只认伪元素自身的状态，祖先的 :hover 不参与它的样式匹配
+ * （实测 .content:hover::-webkit-scrollbar-thumb 与 :where(.content):hover::-webkit-scrollbar-thumb
+ * 都不生效，:where / :is 压低特异性也一样）。自定义属性则会继承进伪元素，
+ * 所以在元素上改 --sb-alpha、让上面那条唯一的 background-color 声明跟着变，
+ * 是 Chromium 里唯一能用的「容器悬停」写法。
+ *
+ * 清单与本文件的 overflow 滚动区一致；以后新增滚动容器记得补进来
+ * （漏了也不会有视觉错误，只是那块滚动区少了「悬停加深」这一档）。
+ */
+:where(
+    .sidebar,
+    .content,
+    .table-wrap,
+    .fill-scroll,
+    .form-scroll,
+    .batch-scroll,
+    .batch-pick,
+    .psel-popup,
+    .overlay
+  ):hover {
+  --sb-alpha: var(--sb-scope);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-faint) 72%, transparent);
+  background-color: color-mix(in srgb, var(--text-faint) var(--sb-hover), transparent);
 }
 
-::-webkit-scrollbar-corner {
-  background: transparent;
+::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--text-faint) var(--sb-active), transparent);
 }
 
 /* ---------------------------------------------------------------- 布局 */
