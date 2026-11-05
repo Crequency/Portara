@@ -1,6 +1,6 @@
 {
   "name": "portara",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "Portara — 企业级 AI API 网关",
   "license": "AGPL-3.0-only",
