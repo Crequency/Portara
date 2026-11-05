@@ -438,6 +438,8 @@ export interface StatsTotals {
   tokens: number
   promptTokens: number
   completionTokens: number
+  /** 区间内当地时区下 sum(total_tokens) > 0 的天数（「日均用量」的分母） */
+  activeDays: number
   estimated: number
   diagnosticRequests: number
   avgLatencyMs: number

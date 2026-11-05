@@ -353,6 +353,18 @@ const tokenTotals = computed(() => {
   }
 })
 
+/**
+ * 日均用量 = 区间总 token / 「有用量」的天数。
+ *
+ * 分母由后端给（activeDays）：series 对 90d / 365d 是周 / 半月分桶，
+ * 前端自己数不出「天」。没有正用量天数时给 0，避免除零出 NaN。
+ */
+const avgDailyTokens = computed(() => {
+  const days = stats.value?.totals.activeDays ?? 0
+  const tokens = stats.value?.totals.tokens ?? 0
+  return days > 0 ? Math.round(tokens / days) : 0
+})
+
 const tokenStatEl = ref<HTMLElement | null>(null)
 const tokenStatWidth = ref(0)
 
@@ -681,14 +693,11 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <div class="stat-value">{{ formatNumber(stats?.totals.requests) }}</div>
         <div class="stat-hint">
           {{ t('overview.failed') }} {{ formatNumber(stats?.totals.errors) }} ·
-          {{ formatPercent(stats?.totals.errorRate ?? 0) }}
-        </div>
-        <div
-          v-if="(stats?.totals.diagnosticRequests ?? 0) > 0"
-          class="stat-hint"
-          style="color: var(--warn)"
-        >
-          {{ t('overview.diagnostic', { n: formatNumber(stats?.totals.diagnosticRequests) }) }}
+          {{ formatPercent(stats?.totals.errorRate ?? 0) }}<template
+            v-if="(stats?.totals.diagnosticRequests ?? 0) > 0"
+          >
+            · {{ t('overview.diagnostic', { n: formatNumber(stats?.totals.diagnosticRequests) }) }}
+          </template>
         </div>
       </div>
       <div class="stat">
@@ -700,7 +709,8 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         </div>
         <div class="stat-hint">
           {{ t('overview.inTokens') }} {{ formatCompact(stats?.totals.promptTokens) }} ·
-          {{ t('overview.outTokens') }} {{ formatCompact(stats?.totals.completionTokens) }}
+          {{ t('overview.outTokens') }} {{ formatCompact(stats?.totals.completionTokens) }} ·
+          {{ t('overview.dailyAvg') }} {{ formatCompact(avgDailyTokens) }}
         </div>
       </div>
       <div class="stat">

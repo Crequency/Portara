@@ -194,6 +194,28 @@ logRoutes.get('/stats/overview', async (c) => {
   const requests = num(t.requests)
   const errors = num(t.errors)
 
+  /**
+   * 区间内的「活跃天数」：当地时区下 sum(total_tokens) > 0 的日期个数。
+   *
+   * 前端要算「日均用量」，但 series 对 90d / 365d 是周 / 半月分桶，
+   * 前端根本拿不到「天」。口径是**只统计有正用量的天**（无调用的日子不计入分母），
+   * 所以这里按当地日期分组后再筛 having —— 不能用 count(distinct date)，
+   * 那会把「有请求但没 token」的日子也算进去。
+   */
+  const activeDaysRows = await query<Record<string, string>>(
+    `select count(*)::text as active_days
+       from (
+         select date_trunc('day', ts at time zone $4) as d
+           from request_logs
+          where ts >= $1 and ts <= $2
+            and ($3::uuid is null or channel_id = $3)
+          group by 1
+         having coalesce(sum(total_tokens), 0) > 0
+       ) s`,
+    [from, to, channelFilter, tz]
+  )
+  const activeDays = num(activeDaysRows[0]?.active_days)
+
   const resourceRows = await query<Record<string, string>>(`
     select
       (select count(*) from users)::text                                   as users,
@@ -269,6 +291,8 @@ logRoutes.get('/stats/overview', async (c) => {
       tokens: num(t.tokens),
       promptTokens: num(t.prompt_tokens),
       completionTokens: num(t.completion_tokens),
+      // 当地时区下 sum(total_tokens) > 0 的天数（「日均用量」的分母）
+      activeDays,
       estimated: num(t.estimated),
       // 直连测试（对话测试页的上游渠道测试）：计入总量，但单独标出以便区分
       diagnosticRequests: num(t.diagnostic),

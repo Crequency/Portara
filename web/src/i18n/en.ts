@@ -93,6 +93,7 @@ export const en = {
     tokens: 'Tokens',
     inTokens: 'in',
     outTokens: 'out',
+    dailyAvg: 'Daily avg',
     avgLatency: 'Avg latency',
     p95: 'P95',
     estimated: 'Estimated',

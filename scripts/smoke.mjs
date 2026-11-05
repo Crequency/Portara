@@ -895,6 +895,21 @@ async function main() {
       assert.ok(monthOverview.body.totals.requests >= 2)
     })
 
+    // 日均用量的分母由后端给：当地时区下 sum(total_tokens) > 0 的天数。
+    // 30d = 当地 30 个日历日（含今日），故上界是 31 而不是 30。
+    check('30d 统计带出 activeDays（数字且在区间天数内）', () => {
+      const days = monthOverview.body?.totals?.activeDays
+      assert.equal(typeof days, 'number', `activeDays 类型错误：${typeof days}`)
+      assert.ok(days >= 0 && days <= 31, `activeDays 越界：${days}`)
+    })
+
+    check('有 token 总量时 activeDays 至少为 1', () => {
+      const totals = monthOverview.body?.totals ?? {}
+      if (totals.tokens > 0) {
+        assert.ok(totals.activeDays >= 1, `tokens=${totals.tokens} 但 activeDays=${totals.activeDays}`)
+      }
+    })
+
     // 90d / 365d：更粗的分桶 —— 90d 按当地周（周一起），365d 按半月（1 日 / 16 日）。
     // 首尾桶按 [from, to] 裁剪；周桶点数随 from 落在周几而 13/14 变化，
     // 半月桶点数随 to 是否已过 16 日而 24/25 变化，故用同一套当地日历规则算精确预期。
