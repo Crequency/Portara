@@ -47,12 +47,37 @@ export const zh = {
     backToOverview: '返回概览',
     language: '语言',
     theme: '主题',
-    account: '账号'
+    account: '账号',
+    profile: '个人资料'
   },
   theme: {
     system: '跟随系统',
     light: '浅色',
     dark: '深色'
+  },
+  profile: {
+    sub: '账户资料与个人用量统计',
+    keys: '密钥数',
+    keysValueHint: '启用 / 总计',
+    requests30d: '近 30 天请求',
+    tokens30d: '近 30 天 Token',
+    requestsTotal: '累计请求',
+    tokensTotal: '累计 Token',
+    errorRate: '错误率',
+    errorsCount: '失败 {errors} 次',
+    requestsCount: '共 {requests} 次请求',
+    accountInfo: '账户信息',
+    username: '用户名',
+    displayName: '显示名',
+    role: '角色',
+    status: '状态',
+    createdAt: '创建时间',
+    lastLogin: '最后登录',
+    joinedAt: '加入时间',
+    never: '从没使用过',
+    firstRequest: '首次请求',
+    lastRequest: '最近请求',
+    loadFailed: '个人资料加载失败'
   },
   login: {
     sessionExpired: '登录状态已失效，请重新登录',

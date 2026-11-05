@@ -1476,6 +1476,82 @@ async function main() {
     )
     check('操作员可查看自己名下的密钥', () => assert.equal(operatorRevealOwn.status, 200))
 
+    // ---------------------------------------------------------- 个人资料（用户范围统计）
+    section('⑭·补充 用户资料与用户范围统计')
+
+    // 不带会话：apiCall 的 opts.cookie 传空串即「本次请求不带 Cookie」
+    const profileAnon = await apiCall('GET', '/api/profile', undefined, { cookie: '' })
+    check('未登录访问个人资料被拒（401）', () =>
+      assert.equal(profileAnon.status, 401)
+    )
+
+    const profile = await apiCall('GET', '/api/profile')
+    check('登录后可读取个人资料（200）', () => assert.equal(profile.status, 200))
+    check('个人资料复用用户 DTO（不泄漏敏感字段）', () => {
+      const u = profile.body?.user
+      assert.equal(u?.username, ADMIN_USER)
+      assert.equal(u?.role, 'admin')
+      assert.equal(typeof u?.createdAt, 'string')
+      assert.ok(!profile.text.includes('password_hash'), '响应里出现了 password_hash')
+      assert.ok(!profile.text.includes('key_hash'), '响应里出现了 key_hash')
+    })
+    check('个人资料不返回任何密钥本体', () =>
+      assert.ok(!profile.text.includes(keyFull))
+    )
+
+    const pstats = profile.body?.stats ?? {}
+    check('密钥数按当前用户统计（total >= 1 且 active <= total）', () => {
+      assert.ok(pstats.keys?.total >= 1, `total=${pstats.keys?.total}`)
+      assert.ok(pstats.keys.active <= pstats.keys.total)
+    })
+    check('累计请求数可用且近 30 天不超过累计', () => {
+      assert.equal(typeof pstats.requests, 'number')
+      assert.ok(pstats.requests >= 0)
+      assert.ok(pstats.last30d.requests <= pstats.requests)
+    })
+    check('失败数 / Token 口径自洽（近 30 天 <= 累计）', () => {
+      assert.ok(pstats.errors >= 0 && pstats.errors <= pstats.requests)
+      assert.ok(pstats.last30d.errors <= pstats.last30d.requests)
+      assert.ok(pstats.tokens >= 0)
+      assert.ok(pstats.last30d.tokens <= pstats.tokens)
+    })
+    check('首末请求时间为 null 或合法 ISO 时间', () => {
+      for (const value of [pstats.firstRequestAt, pstats.lastRequestAt]) {
+        assert.ok(
+          value === null || !Number.isNaN(Date.parse(value)),
+          `非法时间：${value}`
+        )
+      }
+    })
+    check('名下有请求时首末请求时间非空', () => {
+      assert.ok(profile.body.stats.firstRequestAt)
+      assert.ok(profile.body.stats.lastRequestAt)
+    })
+
+    const operatorProfile = await apiCall('GET', '/api/profile', undefined, {
+      cookie: operatorCookie
+    })
+    check('操作员也能访问个人资料（200）', () =>
+      assert.equal(operatorProfile.status, 200)
+    )
+    check('操作员看到的是自己的资料', () =>
+      assert.equal(operatorProfile.body?.user?.username, OPERATOR_USER)
+    )
+    check('密钥统计按用户隔离（操作员只算自己名下的）', () => {
+      const own = operatorProfile.body?.stats?.keys?.total
+      const expected = operatorKeyList.body.keys.length
+      assert.equal(own, expected, `资料 ${own} != 自己可见密钥 ${expected}`)
+      assert.ok(own < profile.body.stats.keys.total, '操作员不该看到管理员的密钥')
+    })
+    check('请求统计也按用户隔离（操作员名下没有流量）', () => {
+      assert.ok(profile.body.stats.requests > 0, '管理员名下应有请求')
+      assert.equal(
+        operatorProfile.body.stats.requests,
+        0,
+        `操作员名下出现了 ${operatorProfile.body.stats.requests} 条请求`
+      )
+    })
+
     // ---------------------------------------------------------- 模型映射
     section('⑮ 模型映射：别名 → 上游模型')
 

@@ -24,6 +24,7 @@ import LogoMark from './components/LogoMark.vue'
 import LoginView from './views/LoginView.vue'
 import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
+import ProfileView from './views/ProfileView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import SettingsView from './views/SettingsView.vue'
 import UsageView from './views/UsageView.vue'
@@ -114,6 +115,9 @@ const currentView = computed(() => {
       return ProxiesView
     case 'settings':
       return SettingsView
+    // 个人资料不在侧栏 NAV 里，入口是顶栏用户卡片
+    case 'profile':
+      return ProfileView
     default:
       return OverviewView
   }

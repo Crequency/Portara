@@ -12,6 +12,7 @@ import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
 import { logRoutes } from './routes/logs.js'
 import { modelRouteRoutes } from './routes/modelRoutes.js'
+import { profileRoutes } from './routes/profile.js'
 import { proxyRoutes } from './routes/proxies.js'
 import { settingsRoutes } from './routes/settings.js'
 import { usageRoutes } from './routes/usage.js'
@@ -114,6 +115,8 @@ export function createApp(): Hono {
   // 嵌套资源：账户挂在渠道下（放在 channels 之后，靠其 unmatched 落空自然回落）
   app.route('/api/channels', channelAccountRoutes)
   app.route('/api/keys', keyRoutes)
+  // 个人资料与用户范围统计：路由内部挂 requireAuth（任何登录用户都能看自己的）
+  app.route('/api/profile', profileRoutes)
   app.route('/api/audit', auditRoutes)
   app.route('/api/model-routes', modelRouteRoutes)
   app.route('/api/settings', settingsRoutes)

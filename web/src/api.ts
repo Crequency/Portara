@@ -261,6 +261,31 @@ export interface User {
   lastLoginAt: string | null
 }
 
+/**
+ * 当前用户范围内的聚合统计（与后端 routes/profile.ts 对应）。
+ *
+ * 口径是「自己名下的 API Key 产生的流量」，不是全局 ——
+ * 所以和 /api/stats/* 的数字不可直接比较。
+ */
+export interface ProfileStats {
+  keys: { total: number; active: number }
+  /** 累计请求数 */
+  requests: number
+  /** 累计失败数（status_code >= 400） */
+  errors: number
+  /** 累计 token */
+  tokens: number
+  /** 近 30 天（滚动窗口） */
+  last30d: { requests: number; errors: number; tokens: number }
+  firstRequestAt: string | null
+  lastRequestAt: string | null
+}
+
+export interface ProfileResponse {
+  user: User
+  stats: ProfileStats
+}
+
 /** 渠道下的一个上游账户（只给掩码，明文要靠 reveal 单独请求） */
 export interface ChannelAccount {
   id: string

@@ -9,6 +9,7 @@
  * 移动端只靠点击 —— 没有依赖 :hover，触屏同样可开。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { UserRound } from 'lucide-vue-next'
 import type { User } from '../api'
 import { useI18n } from '../i18n'
 
@@ -81,6 +82,12 @@ onBeforeUnmount(() => {
   window.removeEventListener('hashchange', onHashChange)
 })
 
+/** 个人资料：跳转到 #/profile（页面本身不在侧栏 NAV 里） */
+function onProfile(): void {
+  close()
+  location.hash = '#/profile'
+}
+
 function onLogout(): void {
   close()
   emit('logout')
@@ -135,18 +142,35 @@ function onLogout(): void {
 
       <div class="user-card-divider" />
 
-      <button type="button" class="user-card-logout" role="menuitem" @click="onLogout">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-        <span>{{ t('nav.logout') }}</span>
-      </button>
+      <!-- 两行动作共用 .user-card-logout 的样式（它就是卡片里的通用行样式） -->
+      <div class="user-card-actions">
+        <button type="button" class="user-card-logout" role="menuitem" @click="onProfile">
+          <UserRound :size="15" :stroke-width="1.7" aria-hidden="true" />
+          <span>{{ t('nav.profile') }}</span>
+        </button>
+
+        <button type="button" class="user-card-logout" role="menuitem" @click="onLogout">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span>{{ t('nav.logout') }}</span>
+        </button>
+      </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 两行动作（个人资料 / 退出）紧挨着，但仍保持与卡片内其他元素一致的间距节奏 */
+.user-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+</style>

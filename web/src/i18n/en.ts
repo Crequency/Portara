@@ -47,12 +47,37 @@ export const en = {
     backToOverview: 'Back to overview',
     language: 'Language',
     theme: 'Theme',
-    account: 'Account'
+    account: 'Account',
+    profile: 'Profile'
   },
   theme: {
     system: 'System',
     light: 'Light',
     dark: 'Dark'
+  },
+  profile: {
+    sub: 'Account details and personal usage',
+    keys: 'API keys',
+    keysValueHint: 'active / total',
+    requests30d: 'Requests (30d)',
+    tokens30d: 'Tokens (30d)',
+    requestsTotal: 'Total requests',
+    tokensTotal: 'Total tokens',
+    errorRate: 'Error rate',
+    errorsCount: '{errors} failed',
+    requestsCount: '{requests} requests',
+    accountInfo: 'Account information',
+    username: 'Username',
+    displayName: 'Display name',
+    role: 'Role',
+    status: 'Status',
+    createdAt: 'Created',
+    lastLogin: 'Last sign-in',
+    joinedAt: 'Joined',
+    never: 'Never used',
+    firstRequest: 'First request',
+    lastRequest: 'Last request',
+    loadFailed: 'Failed to load profile'
   },
   login: {
     sessionExpired: 'Your session expired, please sign in again',
