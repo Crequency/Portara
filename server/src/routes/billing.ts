@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, pool, query } from '../db.js'
-import { badRequest, notFound, parseJson, parseQuery } from '../lib/http.js'
+import { ApiError, badRequest, notFound, parseJson, parseQuery } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import {
@@ -92,6 +92,26 @@ const templateUpdateSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   note: z.string().max(500).optional(),
   rules: z.array(ruleSchema).optional()
+})
+
+/*
+ * 用户自助模板：与管理员 schema 的区别 ——
+ *  owner / status 一律不接受（服务端强制 owner = 当前用户、status = active），
+ *  threshold 必须是**大于 0**（管理员模板允许 0 表示不限，用户自建模板没有这个需求）。
+ */
+const myRuleSchema = z.object({
+  window: windowSchema,
+  threshold: z.coerce.number().finite().positive('阈值必须大于 0')
+})
+const myTemplateCreateSchema = z.object({
+  name: z.string().trim().min(1, '模板名不能为空').max(64),
+  note: z.string().max(500).default(''),
+  rules: z.array(myRuleSchema).default([])
+})
+const myTemplateUpdateSchema = z.object({
+  name: z.string().trim().min(1, '模板名不能为空').max(64).optional(),
+  note: z.string().max(500).optional(),
+  rules: z.array(myRuleSchema).optional()
 })
 
 interface TemplateRow {
@@ -474,6 +494,242 @@ billingRoutes.delete('/templates/:id', requireAdmin, async (c) => {
     name: target.name
   })
   return c.json({ ok: true })
+})
+
+// ------------------------------------------------------------ 用户自助限额
+
+/**
+ * 当前用户「已套用」的模板集合 + 可申请套用的全局模板。
+ *
+ * lockedTemplateIds = 已套用且 owner_user_id is null 的模板。全局模板由管理员
+ * 创建与维护，用户自助 PUT 只能**增加**、不能移除它们 —— 这样管理员下发的
+ * 全局限额不会被用户自助操作悄悄放宽（多模板合并本来就按窗口取最严）。
+ */
+async function loadMyLimits(userId: string) {
+  const applied = await query<{ template_id: string; owner_user_id: string | null }>(
+    `select ut.template_id, t.owner_user_id
+       from user_limit_templates ut
+       join limit_templates t on t.id = ut.template_id
+      where ut.user_id = $1
+      order by t.created_at desc`,
+    [userId]
+  )
+  const templateIds = applied.map((r) => r.template_id)
+  const lockedTemplateIds = applied
+    .filter((r) => r.owner_user_id === null)
+    .map((r) => r.template_id)
+
+  const globals = await query<TemplateRow>(
+    `select * from limit_templates
+      where owner_user_id is null and status = 'active'
+      order by created_at desc`
+  )
+
+  const appliedTemplates = templateIds.length > 0 ? await loadTemplates(templateIds) : []
+  const globalTemplates = globals.length > 0 ? await loadTemplates(globals.map((g) => g.id)) : []
+
+  return {
+    templateIds,
+    selfTemplateIds: templateIds.filter((id) => !lockedTemplateIds.includes(id)),
+    lockedTemplateIds,
+    templates: appliedTemplates,
+    globalTemplates
+  }
+}
+
+/** 只返回 owner_user_id = 当前用户的模板（含 rules） */
+billingRoutes.get('/my/templates', async (c) => {
+  const user = c.get('user')
+  const own = await query<TemplateRow>(
+    'select * from limit_templates where owner_user_id = $1 order by created_at desc',
+    [user.id]
+  )
+  const templates = own.length > 0 ? await loadTemplates(own.map((t) => t.id)) : []
+  return c.json({ templates })
+})
+
+billingRoutes.get('/my/limits', async (c) => {
+  const user = c.get('user')
+  return c.json(await loadMyLimits(user.id))
+})
+
+billingRoutes.post('/my/templates', async (c) => {
+  const user = c.get('user')
+  const body = await parseJson(c, myTemplateCreateSchema)
+
+  const dup = await one(
+    'select id from limit_templates where owner_user_id = $1 and name = $2',
+    [user.id, body.name]
+  )
+  if (dup) throw new ApiError(409, 'conflict', '模板名已存在')
+
+  const rules = uniqueRules(body.rules)
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const t = await client.query<TemplateRow>(
+      `insert into limit_templates (name, owner_user_id, status, note)
+       values ($1,$2,'active',$3) returning *`,
+      [body.name, user.id, body.note]
+    )
+    for (const r of rules) {
+      await client.query(
+        'insert into limit_rules (template_id, "window", threshold) values ($1,$2,$3::numeric)',
+        [t.rows[0]!.id, r.window, String(r.threshold)]
+      )
+    }
+    await client.query('commit')
+    await recordAudit(
+      c,
+      'billing.my_template.create',
+      { type: 'limit_template', id: t.rows[0]!.id },
+      { name: body.name, rules }
+    )
+    const [dto] = await loadTemplates([t.rows[0]!.id])
+    return c.json({ template: dto }, 201)
+  } catch (err) {
+    try {
+      await client.query('rollback')
+    } catch {
+      /* 忽略 */
+    }
+    throw err
+  } finally {
+    client.release()
+  }
+})
+
+billingRoutes.patch('/my/templates/:id', async (c) => {
+  const user = c.get('user')
+  const id = uuidSchema.parse(c.req.param('id'))
+  const body = await parseJson(c, myTemplateUpdateSchema)
+
+  const target = await one<TemplateRow>('select * from limit_templates where id = $1', [id])
+  // 越权一律 404（不区分「不存在」与「别人的」），避免探测他人模板 id
+  if (!target || target.owner_user_id !== user.id) throw notFound('模板不存在')
+
+  if (body.name && body.name !== target.name) {
+    const dup = await one(
+      'select id from limit_templates where owner_user_id = $1 and name = $2 and id <> $3',
+      [user.id, body.name, id]
+    )
+    if (dup) throw new ApiError(409, 'conflict', '模板名已存在')
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await client.query(
+      `update limit_templates set
+         name = coalesce($2, name),
+         note = coalesce($3, note),
+         updated_at = now()
+       where id = $1`,
+      [id, body.name ?? null, body.note ?? null]
+    )
+    if (body.rules !== undefined) {
+      await client.query('delete from limit_rules where template_id = $1', [id])
+      for (const r of uniqueRules(body.rules)) {
+        await client.query(
+          'insert into limit_rules (template_id, "window", threshold) values ($1,$2,$3::numeric)',
+          [id, r.window, String(r.threshold)]
+        )
+      }
+    }
+    await client.query('commit')
+    await invalidateUsersByTemplate(id)
+    await recordAudit(c, 'billing.my_template.update', { type: 'limit_template', id }, body)
+    const [dto] = await loadTemplates([id])
+    return c.json({ template: dto })
+  } catch (err) {
+    try {
+      await client.query('rollback')
+    } catch {
+      /* 忽略 */
+    }
+    throw err
+  } finally {
+    client.release()
+  }
+})
+
+billingRoutes.delete('/my/templates/:id', async (c) => {
+  const user = c.get('user')
+  const id = uuidSchema.parse(c.req.param('id'))
+  const target = await one<TemplateRow>('select * from limit_templates where id = $1', [id])
+  if (!target || target.owner_user_id !== user.id) throw notFound('模板不存在')
+
+  // 先失效缓存再删：cascade 会把 user_limit_templates 一起清掉
+  await invalidateUsersByTemplate(id)
+  await query('delete from limit_templates where id = $1', [id])
+  await recordAudit(c, 'billing.my_template.delete', { type: 'limit_template', id }, {
+    name: target.name
+  })
+  return c.json({ ok: true })
+})
+
+/**
+ * 自助套用：只能选「自己的模板」或「全局模板」，越权 id 返回 400。
+ *
+ * 语义：替换当前用户的自助绑定集合；已套用的全局模板是**粘滞**的
+ * （lockedTemplateIds），会保留在最终集合里 —— 用户无法借此放宽管理员限额。
+ */
+billingRoutes.put('/my/limits', async (c) => {
+  const user = c.get('user')
+  const body = await parseJson(
+    c,
+    z.object({ templateIds: z.array(uuidSchema).default([]) })
+  )
+  const ids = [...new Set(body.templateIds)]
+
+  if (ids.length > 0) {
+    const found = await query<{ id: string; owner_user_id: string | null }>(
+      'select id, owner_user_id from limit_templates where id = any($1::uuid[])',
+      [ids]
+    )
+    if (found.length !== ids.length) throw badRequest('存在无效的模板 id')
+    if (found.some((t) => t.owner_user_id !== null && t.owner_user_id !== user.id)) {
+      throw badRequest('只能套用自己的模板或全局模板')
+    }
+  }
+
+  // 已套用的全局模板保持不动：管理员模板优先，用户自助只能叠加
+  const current = await query<{ template_id: string }>(
+    `select ut.template_id
+       from user_limit_templates ut
+       join limit_templates t on t.id = ut.template_id
+      where ut.user_id = $1 and t.owner_user_id is null`,
+    [user.id]
+  )
+  const effective = [...new Set([...ids, ...current.map((r) => r.template_id)])]
+
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await client.query('delete from user_limit_templates where user_id = $1', [user.id])
+    for (const id of effective) {
+      await client.query(
+        'insert into user_limit_templates (user_id, template_id) values ($1,$2)',
+        [user.id, id]
+      )
+    }
+    await client.query('commit')
+    await invalidatePrecheck(user.id)
+    await recordAudit(c, 'billing.my_limits.set', { type: 'user', id: user.id }, {
+      requestedTemplateIds: ids,
+      templateIds: effective
+    })
+    return c.json(await loadMyLimits(user.id))
+  } catch (err) {
+    try {
+      await client.query('rollback')
+    } catch {
+      /* 忽略 */
+    }
+    throw err
+  } finally {
+    client.release()
+  }
 })
 
 /** 覆盖套用：模板集合整体替换（不是追加） */

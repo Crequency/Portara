@@ -4820,6 +4820,135 @@ async function main() {
     })
     await apiCall('POST', '/api/model-routes/purge', { alias: billingBadAlias })
 
+    /* ---------------------------------------------------------- 用户自助限额 */
+    /*
+     * 自助模板只约束「自己的」：越权一律 404（不区分不存在/别人的，避免探测），
+     * 且管理员下发的全局模板是**粘滞**的 —— 用户自助 PUT 无法把它们摘掉，
+     * 否则「管理员限额」就能被用户自己一键放宽。
+     */
+    const myTpl = await apiCall('POST', '/api/billing/my/templates', {
+      name: `smoke-my-${RUN}`,
+      rules: [
+        { window: '1d', threshold: 3 },
+        { window: '7d', threshold: 20 }
+      ]
+    })
+    check('计费自助：用户可自建限额模板（owner = 自己）', () => {
+      assert.equal(myTpl.status, 201)
+      assert.equal(myTpl.body.template.ownerUserId, billingUserId)
+      assert.equal(myTpl.body.template.rules.length, 2)
+    })
+
+    const myTplDup = await apiCall('POST', '/api/billing/my/templates', {
+      name: `smoke-my-${RUN}`,
+      rules: []
+    })
+    check('计费自助：同名模板返回 409', () => assert.equal(myTplDup.status, 409))
+
+    const myTplZero = await apiCall('POST', '/api/billing/my/templates', {
+      name: `smoke-my-zero-${RUN}`,
+      rules: [{ window: '5h', threshold: 0 }]
+    })
+    check('计费自助：阈值必须大于 0（0 被拒 400）', () =>
+      assert.equal(myTplZero.status, 400)
+    )
+
+    const myTplList = await apiCall('GET', '/api/billing/my/templates')
+    check('计费自助：列表只含自己的模板', () => {
+      assert.equal(myTplList.status, 200)
+      assert.ok(myTplList.body.templates.some((t) => t.id === myTpl.body.template.id))
+      assert.ok(myTplList.body.templates.every((t) => t.ownerUserId === billingUserId))
+    })
+
+    const myTplPatch = await apiCall(
+      'PATCH',
+      `/api/billing/my/templates/${myTpl.body.template.id}`,
+      { rules: [{ window: '1d', threshold: 2.5 }] }
+    )
+    check('计费自助：可编辑自己的模板（rules 整体替换）', () => {
+      assert.equal(myTplPatch.status, 200)
+      assert.equal(myTplPatch.body.template.rules.length, 1)
+      assert.equal(myTplPatch.body.template.rules[0].threshold, 2.5)
+    })
+
+    const myLimits = await apiCall('PUT', '/api/billing/my/limits', {
+      templateIds: [myTpl.body.template.id]
+    })
+    check('计费自助：可把自己的模板套用到自己', () => {
+      assert.equal(myLimits.status, 200)
+      assert.deepEqual(myLimits.body.templateIds, [myTpl.body.template.id])
+    })
+
+    const meWithMyLimit = await apiCall('GET', '/api/billing/me')
+    check('计费自助：/billing/me 反映自助限额窗口', () => {
+      const w = meWithMyLimit.body.windows.find((x) => x.window === '1d')
+      assert.ok(w, '缺少 1d 窗口')
+      assert.equal(w.limit, 2.5)
+    })
+
+    // 换一个用户（operator）验证越权与提权边界
+    const opLogin2 = await apiCall(
+      'POST',
+      '/api/auth/login',
+      { username: OPERATOR_USER, password: OPERATOR_PASS },
+      { keepSession: true }
+    )
+    const opCookie2 = opLogin2.cookie
+    const opMe2 = await apiCall('GET', '/api/auth/me', undefined, { cookie: opCookie2 })
+    const opUserId2 = opMe2.body.user.id
+
+    const opPatchForeign = await apiCall(
+      'PATCH',
+      `/api/billing/my/templates/${myTpl.body.template.id}`,
+      { note: '越权' },
+      { cookie: opCookie2 }
+    )
+    check('计费自助：改他人模板返回 404（不暴露存在性）', () =>
+      assert.equal(opPatchForeign.status, 404)
+    )
+
+    const opApplyForeign = await apiCall(
+      'PUT',
+      '/api/billing/my/limits',
+      { templateIds: [myTpl.body.template.id] },
+      { cookie: opCookie2 }
+    )
+    check('计费自助：套用他人模板返回 400', () =>
+      assert.equal(opApplyForeign.status, 400)
+    )
+
+    const opAdjust = await apiCall(
+      'PATCH',
+      `/api/billing/users/${opUserId2}`,
+      { adjust: { delta: 1000, reason: 'self-topup' } },
+      { cookie: opCookie2 }
+    )
+    check('计费自助：用户不能给自己调余额（403）', () =>
+      assert.equal(opAdjust.status, 403)
+    )
+
+    const globalTpl = await apiCall('POST', '/api/billing/templates', {
+      name: `smoke-global-${RUN}`,
+      rules: [{ window: '30d', threshold: 500 }]
+    })
+    await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
+      templateIds: [globalTpl.body.template.id]
+    })
+    await apiCall('PUT', '/api/billing/my/limits', { templateIds: [] })
+    const afterSelfClear = await apiCall('GET', '/api/billing/my/limits')
+    check('计费自助：用户无法摘掉管理员下发的全局模板（粘滞）', () => {
+      assert.ok(
+        afterSelfClear.body.templateIds.includes(globalTpl.body.template.id),
+        '全局模板被自助清掉了'
+      )
+      assert.ok(afterSelfClear.body.lockedTemplateIds.includes(globalTpl.body.template.id))
+    })
+
+    await apiCall('DELETE', `/api/billing/my/templates/${myTpl.body.template.id}`)
+    await apiCall('DELETE', `/api/billing/templates/${globalTpl.body.template.id}`)
+    await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
+      templateIds: []
+    })
     // 清理本段创建的数据（不影响后续「密钥不泄漏」与清理段）
     await apiCall('DELETE', `/api/billing/templates/${strictTpl.body.template.id}`)
     await apiCall('DELETE', `/api/billing/templates/${looseTpl.body.template.id}`)

@@ -694,6 +694,25 @@ export interface BillingMe {
   ledger: BalanceLedgerEntry[]
 }
 
+/**
+ * GET /api/billing/my/limits
+ *
+ * 当前用户已套用的模板集合与可套用的全局模板。
+ * 全局模板（lockedTemplateIds）由管理员维护，用户自助操作无法取消。
+ */
+export interface MyBillingLimits {
+  /** 当前生效的模板 id（含管理员全局模板） */
+  templateIds: string[]
+  /** 其中由用户自助选择的模板 id */
+  selfTemplateIds: string[]
+  /** 已套用且由管理员维护的全局模板 id（粘滞，不能自助取消） */
+  lockedTemplateIds: string[]
+  /** 已套用模板的完整 DTO */
+  templates: LimitTemplate[]
+  /** 当前可套用的全局模板（管理员创建、启用中） */
+  globalTemplates: LimitTemplate[]
+}
+
 export interface BillingUserRow {
   userId: string
   username: string
