@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue'
 import type { Component } from 'vue'
-import { Contrast, Moon, Sun } from 'lucide-vue-next'
+import { Contrast, FileText, Github, Moon, Sun } from 'lucide-vue-next'
 import {
   api,
   cancelScheduledRefresh,
@@ -150,6 +150,16 @@ const routeAllowed = computed(() => {
 
 /** 左上角副标题：设置了网关名称就显示它，否则回落到默认文案 */
 const brandSub = computed(() => meta.gatewayName.trim() || t('nav.appSub'))
+
+/*
+ * 侧栏页脚的两个外链：仓库与许可证。
+ *
+ * 许可证指向仓库里的 LICENSE 文件，而不是 AGPL 官网 —— 用户要确认的是
+ * 「这份代码以什么协议发布」，跳到本仓库的许可证全文更直接。
+ * 版本号仍只从 /api/meta 来（见 meta.ts），这里不写死任何版本。
+ */
+const REPO_URL = 'https://github.com/Crequency/Portara'
+const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`
 
 /*
  * 全屏「关于」页。
@@ -309,8 +319,24 @@ function go(id: string): void {
       <div class="nav-spacer" />
 
       <div class="nav-foot">
-        <span>{{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template></span>
-        <span>AGPL-3.0</span>
+        <a
+          class="nav-foot-link"
+          :href="REPO_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Github :size="12" :stroke-width="1.7" aria-hidden="true" />
+          <span class="nav-foot-text">{{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template></span>
+        </a>
+        <a
+          class="nav-foot-link"
+          :href="LICENSE_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <FileText :size="12" :stroke-width="1.7" aria-hidden="true" />
+          <span class="nav-foot-text">AGPL-3.0</span>
+        </a>
       </div>
     </aside>
 
