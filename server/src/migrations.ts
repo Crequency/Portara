@@ -640,5 +640,35 @@ export const migrations: { id: string; sql: string }[] = [
        where u.role = 'admin'
       on conflict (user_id) do nothing;
     `
+  },
+  {
+    id: '023_alias_rates',
+    sql: `
+      -- 复杂均衡规则（model_routes.alias）的**对外售价**。
+      --
+      -- 与 channel_rates 的分工：
+      --   channel_rates  = 上游成本价（渠道 × 上游模型）→ request_logs.cost_money
+      --   alias_rates    = 对外售价（按 alias）           → request_logs.sell_money
+      -- 用户扣费用售价；售价未配置时回退成本价（保持既有行为）。
+      -- 这样同一上游模型可以按不同 alias 卖出不同价格，成本与毛利仍可分开核算。
+      create table if not exists alias_rates (
+        id               uuid primary key default gen_random_uuid(),
+        alias            text not null unique,
+        currency         text not null default 'USD'
+                         check (currency in ('USD','CNY')),
+        input_per_mtok   numeric(18,6) not null default 0,
+        output_per_mtok  numeric(18,6) not null default 0,
+        per_request      numeric(18,6) not null default 0,
+        status           text not null default 'active'
+                         check (status in ('active','disabled')),
+        note             text not null default '',
+        created_at       timestamptz not null default now(),
+        updated_at       timestamptz not null default now()
+      );
+
+      alter table request_logs
+        add column if not exists sell_money     numeric(20,8) not null default 0,
+        add column if not exists alias_rate_id  uuid references alias_rates(id) on delete set null;
+    `
   }
 ]

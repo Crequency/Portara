@@ -4977,6 +4977,110 @@ async function main() {
     })
     await apiCall('POST', '/api/model-routes/purge', { alias: billingBadAlias })
 
+    /* ---------------------------------------------------------- 别名售价 */
+    /*
+     * 用户扣费走 alias 售价，cost_money 仍是渠道成本 —— 两者分离才能算毛利。
+     * 11 输入 + 7 输出：渠道价 1/2/0.01 → 0.010025；别名价 10/20/0.1 → 0.10025。
+     */
+    const aliasPriced = `smoke-alias-price-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: aliasPriced,
+      targets: [{ channelId: billingChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    const aliasRateRes = await apiCall('PUT', '/api/billing/alias-rates', {
+      alias: aliasPriced,
+      currency: 'USD',
+      inputPerMtok: 10,
+      outputPerMtok: 20,
+      perRequest: 0.1
+    })
+    check('计费：复杂均衡别名可单独配售价', () => {
+      assert.equal(aliasRateRes.status, 200)
+      assert.equal(aliasRateRes.body.rate.alias, aliasPriced)
+      assert.equal(aliasRateRes.body.rate.inputPerMtok, 10)
+    })
+
+    const aliasBody = await apiCall('PUT', '/api/billing/alias-rates', {
+      alias: `no-such-alias-${RUN}`,
+      inputPerMtok: 1
+    })
+    check('计费：别名不存在时拒绝配置（400）', () =>
+      assert.equal(aliasBody.status, 400)
+    )
+
+    // 切回 money 套餐，余额归一到 1
+    const preAliasMe = await apiCall('GET', '/api/billing/me')
+    await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      planId: moneyPlanId,
+      adjust: { delta: 1 - preAliasMe.body.balance, reason: 'smoke-alias-topup' }
+    })
+
+    const aliasHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: aliasPriced, messages: [{ role: 'user', content: '别名售价' }] },
+      billKeyFull
+    )
+    const aliasSettled = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/me')
+      return res.body.balance !== 1 ? res.body : null
+    })
+    check('计费：用户按别名售价扣费（0.10025 而非成本 0.010025）', () => {
+      assert.equal(aliasHit.status, 200)
+      assert.ok(aliasSettled, '余额未变化')
+      assert.equal(Number(aliasSettled.balance.toFixed(6)), 0.89975)
+    })
+
+    const aliasLogs = await apiCall('GET', '/api/logs?limit=30')
+    const aliasLog = aliasLogs.body.logs.find(
+      (l) => l.model === aliasPriced && l.billingChargedAt
+    )
+    check('计费：日志同时记录成本价与售价（cost / sell 分离）', () => {
+      assert.ok(aliasLog, '缺少别名计费日志')
+      assert.equal(aliasLog.costMoney, 0.010025)
+      assert.equal(aliasLog.sellMoney, 0.10025)
+      assert.equal(aliasLog.billedAmount, 0.10025)
+      assert.ok(aliasLog.aliasRateId)
+    })
+
+    await apiCall('PUT', '/api/billing/alias-rates', {
+      alias: aliasPriced,
+      currency: 'USD',
+      inputPerMtok: 20,
+      outputPerMtok: 40,
+      perRequest: 0.2
+    })
+    const aliasHit2 = await proxyCall(
+      '/v1/chat/completions',
+      { model: aliasPriced, messages: [{ role: 'user', content: '别名改价' }] },
+      billKeyFull
+    )
+    const aliasSettled2 = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/me')
+      return res.body.balance !== 0.89975 ? res.body : null
+    })
+    check('计费：别名改价后立刻按新价扣费（缓存失效）', () => {
+      assert.equal(aliasHit2.status, 200)
+      assert.ok(aliasSettled2, '余额未变化')
+      assert.equal(Number(aliasSettled2.balance.toFixed(6)), 0.69925)
+    })
+
+    await apiCall('DELETE', `/api/billing/alias-rates/${aliasRateRes.body.rate.id}`)
+    const aliasHit3 = await proxyCall(
+      '/v1/chat/completions',
+      { model: aliasPriced, messages: [{ role: 'user', content: '回退成本价' }] },
+      billKeyFull
+    )
+    const aliasSettled3 = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/me')
+      return res.body.balance !== 0.69925 ? res.body : null
+    })
+    check('计费：删除别名售价后回退渠道成本价（0.010025）', () => {
+      assert.equal(aliasHit3.status, 200)
+      assert.ok(aliasSettled3, '余额未变化')
+      assert.equal(Number(aliasSettled3.balance.toFixed(6)), 0.689225)
+    })
+    await apiCall('POST', '/api/model-routes/purge', { alias: aliasPriced })
+
     /* ---------------------------------------------------------- 用户自助限额 */
     /*
      * 自助模板只约束「自己的」：越权一律 404（不区分不存在/别人的，避免探测），

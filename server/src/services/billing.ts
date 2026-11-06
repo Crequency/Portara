@@ -63,6 +63,20 @@ export interface ChannelRateRow {
   channel_name?: string | null
 }
 
+/** 复杂均衡别名（对外模型名）的售价行；结构上与渠道费率同形，按 alias 唯一。 */
+export interface AliasRateRow {
+  id: string
+  alias: string
+  currency: string
+  input_per_mtok: string | number
+  output_per_mtok: string | number
+  per_request: string | number
+  status: 'active' | 'disabled'
+  note: string
+  created_at: string
+  updated_at: string
+}
+
 export interface LedgerRow {
   id: string
   user_id: string
@@ -322,6 +336,76 @@ export async function resolveRate(
 }
 
 /**
+ * 解析「复杂均衡别名」的对外售价。
+ *
+ * 与 resolveRate 共用同一个缓存版本号：管理端改任何费率（渠道或别名）都会
+ * incr 版本号，两类缓存一起失效，不存在「改了别名价但旧缓存还在」的窗口。
+ * 返回 null 表示没有配别名售价 —— 调用方回退渠道成本价。
+ */
+export async function resolveAliasRate(alias: string): Promise<RateLike | null> {
+  if (!alias) return null
+  let version = '0'
+  try {
+    version = (await redis.get(RATE_VERSION_KEY)) ?? '0'
+  } catch {
+    /* Redis 挂了就直接读库 */
+  }
+  const cacheKey = `portara:billing:aliasrate:${version}:${alias}`
+
+  try {
+    const cached = await redis.get(cacheKey)
+    if (cached) return JSON.parse(cached) as RateLike
+  } catch {
+    /* 缓存失败不阻塞计费 */
+  }
+
+  const row = await one<AliasRateRow>(
+    `select * from alias_rates where alias = $1 and status = 'active'`,
+    [alias]
+  )
+  if (!row) {
+    // 负缓存：没配置是常态，避免每次请求都打库
+    try {
+      await redis.set(cacheKey, JSON.stringify(null), 'EX', RATE_TTL_SECONDS)
+    } catch {
+      /* 忽略 */
+    }
+    return null
+  }
+
+  const rate: RateLike = {
+    id: row.id,
+    channelId: null,
+    upstreamModel: alias,
+    currency: row.currency,
+    inputPerMtok: Number(row.input_per_mtok),
+    outputPerMtok: Number(row.output_per_mtok),
+    perRequest: Number(row.per_request)
+  }
+  try {
+    await redis.set(cacheKey, JSON.stringify(rate), 'EX', RATE_TTL_SECONDS)
+  } catch {
+    /* 忽略 */
+  }
+  return rate
+}
+
+export function aliasRateRowToDto(r: AliasRateRow) {
+  return {
+    id: r.id,
+    alias: r.alias,
+    currency: r.currency,
+    inputPerMtok: Number(r.input_per_mtok),
+    outputPerMtok: Number(r.output_per_mtok),
+    perRequest: Number(r.per_request),
+    status: r.status,
+    note: r.note,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
+}
+
+/**
  * 主动失效：版本号 +1，所有带旧版本的缓存 key 立刻不再命中。
  * 选版本号而不是 del，是因为一次修改可能影响「该渠道下所有模型」的缓存，
  * 用 DEL 就得先知道所有 key（或 KEYS 扫描，生产禁用）。
@@ -432,9 +516,13 @@ export interface ChargeInput {
   billedAmount: number
   unit: string
   planId: string
+  /** 上游成本（渠道费率算出来），只用于核算毛利 */
   costMoney: number
   costCurrency: string
   rateId: string | null
+  /** 对外售价（别名费率算出来）；未配置别名费率时等于 costMoney */
+  sellMoney?: number
+  aliasRateId?: string | null
   requestLogId: string
 }
 
@@ -475,6 +563,8 @@ export async function chargeBilling(
               billed_amount = $5::numeric,
               billing_unit = $6,
               rate_id = $7,
+              sell_money = $8::numeric,
+              alias_rate_id = $9,
               billing_charged_at = now()
         where id = $1 and billing_charged_at is null
         returning id`,
@@ -485,7 +575,9 @@ export async function chargeBilling(
         input.costCurrency,
         String(amount),
         input.unit,
-        input.rateId
+        input.rateId,
+        String(round8(Math.max(0, input.sellMoney ?? input.costMoney))),
+        input.aliasRateId ?? null
       ]
     )
 
@@ -561,6 +653,8 @@ export interface SettleArgs {
   requestLogId: string
   channelId: string
   upstreamModel: string
+  /** 客户端请求的对外模型名（复杂均衡别名）；命中 alias_rates 时按售价扣费 */
+  alias?: string
   inputTokens: number
   outputTokens: number
   totalTokens?: number
@@ -587,27 +681,31 @@ export async function settleRequestBilling(args: SettleArgs): Promise<ChargeResu
     }
   }
 
-  const rate = await resolveRate(args.channelId, args.upstreamModel)
-  const costMoney = computeMoneyCost(
-    {
-      inputTokens: args.inputTokens,
-      outputTokens: args.outputTokens,
-      requests: args.requests ?? 1
-    },
-    rate
-  )
+  const usage = {
+    inputTokens: args.inputTokens,
+    outputTokens: args.outputTokens,
+    requests: args.requests ?? 1
+  }
+  // 成本：渠道费率；售价：别名费率（未配置则回退成本价，保持旧行为）
+  const costRate = await resolveRate(args.channelId, args.upstreamModel)
+  const aliasRate = args.alias ? await resolveAliasRate(args.alias) : null
+  const costMoney = computeMoneyCost(usage, costRate)
+  const sellMoney = aliasRate ? computeMoneyCost(usage, aliasRate) : costMoney
+
   const totalTokens =
     args.totalTokens ?? Math.max(0, args.inputTokens) + Math.max(0, args.outputTokens)
   const plan = planLikeOf(state.plan)
-  const billed = toBilledAmount(costMoney, plan, totalTokens)
+  const billed = toBilledAmount(sellMoney, plan, totalTokens)
 
   return chargeBilling(args.userId, {
     billedAmount: billed,
     unit: plan.unit,
     planId: plan.id,
     costMoney,
-    costCurrency: rate.id ? rate.currency : '',
-    rateId: rate.id,
+    costCurrency: costRate.id ? costRate.currency : '',
+    rateId: costRate.id,
+    sellMoney,
+    aliasRateId: aliasRate?.id ?? null,
     requestLogId: args.requestLogId
   })
 }

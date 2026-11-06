@@ -6,6 +6,7 @@ import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import {
   adjustBalance,
+  aliasRateRowToDto,
   bumpRateCacheVersion,
   invalidatePrecheck,
   invalidateUsersByPlan,
@@ -15,6 +16,7 @@ import {
   planToDto,
   rateRowToDto,
   setUserPlan,
+  type AliasRateRow,
   type ChannelRateRow,
   type LedgerRow,
   type PlanRow
@@ -378,6 +380,85 @@ billingRoutes.put('/rates', requireAdmin, async (c) => {
     [row!.id]
   )
   return c.json({ rate: rateRowToDto(withName!) })
+})
+
+// ------------------------------------------------------------ 别名售价（复杂均衡规则定义的模型名）
+
+/*
+ * 别名售价 vs 渠道成本：
+ *   - alias_rates 决定「用户被扣多少」（request_logs.sell_money）
+ *   - channel_rates 决定「上游成本多少」（request_logs.cost_money）
+ * 两者并存才能算毛利；别名没配价时回退成本价，老数据行为不变。
+ */
+const aliasRateBodySchema = z.object({
+  alias: z.string().trim().min(1, '别名不能为空').max(128),
+  currency: z.enum(['USD', 'CNY']).default('USD'),
+  inputPerMtok: z.coerce.number().finite().min(0).default(0),
+  outputPerMtok: z.coerce.number().finite().min(0).default(0),
+  perRequest: z.coerce.number().finite().min(0).default(0),
+  status: z.enum(['active', 'disabled']).default('active'),
+  note: z.string().max(500).default('')
+})
+
+billingRoutes.get('/alias-rates', requireAdmin, async (c) => {
+  const q = parseQuery(c, z.object({ q: z.string().max(128).optional() }))
+  const rows = await query<AliasRateRow>(
+    `select * from alias_rates
+      where ($1::text is null or alias ilike '%' || $1 || '%')
+      order by alias asc`,
+    [q.q ?? null]
+  )
+  return c.json({ rates: rows.map(aliasRateRowToDto) })
+})
+
+billingRoutes.put('/alias-rates', requireAdmin, async (c) => {
+  const body = await parseJson(c, aliasRateBodySchema)
+  const exists = await one('select 1 from model_routes where alias = $1 limit 1', [body.alias])
+  if (!exists) throw badRequest('该别名在复杂均衡规则里不存在')
+
+  const row = await one<AliasRateRow>(
+    `insert into alias_rates (alias, currency, input_per_mtok, output_per_mtok, per_request, status, note)
+     values ($1,$2,$3::numeric,$4::numeric,$5::numeric,$6,$7)
+     on conflict (alias) do update set
+       currency = excluded.currency,
+       input_per_mtok = excluded.input_per_mtok,
+       output_per_mtok = excluded.output_per_mtok,
+       per_request = excluded.per_request,
+       status = excluded.status,
+       note = excluded.note,
+       updated_at = now()
+     returning *`,
+    [
+      body.alias,
+      body.currency,
+      String(body.inputPerMtok),
+      String(body.outputPerMtok),
+      String(body.perRequest),
+      body.status,
+      body.note
+    ]
+  )
+  await bumpRateCacheVersion()
+  await recordAudit(c, 'billing.alias_rate.upsert', { type: 'alias_rate', id: row!.id }, {
+    alias: body.alias,
+    currency: body.currency,
+    inputPerMtok: body.inputPerMtok,
+    outputPerMtok: body.outputPerMtok,
+    perRequest: body.perRequest
+  })
+  return c.json({ rate: aliasRateRowToDto(row!) })
+})
+
+billingRoutes.delete('/alias-rates/:id', requireAdmin, async (c) => {
+  const id = uuidSchema.parse(c.req.param('id'))
+  const target = await one<AliasRateRow>('select * from alias_rates where id = $1', [id])
+  if (!target) throw notFound('别名费率不存在')
+  await query('delete from alias_rates where id = $1', [id])
+  await bumpRateCacheVersion()
+  await recordAudit(c, 'billing.alias_rate.delete', { type: 'alias_rate', id }, {
+    alias: target.alias
+  })
+  return c.json({ ok: true })
 })
 
 // ------------------------------------------------------------ 限额模板

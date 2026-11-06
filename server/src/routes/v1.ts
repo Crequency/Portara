@@ -386,12 +386,15 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     if (!billingUserId || !res?.ok || c.req.raw.signal.aborted) return undefined
     const channelId = channel.id
     const servedModel = upstreamModel
+    // 对外模型名：命中 alias_rates 时按售价扣费；cost_money 仍是渠道成本
+    const servedAlias = model
     return async (logId: string) => {
       await settleRequestBilling({
         userId: billingUserId,
         requestLogId: logId,
         channelId,
         upstreamModel: servedModel,
+        alias: servedAlias,
         inputTokens: usage.promptTokens,
         outputTokens: usage.completionTokens,
         totalTokens: usage.totalTokens

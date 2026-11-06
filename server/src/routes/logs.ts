@@ -88,6 +88,9 @@ logRoutes.get('/logs', async (c) => {
       costMoney: Number(r.cost_money ?? 0),
       costCurrency: r.cost_currency ?? '',
       billedAmount: Number(r.billed_amount ?? 0),
+      // 对外售价（别名费率算出来的）；未配别名费率时等于 costMoney
+      sellMoney: Number(r.sell_money ?? 0),
+      aliasRateId: r.alias_rate_id,
       billingUnit: r.billing_unit ?? '',
       rateId: r.rate_id,
       billingChargedAt: r.billing_charged_at,

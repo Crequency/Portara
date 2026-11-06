@@ -220,6 +220,9 @@ export interface RequestLogRow {
   billed_amount: string | number
   billing_unit: string
   rate_id: string | null
+  /** 对外售价金额与命中的别名费率（迁移 023）；未命中时 sell_money = cost_money */
+  sell_money: string | number
+  alias_rate_id: string | null
   /** 结算幂等标记：非空 = 已结过账 */
   billing_charged_at: string | null
 }
