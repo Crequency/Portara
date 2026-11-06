@@ -21,6 +21,7 @@ import ChannelsView from './views/ChannelsView.vue'
 import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
 import LogoMark from './components/LogoMark.vue'
+import AboutPage from './components/AboutPage.vue'
 import LoginView from './views/LoginView.vue'
 import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
@@ -150,6 +151,26 @@ const routeAllowed = computed(() => {
 /** 左上角副标题：设置了网关名称就显示它，否则回落到默认文案 */
 const brandSub = computed(() => meta.gatewayName.trim() || t('nav.appSub'))
 
+/*
+ * 全屏「关于」页。
+ *
+ * 它不是路由页面：hash 完全不变，关闭后回到原来那一页。
+ * 关闭时把焦点还给 Brand 按钮 —— 打开时焦点被移进了弹层，
+ * 不还回去的话键盘用户会掉到 document.body 上。
+ */
+const aboutOpen = ref(false)
+const brandBtn = ref<HTMLButtonElement | null>(null)
+
+function openAbout(): void {
+  aboutOpen.value = true
+}
+
+function closeAbout(): void {
+  aboutOpen.value = false
+  // 等 180ms 淡出结束、弹层卸载后再给焦点，避免焦点落在即将消失的节点上
+  window.setTimeout(() => brandBtn.value?.focus(), 190)
+}
+
 /**
  * 浏览器标签标题：`网关名 · 当前页面`。
  * 用 watchEffect 而不是 onMounted，这样在设置页改完名称能立刻反映到标签上。
@@ -251,13 +272,20 @@ function go(id: string): void {
 
   <div v-else class="shell">
     <aside class="sidebar">
-      <div class="brand">
+      <!-- Brand 整块是一个按钮：点击展开全屏关于页（不改 hash） -->
+      <button
+        ref="brandBtn"
+        type="button"
+        class="brand brand-btn"
+        :aria-label="t('about.open')"
+        @click="openAbout"
+      >
         <LogoMark :size="30" />
         <div>
           <div class="brand-name">{{ t('nav.appName') }}</div>
           <div class="brand-sub">{{ brandSub }}</div>
         </div>
-      </div>
+      </button>
 
       <button
         v-for="item in navItems"
@@ -374,5 +402,6 @@ function go(id: string): void {
     </main>
   </div>
 
+  <AboutPage :open="aboutOpen" @close="closeAbout" />
   <ToastHost />
 </template>

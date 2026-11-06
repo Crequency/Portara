@@ -788,4 +788,33 @@ export const en = {
     collapse: 'Collapse',
     expand: 'Expand',
   },
+  about: {
+    open: 'About Portara',
+    title: 'About',
+    close: 'Close',
+    tagline: 'Enterprise-grade AI API gateway',
+    versionLabel: 'Version {version}',
+    intro:
+      'Portara sits between your applications and the model providers behind them, exposing a single OpenAI-compatible endpoint. Credentials, rate limits, quotas, routing and cost accounting all live in this layer, so no upstream secret ever appears in business code — and the data plane, admin API and console share one process and one port.',
+    featuresTitle: 'Highlights',
+    routingTitle: 'Two-stage routing',
+    routingBody:
+      'An alias maps a gateway model to channels; inside each channel, accounts are ranked by priority and weight. Failover walks both lists automatically.',
+    affinityTitle: 'Session affinity',
+    affinityBody:
+      'A client-supplied prompt_cache_key pins a conversation to the same channel / account pair, so cache hits are not scattered by round-robin.',
+    quotaTitle: 'Balance & quota adapters',
+    quotaBody:
+      'Vendor balances and usage windows are read per channel, so exhausted or cooling targets are skipped before they are picked.',
+    translateTitle: 'Protocol translation',
+    translateBody:
+      'The channel decides whether the upstream speaks OpenAI or Anthropic; callers only ever speak OpenAI.',
+    stackTitle: 'Stack',
+    stack: 'Node 22 · Hono · Vue 3 · PostgreSQL · Redis · Caddy',
+    repository: 'Crequency/Portara',
+    license: 'License',
+    licenseName: 'AGPL-3.0',
+    copyright:
+      'Copyright © 2025-2026 Crequency Open Source Organization (云矩创频开源组织)',
+  },
 }

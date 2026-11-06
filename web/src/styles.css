@@ -212,6 +212,26 @@ a { color: var(--accent); text-decoration: none; }
 
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; }
 
+/*
+ * Brand 整块是「关于」页的入口：改成原生 button 但保留原排版。
+ * 只做克制的 hover / focus 反馈 —— 背景 + 上移 1px，不给侧栏加视觉噪声。
+ */
+.brand-btn {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.brand-btn:hover { background: var(--bg-elev-2); transform: translateY(-1px); }
+.brand-btn:active { transform: translateY(0); }
+.brand-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .brand-name { font-weight: 650; letter-spacing: 0.2px; }
 .brand-sub { font-size: 11px; color: var(--text-faint); margin-top: -3px; }
 

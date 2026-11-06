@@ -788,4 +788,33 @@ export const zh = {
     collapse: '折叠',
     expand: '展开',
   },
+  about: {
+    open: '关于 Portara',
+    title: '关于',
+    close: '关闭',
+    tagline: '企业级 AI API 网关',
+    versionLabel: '版本 {version}',
+    intro:
+      'Portara 位于你的应用与背后的模型供应商之间，对外只暴露一个 OpenAI 兼容端点。凭据、限流、额度、选路与成本记账都收敛在这一层，上游密钥永远不会出现在业务代码里；数据面、管理 API 与控制台由同一进程、同一端口提供。',
+    featuresTitle: '核心特性',
+    routingTitle: '双层选路',
+    routingBody:
+      '别名先把网关模型映射到渠道，渠道内再按优先级与权重挑选账户；失败时沿这两级列表自动转移。',
+    affinityTitle: '会话亲和',
+    affinityBody:
+      '调用方传入 prompt_cache_key，即可把一段对话固定到同一组渠道 / 账户，缓存命中不会被轮询打散。',
+    quotaTitle: '余额额度适配',
+    quotaBody:
+      '按渠道读取供应商余额与用量窗口，额度耗尽或冷却中的目标在被选中之前就跳过。',
+    translateTitle: '协议翻译',
+    translateBody:
+      '上游说 OpenAI 还是 Anthropic 由渠道决定，调用方始终只需要说 OpenAI。',
+    stackTitle: '技术栈',
+    stack: 'Node 22 · Hono · Vue 3 · PostgreSQL · Redis · Caddy',
+    repository: 'Crequency/Portara',
+    license: '许可证',
+    licenseName: 'AGPL-3.0',
+    copyright:
+      'Copyright © 2025-2026 Crequency Open Source Organization (云矩创频开源组织)',
+  },
 }
