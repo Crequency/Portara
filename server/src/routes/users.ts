@@ -3,23 +3,16 @@ import { z } from 'zod'
 import { one, query } from '../db.js'
 import { hashPassword } from '../lib/crypto.js'
 import { badRequest, notFound, parseJson } from '../lib/http.js'
+import { passwordSchema, usernameSchema, uuidSchema } from '../lib/validation.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { toUserDto, type UserRow } from '../types.js'
 
 export const userRoutes = new Hono()
 
-const uuidSchema = z
-  .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, '非法 ID')
-
 const createSchema = z.object({
-  username: z
-    .string()
-    .min(2, '用户名至少 2 位')
-    .max(64)
-    .regex(/^[A-Za-z0-9._-]+$/, '用户名只能包含字母、数字、. _ -'),
+  username: usernameSchema,
   displayName: z.string().max(64).optional(),
-  password: z.string().min(8, '密码至少 8 位'),
+  password: passwordSchema,
   role: z.enum(['admin', 'operator']).default('operator')
 })
 
@@ -27,7 +20,7 @@ const updateSchema = z.object({
   displayName: z.string().max(64).optional(),
   role: z.enum(['admin', 'operator']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
-  password: z.string().min(8, '密码至少 8 位').optional()
+  password: passwordSchema.optional()
 })
 
 userRoutes.use('*', requireAuth)

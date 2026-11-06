@@ -261,6 +261,30 @@ export interface User {
   lastLoginAt: string | null
 }
 
+export type RegistrationStatus = 'pending' | 'approved' | 'rejected'
+
+/** 公开注册申请（与后端 routes/registrations.ts 对应） */
+export interface RegistrationApplication {
+  id: string
+  username: string
+  displayName: string
+  contact: string
+  note: string
+  status: RegistrationStatus
+  rejectReason: string
+  reviewedBy: string | null
+  reviewedAt: string | null
+  userId: string | null
+  createdAt: string
+}
+
+export interface RegistrationListResponse {
+  applications: RegistrationApplication[]
+  total: number
+  /** 全库待审批数（与当前筛选无关），用于页签徽标 */
+  pendingCount: number
+}
+
 /**
  * 当前用户范围内的聚合统计（与后端 routes/profile.ts 对应）。
  *

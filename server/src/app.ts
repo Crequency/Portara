@@ -14,6 +14,7 @@ import { logRoutes } from './routes/logs.js'
 import { modelRouteRoutes } from './routes/modelRoutes.js'
 import { profileRoutes } from './routes/profile.js'
 import { proxyRoutes } from './routes/proxies.js'
+import { registrationRoutes } from './routes/registrations.js'
 import { settingsRoutes } from './routes/settings.js'
 import { usageRoutes } from './routes/usage.js'
 import { usageAdminRoutes } from './routes/usageAdmin.js'
@@ -110,6 +111,8 @@ export function createApp(): Hono {
 
   // ---- 控制面 ----
   app.route('/api/auth', authRoutes)
+  // 公开注册申请（POST /api/register 无需登录）与管理员审批（路由内部挂 requireAuth/requireAdmin）
+  app.route('/api', registrationRoutes)
   app.route('/api/users', userRoutes)
   app.route('/api/channels', channelRoutes)
   // 嵌套资源：账户挂在渠道下（放在 channels 之后，靠其 unmatched 落空自然回落）

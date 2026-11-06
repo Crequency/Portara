@@ -27,6 +27,7 @@ import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
 import ProfileView from './views/ProfileView.vue'
 import ProxiesView from './views/ProxiesView.vue'
+import RegisterView from './views/RegisterView.vue'
 import SettingsView from './views/SettingsView.vue'
 import UsageView from './views/UsageView.vue'
 import UsersView from './views/UsersView.vue'
@@ -128,10 +129,13 @@ const pageTitle = computed(() => {
   if (isChannelForm.value) {
     return channelFormId.value ? t('channels.editChannel') : t('channels.newChannel')
   }
+  // 公开注册页不属于 NAV，标题单独取；未登录时不会渲染顶栏，但浏览器标签要用
+  if (route.value.name === 'register') return t('register.title')
   return isChannelDetail.value ? t('channelDetail.title') : t('nav.' + route.value.name)
 })
 const pageSub = computed(() => {
   if (isChannelForm.value) return t('channels.formSub')
+  if (route.value.name === 'register') return t('register.subtitle')
   return isChannelDetail.value ? t('channelDetail.sub') : t(route.value.name + '.sub')
 })
 
@@ -255,6 +259,18 @@ setSessionExpiredHandler(() => {
   }
 })
 
+/*
+ * 已登录用户手动访问 #/register 时回概览 —— 申请页对已有账号的人没有意义，
+ * 留在那里只会看到一个能重复提交的表单（提交也会被 409 挡住）。
+ * 用 watchEffect 而不是 onMounted：hash 变化、登录完成两个时机都要覆盖。
+ */
+watchEffect(() => {
+  if (ready.value && user.value && route.value.name === 'register') {
+    location.hash = '#/overview'
+    route.value = { name: 'overview', param: '', action: '' }
+  }
+})
+
 function onLoggedIn(u: User): void {
   user.value = u
   location.hash = '#/overview'
@@ -278,7 +294,9 @@ function go(id: string): void {
 <template>
   <div v-if="!ready" class="loading">{{ t('common.loading') }}</div>
 
-  <LoginView v-else-if="!user" @logged-in="onLoggedIn" />
+  <!-- 未登录：申请页是公开的，其余路径都渲染登录页 -->
+  <LoginView v-else-if="!user && route.name !== 'register'" @logged-in="onLoggedIn" />
+  <RegisterView v-else-if="!user" />
 
   <div v-else class="shell">
     <aside class="sidebar">

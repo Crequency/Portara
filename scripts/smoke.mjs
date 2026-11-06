@@ -1476,6 +1476,146 @@ async function main() {
     )
     check('操作员可查看自己名下的密钥', () => assert.equal(operatorRevealOwn.status, 200))
 
+    // ---------------------------------------------------------- 注册申请与审批
+    section('⑭·注册申请与审批')
+
+    const regPassword = `smoke-reg-pass-${RUN}`
+    const regNameA = `smoke-reg-a-${RUN}`
+    const applyA = await apiCall(
+      'POST',
+      '/api/register',
+      {
+        username: regNameA,
+        displayName: '冒烟注册用户',
+        password: regPassword,
+        contact: 'smoke@example.com',
+        note: '冒烟测试申请'
+      },
+      { cookie: '', keepSession: true }
+    )
+    check('未登录可公开提交注册申请（201）', () => assert.equal(applyA.status, 201))
+    check('申请初始状态为 pending', () => assert.equal(applyA.body?.status, 'pending'))
+    const regAId = applyA.body?.id
+
+    const applyAgain = await apiCall(
+      'POST',
+      '/api/register',
+      { username: regNameA, password: regPassword },
+      { cookie: '', keepSession: true }
+    )
+    check('同一用户名重复申请被拒（409）', () => assert.equal(applyAgain.status, 409))
+
+    const regListAnon = await apiCall('GET', '/api/registrations', undefined, {
+      cookie: '',
+      keepSession: true
+    })
+    check('未登录查看申请列表被拒（401）', () =>
+      assert.equal(regListAnon.status, 401)
+    )
+
+    const regListOperator = await apiCall('GET', '/api/registrations', undefined, {
+      cookie: operatorCookie
+    })
+    check('操作员查看申请列表被拒（403）', () =>
+      assert.equal(regListOperator.status, 403)
+    )
+
+    const regListAdmin = await apiCall('GET', '/api/registrations?status=pending')
+    check('管理员可按 pending 筛选并看到该申请', () => {
+      assert.equal(regListAdmin.status, 200)
+      const rows = regListAdmin.body?.applications ?? []
+      assert.ok(
+        rows.some((a) => a.id === regAId),
+        '待审批列表里找不到刚提交的申请'
+      )
+    })
+    check('申请列表为 camelCase 且不泄漏口令哈希', () => {
+      const row = (regListAdmin.body?.applications ?? []).find((a) => a.id === regAId)
+      assert.equal(row.username, regNameA)
+      assert.equal(row.displayName, '冒烟注册用户')
+      assert.equal(row.contact, 'smoke@example.com')
+      assert.equal(typeof row.createdAt, 'string')
+      assert.ok(!regListAdmin.text.includes('password_hash'), '响应里出现了 password_hash')
+    })
+
+    const approveA = await apiCall('POST', `/api/registrations/${regAId}/approve`)
+    check('管理员通过申请（200）', () => assert.equal(approveA.status, 200))
+    check('通过后创建的用户默认 operator / active', () => {
+      const created = approveA.body?.user
+      assert.equal(created?.username, regNameA)
+      assert.equal(created?.role, 'operator')
+      assert.equal(created?.status, 'active')
+    })
+    const approvedUserId = approveA.body?.user?.id
+
+    const regLogin = await apiCall(
+      'POST',
+      '/api/auth/login',
+      { username: regNameA, password: regPassword },
+      { cookie: '', keepSession: true }
+    )
+    check('审批通过后新用户可登录（200）', () => assert.equal(regLogin.status, 200))
+
+    const approveTwice = await apiCall('POST', `/api/registrations/${regAId}/approve`)
+    check('重复通过同一申请被拒（409，不重复建号）', () =>
+      assert.equal(approveTwice.status, 409)
+    )
+
+    const applyTaken = await apiCall(
+      'POST',
+      '/api/register',
+      { username: regNameA, password: regPassword },
+      { cookie: '', keepSession: true }
+    )
+    check('已建号用户名不能再申请（409）', () => assert.equal(applyTaken.status, 409))
+
+    const regNameB = `smoke-reg-b-${RUN}`
+    const applyB = await apiCall(
+      'POST',
+      '/api/register',
+      { username: regNameB, password: regPassword, note: '待拒绝的申请' },
+      { cookie: '', keepSession: true }
+    )
+    check('可提交第二份申请（201）', () => assert.equal(applyB.status, 201))
+
+    const rejectB = await apiCall(
+      'POST',
+      `/api/registrations/${applyB.body?.id}/reject`,
+      { reason: '冒烟测试：不符合条件' }
+    )
+    check('管理员可拒绝申请（200）', () => assert.equal(rejectB.status, 200))
+
+    const rejectedList = await apiCall('GET', '/api/registrations?status=rejected')
+    check('已拒绝列表状态与理由正确', () => {
+      const row = (rejectedList.body?.applications ?? []).find(
+        (a) => a.id === applyB.body?.id
+      )
+      assert.ok(row, '已拒绝列表里找不到该申请')
+      assert.equal(row.status, 'rejected')
+      assert.equal(row.rejectReason, '冒烟测试：不符合条件')
+    })
+
+    const reapplyB = await apiCall(
+      'POST',
+      '/api/register',
+      { username: regNameB, password: regPassword },
+      { cookie: '', keepSession: true }
+    )
+    check('被拒绝的用户名可以重新申请（201）', () =>
+      assert.equal(reapplyB.status, 201)
+    )
+
+    const approveRejected = await apiCall(
+      'POST',
+      `/api/registrations/${applyB.body?.id}/approve`
+    )
+    check('已拒绝的申请不能再通过（409）', () =>
+      assert.equal(approveRejected.status, 409)
+    )
+
+    // 清理：删掉本轮审批出的账号（申请记录留在隔离 schema 里，不影响下次运行）
+    if (approvedUserId) await apiCall('DELETE', `/api/users/${approvedUserId}`)
+
     // ---------------------------------------------------------- 个人资料（用户范围统计）
     section('⑭·补充 用户资料与用户范围统计')
 

@@ -233,6 +233,22 @@ export function toModelRouteDto(r: ModelRouteRow) {
   }
 }
 
+/** 注册申请行（迁移 021） */
+export interface RegistrationApplicationRow {
+  id: string
+  username: string
+  display_name: string
+  password_hash: string
+  contact: string
+  note: string
+  status: 'pending' | 'approved' | 'rejected'
+  reject_reason: string
+  reviewed_by: string | null
+  reviewed_at: string | null
+  user_id: string | null
+  created_at: string
+}
+
 /** 用户对外表示：绝不包含 password_hash */
 export function toUserDto(u: UserRow) {
   return {
@@ -243,6 +259,23 @@ export function toUserDto(u: UserRow) {
     status: u.status,
     createdAt: u.created_at,
     lastLoginAt: u.last_login_at
+  }
+}
+
+/** 注册申请对外表示：**绝不包含 password_hash** */
+export function toRegistrationDto(a: RegistrationApplicationRow) {
+  return {
+    id: a.id,
+    username: a.username,
+    displayName: a.display_name ?? '',
+    contact: a.contact ?? '',
+    note: a.note ?? '',
+    status: a.status,
+    rejectReason: a.reject_reason ?? '',
+    reviewedBy: a.reviewed_by,
+    reviewedAt: a.reviewed_at,
+    userId: a.user_id,
+    createdAt: a.created_at
   }
 }
 

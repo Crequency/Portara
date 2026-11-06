@@ -470,5 +470,42 @@ export const migrations: { id: string; sql: string }[] = [
         add column if not exists quota_cooldown_level integer not null default 0,
         add column if not exists quota_cooldown_until timestamptz;
     `
+  },
+  {
+    id: '021_registration_applications',
+    sql: `
+      -- 公开注册申请：未登录用户在登录页申请，管理员审批后才创建正式用户。
+      --
+      -- password_hash 在**提交时就**做 scrypt 哈希 —— 申请记录本身不保存明文口令，
+      -- 即使管理员不通过也不会留下可用的凭据。
+      --
+      -- 同一用户名同时只能有一个 pending 申请（部分唯一索引）。已拒绝/已通过的
+      -- 申请不参与该索引：被拒绝后用户可以重新申请，已通过的用户名则会在
+      -- 「users 已存在」那一步被挡住。
+      create table if not exists registration_applications (
+        id            uuid primary key default gen_random_uuid(),
+        username      text not null,
+        display_name  text not null default '',
+        password_hash text not null,
+        contact       text not null default '',
+        note          text not null default '',
+        status        text not null default 'pending'
+                      check (status in ('pending','approved','rejected')),
+        reject_reason text not null default '',
+        reviewed_by   uuid references users(id) on delete set null,
+        reviewed_at   timestamptz,
+        user_id       uuid references users(id) on delete set null,
+        created_at    timestamptz not null default now()
+      );
+
+      create index if not exists idx_reg_apps_status
+        on registration_applications (status, created_at desc);
+
+      -- 幂等的部分唯一索引：if not exists 对索引同样生效。
+      -- 只约束 pending，因此「拒绝后重新申请」不会被历史记录挡住。
+      create unique index if not exists uq_reg_apps_pending_username
+        on registration_applications (username)
+        where status = 'pending';
+    `
   }
 ]

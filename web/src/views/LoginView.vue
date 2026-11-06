@@ -61,6 +61,12 @@ async function submit(): Promise<void> {
           {{ busy ? t('login.submitting') : t('login.submit') }}
         </button>
       </div>
+
+      <!-- 公开注册申请入口：未登录用户可在同一视觉语言的申请页提交 -->
+      <div class="login-alt">
+        <span class="dim">{{ t('login.noAccount') }}</span>
+        <a class="login-alt-link" href="#/register">{{ t('login.apply') }}</a>
+      </div>
     </form>
   </div>
 </template>
