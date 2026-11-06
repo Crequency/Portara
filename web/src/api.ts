@@ -646,6 +646,25 @@ export interface ChannelRate {
   updatedAt: string | null
 }
 
+/**
+ * 复杂均衡别名（对外模型名）的售价。
+ *
+ * 与 ChannelRate 的分工：channel_rates 是上游成本价，alias_rates 是用户售价；
+ * 某个别名没有售价时，扣费回退到渠道成本价。
+ */
+export interface AliasRate {
+  id: string
+  alias: string
+  currency: 'USD' | 'CNY'
+  inputPerMtok: number
+  outputPerMtok: number
+  perRequest: number
+  status: 'active' | 'disabled'
+  note: string
+  createdAt: string | null
+  updatedAt: string | null
+}
+
 export interface LimitRule {
   window: BillingWindow
   threshold: number

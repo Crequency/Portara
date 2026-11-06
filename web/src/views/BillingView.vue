@@ -13,6 +13,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   api,
+  type AliasRate,
   type BalanceLedgerEntry,
   type BillingPlan,
   type BillingUnit,
@@ -22,6 +23,7 @@ import {
   type LimitTemplate,
   type User
 } from '../api'
+import BillingAliasRateDialog from '../components/BillingAliasRateDialog.vue'
 import BillingRateDialog from '../components/BillingRateDialog.vue'
 import BillingUserDialog from '../components/BillingUserDialog.vue'
 import Modal from '../components/Modal.vue'
@@ -48,7 +50,7 @@ const tabOptions = computed<{ value: Tab; label: string }[]>(() => [
 function selectTab(next: Tab): void {
   tab.value = next
   if (next === 'plans') void loadPlans()
-  else if (next === 'rates') void loadRates()
+  else if (next === 'rates') void loadRatesTab()
   else if (next === 'templates') void loadTemplates()
   else void loadBillingUsers()
 }
@@ -183,6 +185,85 @@ async function removePlan(plan: BillingPlan): Promise<void> {
 }
 
 /* ---------------------------------------------------------------- 费率 */
+
+/*
+ * 费率页签分两块：
+ *   别名售价（alias_rates）  决定用户扣费，按复杂均衡规则的对外 alias 唯一；
+ *   渠道成本（channel_rates） 只用于成本核算，不影响用户扣费。
+ * 两块独立加载、独立新建/编辑/删除，互不阻塞。
+ */
+
+const aliasRates = ref<AliasRate[]>([])
+const aliasRatesLoading = ref(false)
+const aliasFilter = ref('')
+const showDisabledAliasRates = ref(false)
+const aliasRateDialogOpen = ref(false)
+const editingAliasRate = ref<AliasRate | null>(null)
+
+const visibleAliasRates = computed(() => {
+  const q = aliasFilter.value.trim().toLowerCase()
+  return aliasRates.value.filter((r) => {
+    if (!showDisabledAliasRates.value && r.status !== 'active') return false
+    return !q || r.alias.toLowerCase().includes(q)
+  })
+})
+
+async function loadAliasRates(): Promise<void> {
+  aliasRatesLoading.value = true
+  try {
+    const res = await api.get<{ rates: AliasRate[] }>('/api/billing/alias-rates')
+    aliasRates.value = res.rates
+  } catch (err) {
+    toastError(err, t('billing.aliasRate.loadFailed'))
+  } finally {
+    aliasRatesLoading.value = false
+  }
+}
+
+function openAliasRateDialog(rate?: AliasRate): void {
+  editingAliasRate.value = rate ?? null
+  aliasRateDialogOpen.value = true
+}
+
+async function setAliasRateStatus(
+  rate: AliasRate,
+  status: 'active' | 'disabled'
+): Promise<void> {
+  try {
+    await api.put('/api/billing/alias-rates', {
+      alias: rate.alias,
+      currency: rate.currency,
+      inputPerMtok: rate.inputPerMtok,
+      outputPerMtok: rate.outputPerMtok,
+      perRequest: rate.perRequest,
+      status,
+      note: rate.note
+    })
+    toast.success(
+      status === 'disabled'
+        ? t('billing.aliasRate.disabledToast')
+        : t('billing.aliasRate.enabledToast')
+    )
+    await loadAliasRates()
+  } catch (err) {
+    toastError(err, t('billing.aliasRate.saveFailed'))
+  }
+}
+
+async function removeAliasRate(rate: AliasRate): Promise<void> {
+  if (!confirm(t('billing.aliasRate.deleteConfirm', { alias: rate.alias }))) return
+  try {
+    await api.del('/api/billing/alias-rates/' + encodeURIComponent(rate.id))
+    toast.success(t('billing.aliasRate.deleted'))
+    await loadAliasRates()
+  } catch (err) {
+    toastError(err, t('billing.aliasRate.deleteFailed'))
+  }
+}
+
+async function loadRatesTab(): Promise<void> {
+  await Promise.all([loadAliasRates(), loadRates()])
+}
 
 const rates = ref<ChannelRate[]>([])
 const ratesLoading = ref(false)
@@ -660,92 +741,196 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 费率 -->
+    <!-- 费率：别名售价（用户扣费） / 渠道成本（成本核算） -->
     <div v-show="tab === 'rates'" class="card fill-view view-panel">
       <div class="card-head panel-head">
         <div>
           <div class="card-title">{{ t('billing.tabs.rates') }}</div>
           <div class="dim" style="font-size: 12px">{{ t('billing.rate.sub') }}</div>
         </div>
-        <div class="row">
-          <div style="width: 190px">
-            <PSelect
-              v-model="rateFilter"
-              :options="channelFilterOptions"
-              size="sm"
-              align="end"
-            />
+      </div>
+
+      <div class="rate-sections">
+        <!-- 别名售价 -->
+        <section class="rate-section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">{{ t('billing.sectionAliasRates') }}</div>
+              <div class="section-sub">{{ t('billing.sectionAliasRatesSub') }}</div>
+            </div>
+            <div class="row section-tools">
+              <input
+                v-model="aliasFilter"
+                class="filter-input"
+                :placeholder="t('billing.aliasRate.searchPlaceholder')"
+              />
+              <label class="row rates-toggle">
+                <input v-model="showDisabledAliasRates" type="checkbox" />
+                <span>{{ t('billing.aliasRate.showDisabled') }}</span>
+              </label>
+              <button class="btn btn-sm" @click="loadAliasRates">{{ t('common.refresh') }}</button>
+              <button class="btn btn-primary btn-sm" @click="openAliasRateDialog()">
+                ＋ {{ t('billing.aliasRate.new') }}
+              </button>
+            </div>
           </div>
-          <label class="row rates-toggle">
-            <input v-model="showDisabledRates" type="checkbox" />
-            <span>{{ t('billing.rate.showDisabled') }}</span>
-          </label>
-          <button class="btn btn-sm" @click="loadRates">{{ t('common.refresh') }}</button>
-          <button class="btn btn-primary btn-sm" @click="openRateDialog()">
-            ＋ {{ t('billing.rate.new') }}
-          </button>
-        </div>
-      </div>
 
-      <div class="alert alert-info rates-hint">{{ t('billing.rate.priorityHint') }}</div>
+          <div class="alert alert-info rates-hint">{{ t('billing.aliasRate.sellHint') }}</div>
 
-      <div v-if="ratesLoading" class="loading">{{ t('common.loading') }}</div>
-      <div v-else-if="visibleRates.length === 0" class="empty">{{ t('billing.rate.empty') }}</div>
-      <div v-else class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>{{ t('billing.rate.channel') }}</th>
-              <th>{{ t('billing.rate.upstreamModel') }}</th>
-              <th>{{ t('billing.currency') }}</th>
-              <th>{{ t('billing.rate.input') }}</th>
-              <th>{{ t('billing.rate.output') }}</th>
-              <th>{{ t('billing.rate.perRequest') }}</th>
-              <th>{{ t('common.status') }}</th>
-              <th>{{ t('common.note') }}</th>
-              <th style="width: 190px">{{ t('common.actions') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in visibleRates" :key="r.id">
-              <td class="nowrap">
-                <span v-if="!r.channelId" class="tag" style="color: var(--accent)">
-                  {{ t('billing.global') }}
-                </span>
-                <template v-else>{{ rateChannelLabel(r) }}</template>
-              </td>
-              <td class="mono">{{ rateModelLabel(r) }}</td>
-              <td class="mono">{{ r.currency }}</td>
-              <td class="mono nowrap">{{ formatMoney(r.inputPerMtok, r.currency) }}</td>
-              <td class="mono nowrap">{{ formatMoney(r.outputPerMtok, r.currency) }}</td>
-              <td class="mono nowrap">{{ formatMoney(r.perRequest, r.currency) }}</td>
-              <td>
-                <span class="badge" :class="statusBadgeClass(r.status)">
-                  {{ r.status === 'active' ? t('common.enabled') : t('common.disabled') }}
-                </span>
-              </td>
-              <td class="dim" style="max-width: 200px; white-space: normal">{{ r.note || '—' }}</td>
-              <td>
-                <div class="row">
-                  <button class="btn btn-sm" @click="openRateDialog(r)">{{ t('common.edit') }}</button>
-                  <button
-                    v-if="r.status === 'active'"
-                    class="btn btn-sm btn-danger"
-                    :title="t('billing.rate.deleteHint')"
-                    @click="removeRate(r)"
-                  >
-                    {{ t('common.delete') }}
-                  </button>
-                  <button v-else class="btn btn-sm" @click="setRateStatus(r, 'active')">
-                    {{ t('billing.rate.enable') }}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+          <div v-if="aliasRatesLoading" class="loading">{{ t('common.loading') }}</div>
+          <div v-else-if="visibleAliasRates.length === 0" class="empty">
+            {{ t('billing.aliasRate.empty') }}
+          </div>
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{{ t('billing.aliasRate.alias') }}</th>
+                  <th>{{ t('billing.currency') }}</th>
+                  <th>{{ t('billing.aliasRate.inputPerMtok') }}</th>
+                  <th>{{ t('billing.aliasRate.outputPerMtok') }}</th>
+                  <th>{{ t('billing.aliasRate.perRequest') }}</th>
+                  <th>{{ t('common.status') }}</th>
+                  <th>{{ t('common.note') }}</th>
+                  <th style="width: 190px">{{ t('common.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in visibleAliasRates" :key="r.id">
+                  <td class="mono">{{ r.alias }}</td>
+                  <td class="mono">{{ r.currency }}</td>
+                  <td class="mono nowrap">{{ formatMoney(r.inputPerMtok, r.currency) }}</td>
+                  <td class="mono nowrap">{{ formatMoney(r.outputPerMtok, r.currency) }}</td>
+                  <td class="mono nowrap">{{ formatMoney(r.perRequest, r.currency) }}</td>
+                  <td>
+                    <span class="badge" :class="statusBadgeClass(r.status)">
+                      {{ r.status === 'active' ? t('common.enabled') : t('common.disabled') }}
+                    </span>
+                  </td>
+                  <td class="dim" style="max-width: 200px; white-space: normal">
+                    {{ r.note || '—' }}
+                  </td>
+                  <td>
+                    <div class="row">
+                      <button class="btn btn-sm" @click="openAliasRateDialog(r)">
+                        {{ t('common.edit') }}
+                      </button>
+                      <button
+                        v-if="r.status === 'active'"
+                        class="btn btn-sm btn-danger"
+                        :title="t('billing.aliasRate.deleteHint')"
+                        @click="removeAliasRate(r)"
+                      >
+                        {{ t('common.delete') }}
+                      </button>
+                      <button
+                        v-else
+                        class="btn btn-sm"
+                        @click="setAliasRateStatus(r, 'active')"
+                      >
+                        {{ t('billing.aliasRate.enable') }}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="dim rates-foot">{{ t('billing.aliasRate.deleteHint') }}</div>
+        </section>
+
+        <!-- 渠道成本 -->
+        <section class="rate-section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">{{ t('billing.sectionChannelRates') }}</div>
+              <div class="section-sub">{{ t('billing.sectionChannelRatesSub') }}</div>
+            </div>
+            <div class="row section-tools">
+              <div style="width: 170px">
+                <PSelect
+                  v-model="rateFilter"
+                  :options="channelFilterOptions"
+                  size="sm"
+                  align="end"
+                />
+              </div>
+              <label class="row rates-toggle">
+                <input v-model="showDisabledRates" type="checkbox" />
+                <span>{{ t('billing.rate.showDisabled') }}</span>
+              </label>
+              <button class="btn btn-sm" @click="loadRates">{{ t('common.refresh') }}</button>
+              <button class="btn btn-primary btn-sm" @click="openRateDialog()">
+                ＋ {{ t('billing.rate.new') }}
+              </button>
+            </div>
+          </div>
+
+          <div class="alert alert-info rates-hint">{{ t('billing.rate.priorityHint') }}</div>
+
+          <div v-if="ratesLoading" class="loading">{{ t('common.loading') }}</div>
+          <div v-else-if="visibleRates.length === 0" class="empty">{{ t('billing.rate.empty') }}</div>
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{{ t('billing.rate.channel') }}</th>
+                  <th>{{ t('billing.rate.upstreamModel') }}</th>
+                  <th>{{ t('billing.currency') }}</th>
+                  <th>{{ t('billing.rate.input') }}</th>
+                  <th>{{ t('billing.rate.output') }}</th>
+                  <th>{{ t('billing.rate.perRequest') }}</th>
+                  <th>{{ t('common.status') }}</th>
+                  <th>{{ t('common.note') }}</th>
+                  <th style="width: 190px">{{ t('common.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in visibleRates" :key="r.id">
+                  <td class="nowrap">
+                    <span v-if="!r.channelId" class="tag" style="color: var(--accent)">
+                      {{ t('billing.global') }}
+                    </span>
+                    <template v-else>{{ rateChannelLabel(r) }}</template>
+                  </td>
+                  <td class="mono">{{ rateModelLabel(r) }}</td>
+                  <td class="mono">{{ r.currency }}</td>
+                  <td class="mono nowrap">{{ formatMoney(r.inputPerMtok, r.currency) }}</td>
+                  <td class="mono nowrap">{{ formatMoney(r.outputPerMtok, r.currency) }}</td>
+                  <td class="mono nowrap">{{ formatMoney(r.perRequest, r.currency) }}</td>
+                  <td>
+                    <span class="badge" :class="statusBadgeClass(r.status)">
+                      {{ r.status === 'active' ? t('common.enabled') : t('common.disabled') }}
+                    </span>
+                  </td>
+                  <td class="dim" style="max-width: 200px; white-space: normal">
+                    {{ r.note || '—' }}
+                  </td>
+                  <td>
+                    <div class="row">
+                      <button class="btn btn-sm" @click="openRateDialog(r)">
+                        {{ t('common.edit') }}
+                      </button>
+                      <button
+                        v-if="r.status === 'active'"
+                        class="btn btn-sm btn-danger"
+                        :title="t('billing.rate.deleteHint')"
+                        @click="removeRate(r)"
+                      >
+                        {{ t('common.delete') }}
+                      </button>
+                      <button v-else class="btn btn-sm" @click="setRateStatus(r, 'active')">
+                        {{ t('billing.rate.enable') }}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="dim rates-foot">{{ t('billing.rate.deleteHint') }}</div>
+        </section>
       </div>
-      <div class="dim rates-foot">{{ t('billing.rate.deleteHint') }}</div>
     </div>
 
     <!-- 限额模板 -->
@@ -928,7 +1113,15 @@ onMounted(() => {
     </div>
   </Modal>
 
-  <!-- 费率弹窗（与渠道详情页共用） -->
+  <!-- 别名售价弹窗 -->
+  <BillingAliasRateDialog
+    v-if="aliasRateDialogOpen"
+    :rate="editingAliasRate"
+    @close="aliasRateDialogOpen = false"
+    @saved="aliasRateDialogOpen = false; loadAliasRates()"
+  />
+
+  <!-- 渠道成本弹窗（与渠道详情页共用） -->
   <BillingRateDialog
     v-if="rateDialogOpen"
     :rate="editingRate"
@@ -1142,6 +1335,76 @@ onMounted(() => {
 .rates-foot {
   font-size: 11.5px;
   margin-top: 8px;
+  flex: 0 0 auto;
+}
+
+/* 费率页签：别名售价 / 渠道成本两个分区，各自独立滚动 */
+.rate-sections {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rate-section {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rate-section + .rate-section {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.section-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.section-title {
+  font-weight: 620;
+  font-size: 13.5px;
+}
+
+.section-sub {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.section-tools {
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.filter-input {
+  width: 150px;
+}
+
+.rates-hint {
+  flex: 0 0 auto;
+}
+
+.rate-section > .table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rate-section > .empty,
+.rate-section > .loading {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
 }
 
 .rule-list {
