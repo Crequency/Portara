@@ -29,16 +29,18 @@ export interface LogInput {
 
 /**
  * 写请求日志并累加该 Key 的已用 token。
+ * 返回 request_logs.id —— 计费结算要用它做幂等键（billing_charged_at）。
  * **不阻塞响应**：调用方用 fireAndForgetLog，失败只打日志。
  */
-export async function writeLog(input: LogInput): Promise<void> {
-  await query(
+export async function writeLog(input: LogInput): Promise<string> {
+  const inserted = await one<{ id: string }>(
     `insert into request_logs
        (api_key_id, api_key_name, channel_id, channel_name, account_id, account_name,
         model, upstream_model, path,
         status_code, prompt_tokens, completion_tokens, total_tokens, estimated,
         latency_ms, ttft_ms, client_ip, error, source, session_hash)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     returning id::text as id`,
     [
       input.apiKeyId,
       input.apiKeyName,
@@ -73,15 +75,41 @@ export async function writeLog(input: LogInput): Promise<void> {
   } else if (input.apiKeyId) {
     await query('update api_keys set last_used_at = now() where id = $1', [input.apiKeyId])
   }
+
+  return inserted!.id
 }
 
-export function fireAndForgetLog(input: LogInput): void {
-  void writeLog(input).catch((err: unknown) => {
-    console.error(
-      '[portara][log] 写请求日志失败：',
-      err instanceof Error ? err.message : String(err)
-    )
-  })
+/**
+ * 异步写日志，可选在日志落库后执行「结算」回调（拿到 log id）。
+ *
+ * 结算失败只打日志、不影响已返回给客户端的响应 —— 请求已经服务完了，
+ * 不能因为记账失败把它变成 500。失败痕迹留在服务端日志里，便于补账。
+ */
+export function fireAndForgetLog(
+  input: LogInput,
+  after?: (logId: string) => Promise<void>
+): void {
+  void (async () => {
+    let logId: string
+    try {
+      logId = await writeLog(input)
+    } catch (err: unknown) {
+      console.error(
+        '[portara][log] 写请求日志失败：',
+        err instanceof Error ? err.message : String(err)
+      )
+      return
+    }
+    if (!after) return
+    try {
+      await after(logId)
+    } catch (err: unknown) {
+      console.error(
+        '[portara][billing] 结算失败（request_log=' + logId + '）：',
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+  })()
 }
 
 /** 已用 token 与配额，供配额预检使用（读库，非缓存） */

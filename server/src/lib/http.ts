@@ -49,15 +49,21 @@ export function errorResponse(
   return c.json({ error: { code, message, ...(extra ?? {}) } }, status)
 }
 
-/** 数据面错误响应：对齐 OpenAI 的错误结构，便于 SDK 正确抛出异常 */
+/**
+ * 数据面错误响应：对齐 OpenAI 的错误结构，便于 SDK 正确抛出异常。
+ *
+ * extra 用于少数需要携带结构化信息的错误（如计费 429 带 window / resetAt），
+ * 会并入 error 对象，**不**改变既有字段。
+ */
 export function openaiError(
   c: Context,
   status: ContentfulStatusCode,
   message: string,
   type = 'invalid_request_error',
-  code: string | null = null
+  code: string | null = null,
+  extra: Record<string, unknown> = {}
 ) {
-  return c.json({ error: { message, type, param: null, code } }, status)
+  return c.json({ error: { message, type, param: null, code, ...extra } }, status)
 }
 
 /** 校验请求体，失败抛 400 并带上字段路径 */

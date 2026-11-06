@@ -5,6 +5,7 @@ import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
+import { precheckBilling, settleRequestBilling } from '../services/billing.js'
 import {
   COOLDOWN,
   MAX_ACCOUNT_ATTEMPTS,
@@ -163,6 +164,12 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   const session = sessionKeyOf(payload, { allowContext: env.affinityContext })
   const sessionHash = shortSessionHash(session.hash)
 
+  /**
+   * 计费归属：以 Key 的 owner 为准。没有 owner 的 Key（历史数据 / 管理员代签
+   * 但未署名）不参与计费 —— 没有主体可以扣。
+   */
+  const billingUserId = key.user_id
+
   const baseLog = {
     apiKeyId: key.id,
     apiKeyName: key.name,
@@ -189,6 +196,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     message: string
     type: string
     code: string
+    extra?: Record<string, unknown>
   }): Response => {
     fireAndForgetLog({
       ...baseLog,
@@ -201,7 +209,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       ttftMs: null,
       error: opts.logError
     })
-    return openaiError(c, opts.status, opts.message, opts.type, opts.code)
+    return openaiError(c, opts.status, opts.message, opts.type, opts.code, opts.extra)
   }
 
   // ① 模型白名单
@@ -242,6 +250,50 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       type: 'insufficient_quota',
       code: 'quota_exceeded'
     })
+  }
+
+  /*
+   * ③b 计费预检（余额 + 各限额窗口）。
+   *
+   * 放在配额之后、选路之前：拒绝时不必浪费一次上游路由。
+   * precheckBilling 内部对「通过」结果做 15 秒 Redis 缓存；扣费/改套餐/调余额
+   * 会主动删除该缓存，失败结果**不缓存**（充值后立刻生效）。
+   *
+   * 没有套餐的用户直接放行 —— user_billing 行在迁移里只给管理员预建，
+   * 普通用户未绑套餐时不应被一刀切成 402。
+   */
+  if (billingUserId) {
+    const billing = await precheckBilling(billingUserId)
+    if (!billing.ok) {
+      if (billing.code === 'insufficient_balance') {
+        return rejectEarly({
+          status: 402,
+          logError: `计费余额不足（余额 ${billing.balance ?? 0}）`,
+          message: `计费余额不足，请充值后再试（当前余额 ${billing.balance ?? 0}）`,
+          type: 'insufficient_quota',
+          code: 'insufficient_balance',
+          extra: { balance: billing.balance ?? 0 }
+        })
+      }
+      // 结构化提示：body.error 里带 window/limit/used/resetAt，header 里也放一份，
+      // 便于 SDK 或网关日志直接读到「哪个窗口、何时重置」。
+      c.header('x-portara-billing-window', billing.window ?? '')
+      c.header('x-portara-billing-reset-at', billing.resetAt ?? '')
+      c.header('retry-after', String(billing.resetAt ? Math.max(1, Math.ceil((Date.parse(billing.resetAt) - Date.now()) / 1000)) : 60))
+      return rejectEarly({
+        status: 429,
+        logError: `用量限额超限（${billing.window}：${billing.used}/${billing.limit}）`,
+        message: `用量限额已超限：${billing.window} 窗口已用 ${billing.used}/${billing.limit}，重置时间 ${billing.resetAt}`,
+        type: 'rate_limit_error',
+        code: 'usage_limit_exceeded',
+        extra: {
+          window: billing.window,
+          limit: billing.limit,
+          used: billing.used,
+          resetAt: billing.resetAt
+        }
+      })
+    }
   }
 
   /*
@@ -308,6 +360,38 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   let signal: AbortSignal = c.req.raw.signal
   /** 亲和命中的目标是否被换掉了 —— 换掉就要改写 Redis 里的记录 */
   let affinityDrifted = false
+
+  /**
+   * 成功请求的结算回调（传给 fireAndForgetLog，拿到 request_log id 后执行）。
+   *
+   * 只在这三条同时成立时返回回调：
+   *   ① Key 有 owner（有主体可扣）；
+   *   ② 上游响应是 2xx（失败请求不扣费）；
+   *   ③ 此刻客户端还没断开（**流式响应结束后才结算**，断开的那次不扣）。
+   *
+   * 幂等由 chargeBilling 里的 request_logs.billing_charged_at 条件更新兜底：
+   * 同一条日志即使被回调两次，也只会扣一次。
+   */
+  const billingAfterFor = (usage: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }): ((logId: string) => Promise<void>) | undefined => {
+    if (!billingUserId || !res?.ok || c.req.raw.signal.aborted) return undefined
+    const channelId = channel.id
+    const servedModel = upstreamModel
+    return async (logId: string) => {
+      await settleRequestBilling({
+        userId: billingUserId,
+        requestLogId: logId,
+        channelId,
+        upstreamModel: servedModel,
+        inputTokens: usage.promptTokens,
+        outputTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens
+      })
+    }
+  }
 
   const channelLimit = Math.min(env.maxChannelAttempts, pick.targets.length)
 
@@ -542,7 +626,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
             latencyMs: Date.now() - startedAt,
             ttftMs,
             error: ''
-          })
+          }, billingAfterFor(usage))
         },
         startedAt
       )
@@ -598,7 +682,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
       error: ''
-    })
+    }, billingAfterFor(translated.usage))
 
     return new Response(translated.body, {
       status: res.status,
@@ -627,7 +711,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
       error: res.ok ? '' : text.slice(0, 300)
-    })
+    }, billingAfterFor({
+      promptTokens: usage?.promptTokens ?? 0,
+      completionTokens: usage?.completionTokens ?? 0,
+      totalTokens: usage?.totalTokens ?? 0
+    }))
 
     return new Response(text, {
       status: res.status,
@@ -675,7 +763,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         latencyMs: Date.now() - startedAt,
         ttftMs,
         error: exact ? '' : '上游未返回 usage，token 数为按字节量估算'
-      })
+      }, billingAfterFor(usage))
     }
   })()
 

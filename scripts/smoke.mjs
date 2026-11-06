@@ -4447,8 +4447,389 @@ async function main() {
     )
     check('管理面响应不含上游密钥', () => assert.ok(!stdout.includes('api_key_cipher"')))
 
+    // ---------------------------------------------------------- 计费
+    section('㊲ 计费系统（套餐 / 费率 / 余额 / 限额模板）')
+
+    const meUser = await apiCall('GET', '/api/auth/me')
+    const billingUserId = meUser.body.user.id
+
+    /*
+     * 计费用独立渠道（priority=1 抢在历史残留的 smoke-mock-* 渠道之前）。
+     * 冒烟 schema 是复用的，历史中断的运行可能留下同模型、同优先级的渠道，
+     * 它们的密钥是用旧 master key 加密的 —— 直接按模型路由会随机撞上。
+     */
+    const billingChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-billing-ch-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 1
+    })
+    const billingChannelId = billingChannel.body.channel?.id
+    check('计费：专用渠道创建成功（隔离历史残留）', () => {
+      assert.equal(billingChannel.status, 201)
+      assert.ok(billingChannelId)
+    })
+
+    /** 计费结算是异步的（日志落库后才扣），等余额真正变化 */
+    const waitFor = async (fn, timeoutMs = 5000) => {
+      const deadline = Date.now() + timeoutMs
+      let last = null
+      while (Date.now() < deadline) {
+        last = await fn()
+        if (last) return last
+        await sleep(100)
+      }
+      return last
+    }
+
+    const planList = await apiCall('GET', '/api/billing/plans')
+    check('计费：默认套餐 Standard 随迁移创建（money/USD）', () => {
+      assert.equal(planList.status, 200)
+      const standard = planList.body.plans.find((p) => p.name === 'Standard')
+      assert.ok(standard, '缺少 Standard 套餐')
+      assert.equal(standard.unit, 'money')
+      assert.equal(standard.currency, 'USD')
+    })
+
+    const planMoneyRes = await apiCall('POST', '/api/billing/plans', {
+      name: `smoke-money-${RUN}`,
+      unit: 'money',
+      currency: 'USD',
+      note: '冒烟：按金额'
+    })
+    check('计费：可创建 money 套餐', () => {
+      assert.equal(planMoneyRes.status, 201)
+      assert.equal(planMoneyRes.body.plan.unit, 'money')
+      assert.equal(planMoneyRes.body.plan.currency, 'USD')
+    })
+    const moneyPlanId = planMoneyRes.body.plan.id
+
+    const planCreditsRes = await apiCall('POST', '/api/billing/plans', {
+      name: `smoke-credits-${RUN}`,
+      unit: 'credits',
+      currency: 'CNY',
+      creditsPerCurrency: 100,
+      note: '冒烟：按积分'
+    })
+    check('计费：可创建 credits 套餐并保存兑换率', () => {
+      assert.equal(planCreditsRes.status, 201)
+      assert.equal(planCreditsRes.body.plan.unit, 'credits')
+      assert.equal(planCreditsRes.body.plan.currency, 'CNY')
+      assert.equal(planCreditsRes.body.plan.creditsPerCurrency, 100)
+    })
+
+    const patchCredits = await apiCall(
+      'PATCH',
+      `/api/billing/plans/${planCreditsRes.body.plan.id}`,
+      { note: '只改备注' }
+    )
+    check('计费：PATCH 套餐只改 note 不会重置单位/币种', () => {
+      assert.equal(patchCredits.status, 200)
+      assert.equal(patchCredits.body.plan.unit, 'credits')
+      assert.equal(patchCredits.body.plan.currency, 'CNY')
+      assert.equal(patchCredits.body.plan.creditsPerCurrency, 100)
+      assert.equal(patchCredits.body.plan.note, '只改备注')
+    })
+
+    const planTokensRes = await apiCall('POST', '/api/billing/plans', {
+      name: `smoke-tokens-${RUN}`,
+      unit: 'tokens',
+      currency: 'USD',
+      note: '冒烟：按 token'
+    })
+    check('计费：可创建 tokens 套餐', () => {
+      assert.equal(planTokensRes.status, 201)
+      assert.equal(planTokensRes.body.plan.unit, 'tokens')
+    })
+    const tokensPlanId = planTokensRes.body.plan.id
+
+    const rateRes = await apiCall('PUT', '/api/billing/rates', {
+      channelId: billingChannelId,
+      upstreamModel: MOCK_MODEL,
+      currency: 'USD',
+      // 11 输入 + 7 输出：0.000011 + 0.000014 + 0.01 = 0.010025
+      inputPerMtok: 1,
+      outputPerMtok: 2,
+      perRequest: 0.01,
+      note: '冒烟：精确费率'
+    })
+    check('计费：费率按 (渠道, 上游模型) upsert', () => {
+      assert.equal(rateRes.status, 200)
+      assert.equal(rateRes.body.rate.channelId, billingChannelId)
+      assert.equal(rateRes.body.rate.upstreamModel, MOCK_MODEL)
+      assert.equal(rateRes.body.rate.inputPerMtok, 1)
+      assert.equal(rateRes.body.rate.perRequest, 0.01)
+    })
+
+    const bindRes = await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      planId: moneyPlanId
+    })
+    check('计费：管理员可为用户绑定套餐', () => {
+      assert.equal(bindRes.status, 200)
+      assert.equal(bindRes.body.user.planId, moneyPlanId)
+      assert.equal(bindRes.body.user.unit, 'money')
+    })
+
+    // schema 复用：先把余额归零，保证「充值 10 → 余额正好 10」可重复断言
+    const preTopupMe = await apiCall('GET', '/api/billing/me')
+    await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      adjust: { delta: -preTopupMe.body.balance, reason: 'smoke-reset' }
+    })
+
+    const topupRes = await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      adjust: { delta: 10, reason: 'smoke-topup', note: '冒烟充值' }
+    })
+    check('计费：管理员充值更新余额', () => {
+      assert.equal(topupRes.status, 200)
+      assert.equal(topupRes.body.user.balance, 10)
+    })
+
+    const ledgerTopup = await apiCall(
+      'GET',
+      `/api/billing/ledger?userId=${billingUserId}&limit=5`
+    )
+    check('计费：充值写入流水（delta / balanceAfter）', () => {
+      const row = ledgerTopup.body.ledger.find((l) => l.reason === 'smoke-topup')
+      assert.ok(row, '缺少充值流水')
+      assert.equal(row.delta, 10)
+      assert.equal(row.balanceAfter, 10)
+      assert.equal(row.unit, 'money')
+    })
+
+    const meBilling = await apiCall('GET', '/api/billing/me')
+    check('计费：自助接口返回套餐 / 余额 / 流水', () => {
+      assert.equal(meBilling.status, 200)
+      assert.equal(meBilling.body.plan.id, moneyPlanId)
+      assert.equal(meBilling.body.balance, 10)
+      assert.equal(meBilling.body.unit, 'money')
+      assert.ok(meBilling.body.ledger.length >= 1)
+    })
+
+    const billKey = await apiCall('POST', '/api/keys', {
+      name: `smoke-billing-key-${RUN}`,
+      rpmLimit: 0
+    })
+    createdKeyIds.push(billKey.body.apiKey.id)
+    const billKeyFull = billKey.body.key
+
+    const chatBill = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '计费冒烟' }] },
+      billKeyFull
+    )
+    check('计费：成功请求正常返回', () => assert.equal(chatBill.status, 200))
+
+    const settledMe = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/me')
+      return res.body.balance !== 10 ? res.body : null
+    })
+    check('计费：只对成功请求按 money 单位扣费', () => {
+      assert.ok(settledMe, '余额未发生变化（结算可能失败）')
+      assert.equal(Number(settledMe.balance.toFixed(6)), 9.989975)
+    })
+
+    const ledgerAfterChat = await apiCall(
+      'GET',
+      `/api/billing/ledger?userId=${billingUserId}&limit=10`
+    )
+    const usageLedger = ledgerAfterChat.body.ledger.find((l) => l.reason === 'usage')
+    check('计费：扣费流水标记 request_log 引用与快照余额', () => {
+      assert.ok(usageLedger, '缺少 usage 流水')
+      assert.equal(usageLedger.unit, 'money')
+      assert.equal(usageLedger.refType, 'request_log')
+      assert.ok(usageLedger.refId)
+      assert.equal(Number(usageLedger.balanceAfter.toFixed(6)), 9.989975)
+    })
+
+    const logsAfterChat = await apiCall('GET', '/api/logs?limit=20')
+    const billedLog = logsAfterChat.body.logs.find(
+      (l) => l.billingChargedAt && l.billedAmount > 0
+    )
+    check('计费：request_logs 回写成本 / 扣费 / 单位 / 幂等标记', () => {
+      assert.ok(billedLog, '没有已结算的请求日志')
+      assert.equal(billedLog.billingPlanId, moneyPlanId)
+      assert.equal(billedLog.billingUnit, 'money')
+      assert.equal(billedLog.costCurrency, 'USD')
+      assert.equal(billedLog.billedAmount, 0.010025)
+      assert.equal(billedLog.costMoney, 0.010025)
+      assert.ok(billedLog.rateId)
+      assert.ok(billedLog.billingChargedAt)
+    })
+
+    /*
+     * 重复结算：直接用编译后的 chargeBilling 对同一条 request_log 再结一次。
+     * 正常请求路径每条日志只结算一次；但流式回调重入 / 运维补账都可能触发，
+     * 这里把「只扣一次」钉死。
+     */
+    if (billedLog) {
+      process.env.PORTARA_DB_SCHEMA = SMOKE_SCHEMA
+      process.env.DATABASE_URL =
+        process.env.DATABASE_URL ?? 'postgres://portara:portara@127.0.0.1:52744/portara'
+      process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:52745'
+      process.env.PORTARA_MASTER_KEY =
+        process.env.PORTARA_MASTER_KEY ?? randomBytes(32).toString('base64')
+      const billingMod = await import(
+        new URL('../server/dist/services/billing.js', import.meta.url).href
+      )
+      const dup = await billingMod.chargeBilling(billingUserId, {
+        billedAmount: 999,
+        unit: 'money',
+        planId: moneyPlanId,
+        costMoney: 999,
+        costCurrency: 'USD',
+        rateId: null,
+        requestLogId: billedLog.id
+      })
+      const afterDup = await apiCall('GET', '/api/billing/me')
+      check('计费：同一 request_log 重复结算不重复扣（幂等）', () => {
+        assert.equal(dup.applied, false)
+        assert.equal(dup.duplicate, true)
+        assert.equal(afterDup.body.balance, 9.989975)
+      })
+    }
+
+    // 余额归零 → 402；再充 5 继续后面的用例
+    const currentMe = await apiCall('GET', '/api/billing/me')
+    await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      adjust: { delta: -currentMe.body.balance, reason: 'smoke-drain' }
+    })
+    const zeroHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '余额为零' }] },
+      billKeyFull
+    )
+    check('计费：余额为 0 时返回 402 insufficient_balance', () => {
+      assert.equal(zeroHit.status, 402)
+      assert.equal(zeroHit.body?.error?.code, 'insufficient_balance')
+    })
+
+    const rechargeRes = await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      adjust: { delta: 5, reason: 'smoke-recharge' }
+    })
+    check('计费：充值后余额恢复可请求', () => {
+      assert.equal(rechargeRes.status, 200)
+      assert.equal(rechargeRes.body.user.balance, 5)
+    })
+
+    // 限额模板：5h 极严 + 1d 宽松，叠加后应取 5h
+    const strictTpl = await apiCall('POST', '/api/billing/templates', {
+      name: `smoke-strict-${RUN}`,
+      rules: [{ window: '5h', threshold: 0.001 }]
+    })
+    const looseTpl = await apiCall('POST', '/api/billing/templates', {
+      name: `smoke-loose-${RUN}`,
+      rules: [{ window: '1d', threshold: 100 }]
+    })
+    check('计费：限额模板可创建并返回 rules', () => {
+      assert.equal(strictTpl.status, 201)
+      assert.equal(strictTpl.body.template.rules[0].window, '5h')
+      assert.equal(strictTpl.body.template.rules[0].threshold, 0.001)
+    })
+
+    const patchTpl = await apiCall(
+      'PATCH',
+      `/api/billing/templates/${strictTpl.body.template.id}`,
+      { note: '只改备注' }
+    )
+    check('计费：PATCH 模板只改 note 不会清空 rules', () => {
+      assert.equal(patchTpl.status, 200)
+      assert.equal(patchTpl.body.template.rules.length, 1)
+      assert.equal(patchTpl.body.template.rules[0].window, '5h')
+      assert.equal(patchTpl.body.template.note, '只改备注')
+    })
+
+    const applyTpl = await apiCall(
+      'POST',
+      `/api/billing/users/${billingUserId}/templates`,
+      { templateIds: [strictTpl.body.template.id, looseTpl.body.template.id] }
+    )
+    check('计费：模板可覆盖套用到用户', () => {
+      assert.equal(applyTpl.status, 200)
+      assert.deepEqual(applyTpl.body.templateIds, [
+        strictTpl.body.template.id,
+        looseTpl.body.template.id
+      ])
+    })
+
+    const limitHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '超限' }] },
+      billKeyFull
+    )
+    check('计费：任一窗口超限返回 429 usage_limit_exceeded', () => {
+      assert.equal(limitHit.status, 429)
+      assert.equal(limitHit.body?.error?.code, 'usage_limit_exceeded')
+      assert.equal(limitHit.body?.error?.window, '5h')
+      assert.ok(limitHit.body?.error?.resetAt, '缺少 resetAt')
+      assert.equal(limitHit.headers.get('x-portara-billing-window'), '5h')
+    })
+    check('计费：多模板叠加取最严（5h 0.001 胜过 1d 100）', () => {
+      assert.equal(limitHit.body.error.limit, 0.001)
+      assert.ok(limitHit.body.error.used >= 0.001)
+    })
+
+    // 清掉模板，继续验证 tokens 套餐
+    await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
+      templateIds: []
+    })
+
+    const preTokensMe = await apiCall('GET', '/api/billing/me')
+    const switchTokens = await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      planId: tokensPlanId,
+      adjust: { delta: 100 - preTokensMe.body.balance, reason: 'smoke-tokens-topup' }
+    })
+    check('计费：可切换 tokens 套餐并按新单位充值', () => {
+      assert.equal(switchTokens.status, 200)
+      assert.equal(switchTokens.body.user.unit, 'tokens')
+      assert.equal(switchTokens.body.user.balance, 100)
+    })
+
+    const tokensChat = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '按 token 扣费' }] },
+      billKeyFull
+    )
+    const tokensSettled = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/me')
+      return res.body.balance !== 100 ? res.body : null
+    })
+    check('计费：tokens 套餐直接扣 total_tokens（18）', () => {
+      assert.equal(tokensChat.status, 200)
+      assert.ok(tokensSettled, '余额未变化')
+      assert.equal(tokensSettled.unit, 'tokens')
+      assert.equal(tokensSettled.balance, 82)
+    })
+
+    // 失败请求不扣费：上游 400 透传
+    const billingBadAlias = `smoke-billing-bad-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: billingBadAlias,
+      targets: [{ channelId: billingChannelId, upstreamModel: 'bad-request' }]
+    })
+    const failHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: billingBadAlias, messages: [{ role: 'user', content: '上游失败' }] },
+      billKeyFull
+    )
+    await sleep(300)
+    const meAfterFail = await apiCall('GET', '/api/billing/me')
+    check('计费：失败请求（上游 400）不扣费', () => {
+      assert.equal(failHit.status, 400)
+      assert.equal(meAfterFail.body.balance, 82)
+    })
+    await apiCall('POST', '/api/model-routes/purge', { alias: billingBadAlias })
+
+    // 清理本段创建的数据（不影响后续「密钥不泄漏」与清理段）
+    await apiCall('DELETE', `/api/billing/templates/${strictTpl.body.template.id}`)
+    await apiCall('DELETE', `/api/billing/templates/${looseTpl.body.template.id}`)
+    await apiCall('DELETE', `/api/billing/plans/${moneyPlanId}`)
+    await apiCall('DELETE', `/api/billing/plans/${planCreditsRes.body.plan.id}`)
+    await apiCall('DELETE', `/api/billing/plans/${tokensPlanId}`)
+    await apiCall('DELETE', `/api/channels/${billingChannelId}`)
+
     // ---------------------------------------------------------- 清理
-    section('㊲ 清理测试数据')
+    section('㊳ 清理测试数据')
 
     let deleted = 0
     for (const id of createdKeyIds.filter(Boolean)) {

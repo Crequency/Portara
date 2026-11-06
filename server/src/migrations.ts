@@ -507,5 +507,138 @@ export const migrations: { id: string; sql: string }[] = [
         on registration_applications (username)
         where status = 'pending';
     `
+  },
+  {
+    id: '022_billing_core',
+    sql: `
+      -- 计费内核（v0.5.0 第一部分）：套餐 / 费率 / 余额 / 限额模板。
+      --
+      -- 三种计价单位，每个套餐选一种：
+      --   money   —— 按金额扣（currency = USD/CNY）
+      --   credits —— 按积分扣（credits_per_currency 定义 1 货币单位换多少积分）
+      --   tokens  —— 按 token 扣（输入 + 输出 total_tokens，与金额无关）
+      --
+      -- 上游成本始终按 channel_rates 的货币价算出 cost_money，与用户扣费单位解耦，
+      -- 管理员据此看成本 / 毛利。
+      create table if not exists billing_plans (
+        id                    uuid primary key default gen_random_uuid(),
+        name                  text not null unique,
+        unit                  text not null default 'money'
+                              check (unit in ('money','credits','tokens')),
+        currency              text not null default 'USD'
+                              check (currency in ('USD','CNY')),
+        credits_per_currency  numeric(18,6) not null default 100,
+        status                text not null default 'active'
+                              check (status in ('active','disabled')),
+        note                  text not null default '',
+        created_at            timestamptz not null default now(),
+        updated_at            timestamptz not null default now()
+      );
+
+      -- 费率粒度：(渠道, 上游模型)。
+      --   upstream_model = ''   → 渠道默认
+      --   channel_id is null    → 全局默认
+      -- 解析优先级：精确 > 渠道默认 > 全局默认 > 全 0。
+      create table if not exists channel_rates (
+        id               uuid primary key default gen_random_uuid(),
+        channel_id       uuid references channels(id) on delete cascade,
+        upstream_model   text not null default '',
+        currency         text not null default 'USD'
+                         check (currency in ('USD','CNY')),
+        input_per_mtok   numeric(18,6) not null default 0,
+        output_per_mtok  numeric(18,6) not null default 0,
+        per_request      numeric(18,6) not null default 0,
+        status           text not null default 'active'
+                         check (status in ('active','disabled')),
+        note             text not null default '',
+        created_at       timestamptz not null default now(),
+        updated_at       timestamptz not null default now(),
+        unique (channel_id, upstream_model)
+      );
+      -- 渠道为 null 时 PostgreSQL 的唯一约束不生效（NULL 各自不同），
+      -- 全局默认费率必须单独用部分唯一索引兜住，否则会插入多条。
+      create unique index if not exists uq_channel_rates_global
+        on channel_rates (upstream_model)
+        where channel_id is null;
+
+      create table if not exists user_billing (
+        user_id    uuid primary key references users(id) on delete cascade,
+        plan_id    uuid references billing_plans(id) on delete set null,
+        balance    numeric(20,6) not null default 0,
+        updated_at timestamptz not null default now()
+      );
+
+      create table if not exists balance_ledger (
+        id             bigserial primary key,
+        user_id        uuid not null references users(id) on delete cascade,
+        delta          numeric(20,6) not null,
+        unit           text not null default '',
+        reason         text not null default '',
+        ref_type       text not null default '',
+        ref_id         text not null default '',
+        balance_after  numeric(20,6) not null default 0,
+        note           text not null default '',
+        created_at     timestamptz not null default now()
+      );
+      create index if not exists idx_balance_ledger_user_ts
+        on balance_ledger (user_id, created_at desc);
+
+      create table if not exists limit_templates (
+        id             uuid primary key default gen_random_uuid(),
+        name           text not null,
+        owner_user_id  uuid references users(id) on delete cascade,
+        status         text not null default 'active'
+                       check (status in ('active','disabled')),
+        note           text not null default '',
+        created_at     timestamptz not null default now(),
+        updated_at     timestamptz not null default now()
+      );
+
+      -- "window" 是保留字，建表与查询都必须加引号。
+      create table if not exists limit_rules (
+        id           uuid primary key default gen_random_uuid(),
+        template_id  uuid not null references limit_templates(id) on delete cascade,
+        "window"     text not null
+                     check ("window" in ('5h','1d','7d','30d','1w','1mo')),
+        threshold    numeric(20,6) not null default 0,
+        unique (template_id, "window")
+      );
+
+      create table if not exists user_limit_templates (
+        user_id      uuid not null references users(id) on delete cascade,
+        template_id  uuid not null references limit_templates(id) on delete cascade,
+        primary key (user_id, template_id)
+      );
+
+      -- 请求日志上的计费落地列（只加列，历史行默认 0 / 空）。
+      -- billing_charged_at 是**幂等标记**：非空表示这条请求已经结过账，
+      -- 流式回调 / 重试重复进入结算时直接跳过，绝不会二次扣款。
+      alter table request_logs
+        add column if not exists billing_plan_id  uuid,
+        add column if not exists cost_money       numeric(20,8) not null default 0,
+        add column if not exists cost_currency    text not null default '',
+        add column if not exists billed_amount    numeric(20,8) not null default 0,
+        add column if not exists billing_unit     text not null default '',
+        add column if not exists rate_id          uuid references channel_rates(id) on delete set null,
+        add column if not exists billing_charged_at timestamptz;
+
+      -- 初始数据：默认套餐 + 全 0 的全局默认费率 + 管理员计费行。
+      insert into billing_plans (name, unit, currency, credits_per_currency)
+      values ('Standard', 'money', 'USD', 100)
+      on conflict (name) do nothing;
+
+      insert into channel_rates (channel_id, upstream_model, currency,
+                                 input_per_mtok, output_per_mtok, per_request)
+      select null, '', 'USD', 0, 0, 0
+      where not exists (
+        select 1 from channel_rates where channel_id is null and upstream_model = ''
+      );
+
+      insert into user_billing (user_id, plan_id, balance)
+      select u.id, null, 0
+        from users u
+       where u.role = 'admin'
+      on conflict (user_id) do nothing;
+    `
   }
 ]

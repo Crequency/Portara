@@ -213,6 +213,15 @@ export interface RequestLogRow {
   error: string
   /** 会话键哈希前 8 位（亲和排查用） */
   session_hash: string
+  /** 计费落地（迁移 022） */
+  billing_plan_id: string | null
+  cost_money: string | number
+  cost_currency: string
+  billed_amount: string | number
+  billing_unit: string
+  rate_id: string | null
+  /** 结算幂等标记：非空 = 已结过账 */
+  billing_charged_at: string | null
 }
 
 /** 模型映射对外表示 */

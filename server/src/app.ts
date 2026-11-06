@@ -7,6 +7,7 @@ import { ApiError, errorResponse, openaiError } from './lib/http.js'
 import { redis } from './redis.js'
 import { auditRoutes } from './routes/audit.js'
 import { authRoutes } from './routes/auth.js'
+import { billingRoutes } from './routes/billing.js'
 import { channelAccountRoutes } from './routes/channelAccounts.js'
 import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
@@ -114,6 +115,8 @@ export function createApp(): Hono {
   // 公开注册申请（POST /api/register 无需登录）与管理员审批（路由内部挂 requireAuth/requireAdmin）
   app.route('/api', registrationRoutes)
   app.route('/api/users', userRoutes)
+  // 计费：/api/billing/me 为登录用户自助，其余端点 requireAdmin（见路由内部）
+  app.route('/api/billing', billingRoutes)
   app.route('/api/channels', channelRoutes)
   // 嵌套资源：账户挂在渠道下（放在 channels 之后，靠其 unmatched 落空自然回落）
   app.route('/api/channels', channelAccountRoutes)

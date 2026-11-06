@@ -469,6 +469,15 @@ export interface RequestLog {
   clientIp: string
   /** 会话键哈希前 8 位（会话亲和排查用）；空串 = 本次没有会话键 */
   sessionHash: string
+  /** 计费落地（迁移 022）：成本始终是渠道货币口径，扣费跟随套餐单位 */
+  billingPlanId: string | null
+  costMoney: number
+  costCurrency: string
+  billedAmount: number
+  billingUnit: BillingUnit | ''
+  rateId: string | null
+  /** 结算幂等标记；非空 = 已结过账 */
+  billingChargedAt: string | null
   error: string
 }
 
@@ -597,4 +606,104 @@ export interface AuditEvent {
   targetId: string
   detail: Record<string, unknown>
   clientIp: string
+}
+
+// ------------------------------------------------------------------ 计费（v0.5.0）
+
+/** 计价单位：金额 / 积分 / token（每个套餐选一种） */
+export type BillingUnit = 'money' | 'credits' | 'tokens'
+
+/** 限额窗口；与后端 limit_rules."window" 一一对应 */
+export type BillingWindow = '5h' | '1d' | '7d' | '30d' | '1w' | '1mo'
+
+export interface BillingPlan {
+  id: string
+  name: string
+  unit: BillingUnit
+  currency: 'USD' | 'CNY'
+  /** 1 货币单位兑换多少积分（仅 credits 单位有意义） */
+  creditsPerCurrency: number
+  status: 'active' | 'disabled'
+  note: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ChannelRate {
+  id: string
+  channelId: string | null
+  channelName: string | null
+  /** 空串 = 渠道默认；channelId 为 null = 全局默认 */
+  upstreamModel: string
+  currency: 'USD' | 'CNY'
+  inputPerMtok: number
+  outputPerMtok: number
+  perRequest: number
+  status: 'active' | 'disabled'
+  note: string
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface LimitRule {
+  window: BillingWindow
+  threshold: number
+}
+
+export interface LimitTemplate {
+  id: string
+  name: string
+  ownerUserId: string | null
+  ownerUsername: string | null
+  status: 'active' | 'disabled'
+  note: string
+  rules: LimitRule[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** 某个窗口的已用/上限（单位跟随用户套餐） */
+export interface BillingWindowUsage {
+  window: BillingWindow
+  limit: number
+  used: number
+  resetAt: string
+}
+
+export interface BalanceLedgerEntry {
+  id: string
+  userId: string
+  delta: number
+  unit: string
+  reason: string
+  refType: string
+  refId: string
+  balanceAfter: number
+  note: string
+  createdAt: string
+}
+
+/** GET /api/billing/me */
+export interface BillingMe {
+  plan: BillingPlan | null
+  balance: number
+  unit: BillingUnit | ''
+  currency: string
+  windows: BillingWindowUsage[]
+  ledger: BalanceLedgerEntry[]
+}
+
+export interface BillingUserRow {
+  userId: string
+  username: string
+  displayName: string
+  role: string
+  status: string
+  planId: string | null
+  planName: string | null
+  unit: string | null
+  currency: string | null
+  balance: number
+  windows: BillingWindowUsage[]
+  plan: BillingPlan | null
 }

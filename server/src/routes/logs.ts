@@ -83,6 +83,14 @@ logRoutes.get('/logs', async (c) => {
       clientIp: r.client_ip,
       // 会话键哈希（前 8 位）—— 用来核对「同一会话是否落在同一渠道」
       sessionHash: r.session_hash,
+      // 计费字段：单位随套餐，costMoney 永远是渠道货币口径的成本
+      billingPlanId: r.billing_plan_id,
+      costMoney: Number(r.cost_money ?? 0),
+      costCurrency: r.cost_currency ?? '',
+      billedAmount: Number(r.billed_amount ?? 0),
+      billingUnit: r.billing_unit ?? '',
+      rateId: r.rate_id,
+      billingChargedAt: r.billing_charged_at,
       error: r.error
     }))
   })
