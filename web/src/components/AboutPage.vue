@@ -152,13 +152,33 @@ onBeforeUnmount(() => {
                 class="about-link"
                 href="https://github.com/Crequency/Portara"
                 target="_blank"
-                rel="noopener"
+                rel="noopener noreferrer"
               >
                 <Github :size="15" :stroke-width="1.7" aria-hidden="true" />
                 {{ t('about.repository') }}
               </a>
-              <span class="about-meta">{{ t('about.license') }} · {{ t('about.licenseName') }}</span>
-              <span class="about-copy">{{ t('about.copyright') }}</span>
+              <span class="about-meta">{{ t('about.license') }} ·
+                <a
+                  class="about-inline-link"
+                  href="https://github.com/Crequency/Portara/blob/main/LICENSE"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ t('about.licenseName') }}</a>
+              </span>
+              <!-- 组织名是专有名词，两个语言下都原样显示，只有前缀走 i18n；
+                   中英文括号里的名称互相对照，不做翻译。 -->
+              <span class="about-copy">{{ t('about.copyrightPrefix') }}
+                <a
+                  class="about-org-link"
+                  href="https://www.crequency.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >Crequency Open Source Organization</a> (<a
+                  class="about-org-link"
+                  href="https://www.crequency.cn"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >云矩创频开源组织</a>)</span>
             </footer>
           </div>
         </div>
@@ -449,6 +469,48 @@ onBeforeUnmount(() => {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
   border-radius: 4px;
+}
+
+/*
+ * 页脚文字里的行内链接。许可证沿用上方仓库链接的 accent —— 两者是同一行的
+ * 同类入口；版权行的组织名则走侧栏页脚那套更克制的做法（默认继承正文的
+ * --text-faint，hover 才提到 --text-dim 并补下划线），免得版权行抢戏。
+ * 两类都去掉默认下划线，focus-visible 统一给 accent 轮廓。
+ */
+.about-inline-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-radius: 4px;
+  transition: color 0.16s ease;
+}
+
+.about-inline-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.about-inline-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.about-org-link {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 4px;
+  transition: color 0.16s ease;
+}
+
+.about-org-link:hover {
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.about-org-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .about-copy {

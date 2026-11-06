@@ -814,7 +814,6 @@ export const zh = {
     repository: 'Crequency/Portara',
     license: '许可证',
     licenseName: 'AGPL-3.0',
-    copyright:
-      'Copyright © 2025-2026 Crequency Open Source Organization (云矩创频开源组织)',
+    copyrightPrefix: 'Copyright © 2025-2026',
   },
 }
