@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -109,6 +110,37 @@ if (!SMOKE_SCHEMA.includes('smoke')) {
       '因此 schema 名必须包含 "smoke"，防止误伤开发/生产数据。\n'
   )
   process.exit(2)
+}
+
+/**
+ * 直接改测试 schema 里的账户健康标记（window_exhausted）。
+ *
+ * 面板没有“把账户标成打满窗口”的接口 —— 这一列本该由用量适配器写入。
+ * 冒烟要验证“pin 指向已打满的账户时不再被提前”，就必须直接落库。
+ * 只允许砸测试 schema：这里的连接串与 search_path 与冒烟服务完全一致。
+ */
+async function setAccountWindowExhausted(accountId, exhausted) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(SMOKE_SCHEMA)) {
+    throw new Error(`SMOKE_DB_SCHEMA 非法：${SMOKE_SCHEMA}`)
+  }
+  const requireFromServer = createRequire(path.join(ROOT, 'server/package.json'))
+  const { Client } = requireFromServer('pg')
+  const client = new Client({
+    connectionString:
+      process.env.DATABASE_URL ?? 'postgres://portara:portara@127.0.0.1:52744/portara',
+    options: `-c search_path=${SMOKE_SCHEMA}`
+  })
+  await client.connect()
+  try {
+    await client.query(
+      `update channel_accounts
+          set window_exhausted = $1, window_checked_at = now(), updated_at = now()
+        where id = $2`,
+      [exhausted, accountId]
+    )
+  } finally {
+    await client.end()
+  }
 }
 
 const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
@@ -4134,6 +4166,131 @@ async function main() {
     // 清理本段渠道
     await apiCall('DELETE', `/api/channels/${saAId}`)
     await apiCall('DELETE', `/api/channels/${saBId}`)
+
+    /*
+     * ⑦ 亲和健康度：pin 指向已打满窗口的账户时，**不得再被提前**。
+     *
+     * 回归场景（用户实测）：会话跑久了会漂到「额度已用尽」的上游。
+     * 根因是 pickAccounts 无条件把 preferId unshift 到首位 —— 连
+     * usageLimited / 冷却中的账户也照提。这里用一个渠道 + 两个账户钉死：
+     *   A（priority 10）先被 pin → 标记 window_exhausted → 请求应故障转移到 B，
+     *   且 pin 重落到 B；恢复 A 后同会话仍应落 B（证明 pin 真的换了）。
+     */
+    const saHealthChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-sa-health-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 930,
+      weight: 1
+    })
+    const saHealthChannelId = saHealthChannel.body.channel.id
+    const saHealthAccounts0 = await apiCall(
+      'GET',
+      `/api/channels/${saHealthChannelId}/accounts`
+    )
+    const saHealthAId = saHealthAccounts0.body.accounts[0].id
+    const saHealthAName = `sa-health-a-${RUN}`
+    const saHealthBName = `sa-health-b-${RUN}`
+
+    // A 优先级更高：第一个请求必然落在 A，pin 也落在 A
+    await apiCall('PATCH', `/api/channels/${saHealthChannelId}/accounts/${saHealthAId}`, {
+      name: saHealthAName,
+      priority: 10
+    })
+    const saHealthB = await apiCall('POST', `/api/channels/${saHealthChannelId}/accounts`, {
+      name: saHealthBName,
+      apiKey: UPSTREAM_KEY,
+      priority: 20,
+      weight: 1
+    })
+    const saHealthBId = saHealthB.body.account.id
+    const saHealthAlias = `smoke-sa-health-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: saHealthAlias,
+      targets: [
+        { channelId: saHealthChannelId, upstreamModel: MOCK_MODEL, priority: 100, weight: 1 }
+      ]
+    })
+    const saHealthKey = await apiCall('POST', '/api/keys', {
+      name: `smoke-sa-health-key-${RUN}`
+    })
+    createdKeyIds.push(saHealthKey.body.apiKey.id)
+    const saHealthToken = saHealthKey.body.key
+
+    const saHealthHit = async (sessionKey) => {
+      const r = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${saHealthToken}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: saHealthAlias,
+          prompt_cache_key: sessionKey,
+          messages: [{ role: 'user', content: 'hi' }]
+        })
+      })
+      return { status: r.status, channel: r.headers.get('x-portara-channel') }
+    }
+
+    const saHealthLogs = () =>
+      apiCall(
+        'GET',
+        `/api/logs?limit=10&channelId=${saHealthChannelId}&model=${encodeURIComponent(saHealthAlias)}`
+      )
+    /** 等本轮第 minTotal 条日志（日志是 fire-and-forget，不能立刻断言） */
+    const waitSaHealthLog = async (minTotal) => {
+      for (let i = 0; i < 30; i++) {
+        const r = await saHealthLogs()
+        if (r.body && r.body.total >= minTotal && r.body.logs[0]) return r.body.logs[0]
+        await sleep(150)
+      }
+      return null
+    }
+
+    const saHealthSession = `affinity-health-${RUN}`
+    const saHealthFirst = await saHealthHit(saHealthSession)
+    const saHealthLog1 = await waitSaHealthLog(1)
+    check('亲和健康度：首次请求落在账户 A 并建立 pin', () => {
+      assert.equal(saHealthFirst.status, 200, `首次请求失败：${saHealthFirst.status}`)
+      assert.ok(saHealthLog1, '没有等到首次请求日志')
+      assert.equal(saHealthLog1.accountId, saHealthAId)
+      assert.equal(saHealthLog1.accountName, saHealthAName)
+    })
+
+    // A 打满窗口：默认设置 skipExhaustedWindows=true 会把它归入 usageLimited
+    await setAccountWindowExhausted(saHealthAId, true)
+    const saHealthFailover = await saHealthHit(saHealthSession)
+    const saHealthLog2 = await waitSaHealthLog(2)
+    check('亲和健康度：A 打满窗口后，同会话请求仍成功（故障转移）', () =>
+      assert.equal(saHealthFailover.status, 200, `故障转移后仍失败：${saHealthFailover.status}`)
+    )
+    check('亲和健康度：故障转移后由 B 服务，亲和已重落到 B', () => {
+      assert.ok(saHealthLog2, '没有等到故障转移日志')
+      assert.equal(saHealthLog2.accountId, saHealthBId)
+      assert.equal(saHealthLog2.accountName, saHealthBName)
+    })
+
+    const saHealthNext = await saHealthHit(saHealthSession)
+    const saHealthLog3 = await waitSaHealthLog(3)
+    check('亲和健康度：下一次请求仍由 B 服务（不再先打已耗尽的 A）', () => {
+      assert.equal(saHealthNext.status, 200)
+      assert.ok(saHealthLog3, '没有等到第三次请求日志')
+      assert.equal(saHealthLog3.accountName, saHealthBName)
+    })
+
+    // 恢复 A：pin 若真的切到 B，A 重新健康也不该立刻抢回流量
+    await setAccountWindowExhausted(saHealthAId, false)
+    const saHealthBack = await saHealthHit(saHealthSession)
+    const saHealthLog4 = await waitSaHealthLog(4)
+    check('亲和健康度：A 恢复后同会话仍落 B（证明 pin 已切到 B）', () => {
+      assert.equal(saHealthBack.status, 200)
+      assert.ok(saHealthLog4, '没有等到恢复后的请求日志')
+      assert.equal(saHealthLog4.accountId, saHealthBId, 'pin 没有切到 B，或陈旧 pin 又被提前了')
+    })
+
+    await apiCall('DELETE', `/api/channels/${saHealthChannelId}`)
 
     // ------------------------------------------------ 路由策略：失败冷却 + 打满窗口
     section('㉟ 路由策略：失败冷却 1h + 打满窗口不路由')

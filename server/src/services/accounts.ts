@@ -14,6 +14,12 @@
 import { query } from '../db.js'
 import { pickWeighted } from './routing.js'
 import { classifyAccountState, orderByDegradation, type AccountState } from './accountState.js'
+import {
+  decideAffinityPin,
+  pinAgeMs,
+  promotePinned,
+  type AffinityDropReason
+} from './affinityPure.js'
 import { QUOTA_COOLDOWN_LADDER_SEC } from './quotaSignal.js'
 import type { ChannelAccountRow } from '../types.js'
 
@@ -61,8 +67,10 @@ export async function countAccounts(channelId: string): Promise<number> {
 /**
  * 选出可用的账户，**按优先级排成候选序列**。
  *
- * 返回数组而不是单个账户，是为了让故障转移可以直接往后取：
+ * 返回候选数组而不是单个账户，是为了让故障转移可以直接往后取：
  * 第 0 个是本次该用的，后面是"这个不行就试那个"的顺序。
+ * 同时用 affinityDropped 告诉调用方「旧 pin 已经不健康，请清掉」——
+ * 亲和是优化，不能反过来把请求钉在坏账户上。
  *
  * 排序规则（与渠道选路同构）：
  *   ① 只留 active、不在冷却、未被 excludeIds 排除
@@ -70,6 +78,15 @@ export async function countAccounts(channelId: string): Promise<number> {
  *   ③ 层内按 weight 加权轮转决定**谁排第一**，其余按名称序跟在后面
  *   ④ 低优先级层次依次接在后面（故障转移的备用梯队）
  */
+export interface PickAccountsResult {
+  /** 按尝试顺序排好的候选（空数组 = 该渠道没有 active 账户） */
+  accounts: AccountRow[]
+  /** 亲和 pin 因健康度/不在池中被丢弃 —— 调用方应 clearAffinity */
+  affinityDropped: boolean
+  /** 丢弃原因；仅 affinityDropped=true 时存在 */
+  affinityDropReason?: AffinityDropReason
+}
+
 export async function pickAccounts(
   channelId: string,
   rotation: number,
@@ -77,6 +94,10 @@ export async function pickAccounts(
     limit?: number
     excludeIds?: Set<string>
     preferId?: string
+    /** pin 的落账时间；旧数据没有时按「刚创建」处理（见 pinAgeMs） */
+    preferPinnedAt?: number
+    /** 亲和时效上限（秒）；不传 = 不在这一层做年龄判断（由 getAffinity 负责） */
+    affinityMaxAgeSec?: number
     /**
      * 是否跳过「任意用量窗口已打满」的账户（设置项 `skipExhaustedWindows`）。
      *
@@ -85,7 +106,7 @@ export async function pickAccounts(
      */
     skipExhaustedWindows?: boolean
   } = {}
-): Promise<AccountRow[]> {
+): Promise<PickAccountsResult> {
   const rows = await listAccounts(channelId)
   const now = Date.now()
 
@@ -109,10 +130,10 @@ export async function pickAccounts(
     states.set(account.id, classifyAccountState(account, now, skipWindows))
   }
   const usable = orderByDegradation(pool, states, (a) => a.id)
-  if (usable.length === 0) return []
+  if (usable.length === 0) return { accounts: [], affinityDropped: false }
 
   const tiers = [...new Set(usable.map((a) => a.priority))].sort((a, b) => a - b)
-  const ordered: AccountRow[] = []
+  let ordered: AccountRow[] = []
 
   tiers.forEach((priority, index) => {
     const tier = usable
@@ -129,21 +150,43 @@ export async function pickAccounts(
   })
 
   /*
-   * 会话亲和：把这个会话上次用的账户提到首位。
+   * 会话亲和：**健康度优先，亲和只能让位**。
    *
-   * 只做「提前」不做「过滤」—— 它可能已经进冷却或被额度标记，
-   * 那就自然落到后面的梯队里，用户请求不该因为亲和而失败。
+   * 旧实现无条件把 preferId 提到首位，于是 pin 指向已耗尽（usageLimited）
+   * 或冷却中的账户时，每个请求都先打坏上游 —— 用户看到的就是
+   * 「会话漂到额度已用尽的上游」。现在：
+   *   ① 只有 state=ok 才允许提前；
+   *   ② quotaCooling / genericCooling / usageLimited 一律不提前，
+   *      并把 affinityDropped 告诉调用方（由它 clearAffinity）；
+   *   ③ 唯一例外：整个池子都退化到 usageLimited 兜底时，pin 保留
+   *      但「按原顺序参与」，不制造 503，也不制造「先打坏号」。
    */
+  let affinityDropped = false
+  let affinityDropReason: AffinityDropReason | undefined
   if (opts.preferId) {
-    const idx = ordered.findIndex((a) => a.id === opts.preferId)
-    if (idx > 0) {
-      const [preferred] = ordered.splice(idx, 1)
-      if (preferred) ordered.unshift(preferred)
+    const pinnedRow = pool.find((a) => a.id === opts.preferId) ?? null
+    const pinnedState = pinnedRow ? (states.get(pinnedRow.id) ?? 'ok') : null
+    // orderByDegradation 只返回第一个非空梯队；它已是 usageLimited
+    // 就意味着池子里没有 ok / cooling 账户可选了。
+    const usageLimitedFallback = (states.get(usable[0]!.id) ?? 'ok') === 'usageLimited'
+
+    const decision = decideAffinityPin({
+      state: pinnedState,
+      ageMs: pinAgeMs({ pinnedAt: opts.preferPinnedAt }, now),
+      maxAgeSec: opts.affinityMaxAgeSec ?? Number.POSITIVE_INFINITY,
+      usageLimitedFallback
+    })
+
+    if (decision.promote) {
+      ordered = promotePinned(ordered, opts.preferId).accounts
+    } else if (!decision.keep) {
+      affinityDropped = true
+      affinityDropReason = decision.reason
     }
   }
 
   const limit = Math.max(1, opts.limit ?? ordered.length)
-  return ordered.slice(0, limit)
+  return { accounts: ordered.slice(0, limit), affinityDropped, affinityDropReason }
 }
 
 /**

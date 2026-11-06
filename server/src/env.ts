@@ -77,6 +77,16 @@ function loadSessionSecret(): string {
 const affinityTtlSeconds = num(process.env.PORTARA_AFFINITY_TTL_SECONDS, 1800)
 
 /**
+ * 会话亲和的**最大年龄**（秒）。
+ *
+ * 与 TTL 不同：TTL 是"多久没访问就忘"，这是"一条 pin 最多能活多久"。
+ * 长会话会持续命中同一条 pin，TTL 永远续得上；没有年龄上限的话，
+ * 即使配额窗口早已滚动、账户恢复，会话也会一直粘在旧账户上。
+ * 成功命中**不刷新** pinnedAt，所以这个上限才对长会话真正生效。
+ */
+const affinityMaxAgeSeconds = num(process.env.PORTARA_AFFINITY_MAX_AGE_SEC, 3600)
+
+/**
  * 一次请求最多尝试几个**渠道**（别名映射的多个目标）。
  *
  * 与账户上限分开：账户上限管「同一个渠道换号」，这个管「换到下一个渠道」。
@@ -99,6 +109,7 @@ const affinityContext = process.env.PORTARA_AFFINITY_CONTEXT === 'true'
 export const env = {
   port: num(process.env.PORTARA_PORT, 52740),
   affinityTtlSeconds,
+  affinityMaxAgeSeconds,
   maxChannelAttempts,
   affinityContext,
   host: process.env.PORTARA_HOST ?? '0.0.0.0',

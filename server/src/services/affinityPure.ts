@@ -14,6 +14,7 @@
  *      不依赖本地状态；Redis 只是加速与"漂移记忆"，不是唯一真相。
  */
 import { createHash } from 'node:crypto'
+import type { AccountState } from './accountState.js'
 
 /** 会话键来源 —— 排查"为什么这个会话被判定成另一个"时需要 */
 export type SessionKeySource = 'prompt_cache_key' | 'context' | 'none'
@@ -22,7 +23,25 @@ export type SessionKeySource = 'prompt_cache_key' | 'context' | 'none'
 export interface AffinityPin {
   channelId: string
   accountId: string
+  /**
+   * 落 pin 的时间（epoch ms）。
+   *
+   * 只在新会话首次落 pin、pin 变更、或旧数据补写时记录；
+   * **成功命中亲和不刷新它** —— 否则「最大年龄」永远追不上当前时间，
+   * 长会话就会无限期粘在同一个账户上（正是这次要修的漂移）。
+   */
+  pinnedAt?: number
 }
+
+/**
+ * 亲和被丢弃的原因 —— 日志与测试都靠它区分「为什么不再提前这个 pin」。
+ *
+ * - expired        超过 PORTARA_AFFINITY_MAX_AGE_SEC
+ * - state=cooling  账户在冷却（quotaCooling / genericCooling）
+ * - usageLimited   账户余额/额度已耗尽
+ * - not_in_pool    账户已删除/停用/被本轮排除
+ */
+export type AffinityDropReason = 'expired' | 'state=cooling' | 'usageLimited' | 'not_in_pool'
 
 export interface SessionKey {
   /** 16 进制摘要（32 字符）；source 为 none 时为空串 */
@@ -150,4 +169,170 @@ export function pickBySession<T extends { id: string; weight: number }>(
   items: T[]
 ): T | null {
   return rankBySession(seed, items)[0] ?? null
+}
+
+// ---------------------------------------------------------------- 亲和健康度
+
+/**
+ * pin 的年龄（毫秒）。
+ *
+ * 旧数据没有 `pinnedAt`：视为「刚创建」（age=0）。
+ * 理由：直接判失效会在升级瞬间清掉所有在线会话的亲和，缓存集体重建；
+ * 而兼容处理不会让上限失效 —— `nextAffinityPin` 会把缺失的时间戳补写回去，
+ * 下一个成功请求就开始计时。
+ */
+export function pinAgeMs(
+  pin: Pick<AffinityPin, 'pinnedAt'> | null | undefined,
+  now = Date.now()
+): number {
+  const at = pin?.pinnedAt
+  if (typeof at !== 'number' || !Number.isFinite(at)) return 0
+  return Math.max(0, now - at)
+}
+
+/** 是否超过亲和最大年龄（纯函数，便于单测边界） */
+export function isAffinityExpired(ageMs: number, maxAgeSec: number): boolean {
+  const maxAgeMs = Math.max(0, maxAgeSec) * 1000
+  return !Number.isFinite(ageMs) || ageMs > maxAgeMs
+}
+
+export interface KeepPinInput {
+  /** 账户当前状态；null/undefined = 不在本轮候选池 */
+  state: AccountState | null | undefined
+  /** 距今多久落的 pin（毫秒） */
+  ageMs: number
+  /** 时效上限（秒，来自 PORTARA_AFFINITY_MAX_AGE_SEC） */
+  maxAgeSec: number
+  /**
+   * 整个池子都已退化到 usageLimited 兜底。
+   *
+   * 这时 pin 允许「按原顺序参与」—— 保留记录但**绝不提前**：
+   * 提前就回到「每个请求先打已耗尽账户」的老问题。
+   */
+  usageLimitedFallback?: boolean
+}
+
+export interface KeepPinResult {
+  /** 是否保留这条亲和（false = 调用方应 clearAffinity） */
+  keep: boolean
+  /** 丢弃原因；keep=true 时不存在 */
+  reason?: AffinityDropReason
+}
+
+/**
+ * 这条 pin 还值得保留吗？
+ *
+ * 顺序很重要：**先看年龄，再看健康度**。
+ * 一个超龄的 pin 即使账户当下是 ok 的也该丢 —— 长会话的配额窗口
+ * 早就滚过一轮，「上次用得好」不再说明任何问题。
+ */
+export function shouldKeepPin(input: KeepPinInput): KeepPinResult {
+  if (isAffinityExpired(input.ageMs, input.maxAgeSec)) {
+    return { keep: false, reason: 'expired' }
+  }
+  if (input.state === null || input.state === undefined) {
+    return { keep: false, reason: 'not_in_pool' }
+  }
+  if (input.state === 'ok') return { keep: true }
+  if (input.state === 'usageLimited') {
+    if (input.usageLimitedFallback === true) return { keep: true }
+    return { keep: false, reason: 'usageLimited' }
+  }
+  // quotaCooling / genericCooling —— 两种冷却都不许提前
+  return { keep: false, reason: 'state=cooling' }
+}
+
+/**
+ * pin 是否可以提前到候选首位。
+ *
+ * **只有 state=ok 才行**。冷却中或已耗尽的账户即使有 pin 也不许插队，
+ * 否则「会话亲和」会重新变成「优先打坏上游」—— 这就是本次修复的核心。
+ */
+export function canPromotePin(state: AccountState | null | undefined): boolean {
+  return state === 'ok'
+}
+
+export interface AffinityDecision extends KeepPinResult {
+  /** 是否把 pin 提到首位；keep=false 时必然为 false */
+  promote: boolean
+}
+
+/** 把「是否保留」与「是否提前」合成一次决策（accounts.ts 的唯一入口） */
+export function decideAffinityPin(input: KeepPinInput): AffinityDecision {
+  const verdict = shouldKeepPin(input)
+  return {
+    ...verdict,
+    promote: verdict.keep && canPromotePin(input.state)
+  }
+}
+
+/**
+ * 把 pin 提到首位（纯函数，不修改入参）。
+ *
+ * 调用方必须先用 decideAffinityPin 判定 promote；这里只负责排序，
+ * 把「何时允许提前」与「怎么提前」分开，避免健康度判断被排序细节淹没。
+ */
+export function promotePinned<T extends { id: string }>(
+  ordered: T[],
+  pinId: string | null | undefined
+): { accounts: T[]; promoted: boolean } {
+  if (!pinId) return { accounts: ordered, promoted: false }
+  const index = ordered.findIndex((item) => item.id === pinId)
+  if (index <= 0) return { accounts: ordered, promoted: false }
+  const pinned = ordered[index]!
+  return {
+    accounts: [pinned, ...ordered.filter((_, i) => i !== index)],
+    promoted: true
+  }
+}
+
+export interface NextPinInput {
+  /** 读到的旧 pin（可能来自 Redis，也可能是 null） */
+  previous: AffinityPin | null | undefined
+  channelId: string
+  accountId: string
+  /** 当前时间（epoch ms），测试注入用 */
+  now: number
+  /** 调用方已判定旧 pin 失效并 clear（成功后再重新落） */
+  invalidated?: boolean
+  /** 本轮发生了渠道漂移 */
+  drifted?: boolean
+}
+
+export interface NextPinResult {
+  /** 是否应写 Redis */
+  write: boolean
+  /** write=true 时要写的 pin */
+  pin?: AffinityPin
+}
+
+/**
+ * 这次成功请求之后要不要重写 pin。
+ *
+ * 纪律：**成功命中不算变更，不刷新 pinnedAt**。
+ * 只有三种情况写：
+ *   ① 之前没有 pin（新会话首次落）；
+ *   ② 目标（渠道/账户）变了；
+ *   ③ 旧数据缺 pinnedAt（补写时间戳，开始计时）或调用方明确标记失效/漂移。
+ */
+export function nextAffinityPin(input: NextPinInput): NextPinResult {
+  const { previous, channelId, accountId, now } = input
+  if (!channelId || !accountId) return { write: false }
+
+  const sameTarget =
+    previous !== null &&
+    previous !== undefined &&
+    previous.channelId === channelId &&
+    previous.accountId === accountId
+  const missingPinnedAt =
+    sameTarget &&
+    !(typeof previous!.pinnedAt === 'number' && Number.isFinite(previous!.pinnedAt))
+  const forced = input.invalidated === true || input.drifted === true
+
+  if (sameTarget && !missingPinnedAt && !forced) return { write: false }
+
+  return {
+    write: true,
+    pin: { channelId, accountId, pinnedAt: now }
+  }
 }

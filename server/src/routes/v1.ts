@@ -43,6 +43,7 @@ import {
   type ResolvedTarget
 } from '../services/router.js'
 import {
+  nextAffinityPin,
   sessionKeyOf,
   shortSessionHash,
   type AffinityPin,
@@ -360,6 +361,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   let signal: AbortSignal = c.req.raw.signal
   /** 亲和命中的目标是否被换掉了 —— 换掉就要改写 Redis 里的记录 */
   let affinityDrifted = false
+  /**
+   * 本轮已确认的旧 pin。被健康度判定丢弃后会置空 ——
+   * 既阻止后续渠道候选再拿它做提前，也保证成功后会重新落 pin。
+   */
+  let affinity = pick.affinity
 
   /**
    * 成功请求的结算回调（传给 fireAndForgetLog，拿到 request_log id 后执行）。
@@ -428,13 +434,34 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
     // 会话亲和：同一会话优先回到它上次用的账户（缓存按账户计）
     const preferAccountId =
-      session.hash && pick.affinity?.channelId === channel.id
-        ? (pick.affinity?.accountId ?? '')
+      session.hash && affinity?.channelId === channel.id
+        ? (affinity?.accountId ?? '')
         : ''
-    const candidates = await pickAccounts(channel.id, await nextAccountRotation(), {
+    const picked = await pickAccounts(channel.id, await nextAccountRotation(), {
       preferId: preferAccountId || undefined,
+      preferPinnedAt: preferAccountId ? affinity?.pinnedAt : undefined,
+      affinityMaxAgeSec: env.affinityMaxAgeSeconds,
       skipExhaustedWindows: routing.skipExhaustedWindows
     })
+    const candidates = picked.accounts
+
+    /*
+     * 陈旧亲和主动清理：pin 指向的账户已经不可用（不在池中 / 冷却 / 耗尽）时，
+     * 不要把它留在 Redis 里让下一轮继续 unshift —— 直接清掉，按正常选路走，
+     * 成功后再由下面按新账户重新落 pin。
+     *
+     * 唯一不清的例外是「整个池子都 usageLimited」：此时 pin 保留但**没有提前**，
+     * 按正常顺序参与，免得网关自己造 503。
+     */
+    if (preferAccountId && picked.affinityDropped) {
+      console.warn(
+        `[portara] 会话亲和已丢弃（alias=${model}, account=${preferAccountId}, ` +
+          `reason=${picked.affinityDropReason ?? 'not_in_pool'}）`
+      )
+      if (session.hash) await clearAffinity(model, session.hash)
+      affinity = null
+    }
+
     if (candidates.length === 0) {
       lastFailure = `渠道「${channel.name}」没有可用的上游账户`
       continue
@@ -562,13 +589,20 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    * `affinityDrifted` 时直接覆盖（旧记录指向已失败的渠道，留着会一直打回坏目标）。
    */
   if (session.hash && res && account) {
-    const pin: AffinityPin = { channelId: channel.id, accountId: account.id }
-    const changed =
-      !pick.affinity ||
-      pick.affinity.channelId !== pin.channelId ||
-      pick.affinity.accountId !== pin.accountId
-    if (changed || affinityDrifted) {
-      await setAffinity(model, session.hash, pin, env.affinityTtlSeconds)
+    /*
+     * 只在「新落 pin / 目标变更 / 旧数据补时间戳 / 失效后重落」时写。
+     * 成功命中同一条亲和不写 —— 否则 pinnedAt 每轮都被刷新，
+     * PORTARA_AFFINITY_MAX_AGE_SEC 就成了摆设。
+     */
+    const next = nextAffinityPin({
+      previous: affinity,
+      channelId: channel.id,
+      accountId: account.id,
+      now: Date.now(),
+      drifted: affinityDrifted
+    })
+    if (next.write && next.pin) {
+      await setAffinity(model, session.hash, next.pin, env.affinityTtlSeconds)
     }
   } else if (session.hash && !res) {
     // 这一轮彻底失败：清掉亲和，下一轮重新按哈希挑（避免一直粘在坏目标上）
