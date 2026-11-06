@@ -37,7 +37,7 @@ export const zh = {
     users: '用户管理',
     logs: '请求日志',
     usage: '余额用量',
-    billing: '计费',
+    billing: '计费系统',
     proxies: '代理配置',
     settings: '系统设置',
     endpoints: '/v1 端点',
