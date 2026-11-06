@@ -14,6 +14,26 @@ export function formatNumber(n: number | null | undefined): string {
 }
 
 /**
+ * 金额展示：千分位 + 合理小数位。
+ *
+ * 费率单价常是小数值（如每百万 token $0.15），所以最多保留 4 位；
+ * 余额这类大数会自动按货币格式收成两位。负数（欠费 / 调减）保留符号。
+ */
+export function formatMoney(
+  n: number | null | undefined,
+  currency = 'USD'
+): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—'
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: currency === 'CNY' ? 'CNY' : 'USD',
+    currencyDisplay: 'narrowSymbol',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4
+  }).format(n)
+}
+
+/**
  * 紧凑计数：1.2k / 375M / 1.1B。
  *
  * 整数不补 `.0` —— 刻度线上出现 `375.0M` 只是噪音；

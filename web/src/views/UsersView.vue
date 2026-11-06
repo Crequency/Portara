@@ -8,6 +8,7 @@ import {
   type RegistrationStatus,
   type User
 } from '../api'
+import BillingUserDialog from '../components/BillingUserDialog.vue'
 import Modal from '../components/Modal.vue'
 import PSelect from '../components/PSelect.vue'
 import { formatTime } from '../format'
@@ -23,6 +24,8 @@ const loading = ref(true)
 const showForm = ref(false)
 const saving = ref(false)
 const editing = ref<User | null>(null)
+/** 计费弹窗的目标用户（与计费页共用同一个组件） */
+const billingUser = ref<User | null>(null)
 
 /* ---------------------------------------------------------- 页签 */
 
@@ -283,7 +286,7 @@ onMounted(async () => {
               <th>{{ t('users.role') }}</th>
               <th>{{ t('users.status') }}</th>
               <th>{{ t('users.lastLogin') }}</th>
-              <th style="width: 150px">{{ t('common.actions') }}</th>
+              <th style="width: 230px">{{ t('common.actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -303,6 +306,9 @@ onMounted(async () => {
               <td class="dim nowrap">{{ formatTime(u.lastLoginAt) }}</td>
               <td>
                 <div v-if="isAdmin()" class="row">
+                  <button class="btn btn-sm" @click="billingUser = u">
+                    {{ t('billing.action') }}
+                  </button>
                   <button class="btn btn-sm" @click="openEdit(u)">{{ t('common.edit') }}</button>
                   <button
                     class="btn btn-sm btn-danger"
@@ -451,6 +457,15 @@ onMounted(async () => {
       </button>
     </div>
   </Modal>
+
+  <BillingUserDialog
+    v-if="billingUser"
+    :user-id="billingUser.id"
+    :username="billingUser.username"
+    :display-name="billingUser.displayName"
+    @close="billingUser = null"
+    @saved="billingUser = null"
+  />
 
   <Modal
     v-if="rejectTarget"

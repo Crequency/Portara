@@ -15,6 +15,7 @@ import { LOCALES, locale, setLocale, useI18n } from './i18n'
 import { loadMeta, meta, siteName } from './meta'
 import { setThemeMode, themeMode, type ThemeMode } from './theme'
 import { toast } from './toast'
+import BillingView from './views/BillingView.vue'
 import ChannelDetailView from './views/ChannelDetailView.vue'
 import ChannelFormView from './views/ChannelFormView.vue'
 import ChannelsView from './views/ChannelsView.vue'
@@ -88,6 +89,8 @@ const NAV = [
   { id: 'users', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
   { id: 'logs', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false },
   { id: 'usage', icon: 'M4 19V9M9 19V5M14 19v-7M19 19v-4', adminOnly: true },
+  // 计费管理：套餐 / 费率 / 限额模板 / 用户余额，仅管理员
+  { id: 'billing', icon: 'M3 7h18v10H3zM3 11h18M7 15h3', adminOnly: true },
   { id: 'proxies', icon: 'M4 7h16v10H4zM8 11a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0M13 11h4M8 15h9', adminOnly: true },
   { id: 'settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4Z', adminOnly: true }
 ] as const
@@ -113,6 +116,8 @@ const currentView = computed(() => {
       return LogsView
     case 'usage':
       return UsageView
+    case 'billing':
+      return BillingView
     case 'proxies':
       return ProxiesView
     case 'settings':

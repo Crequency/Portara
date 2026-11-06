@@ -11,6 +11,7 @@ import {
   api,
   type Channel,
   type ChannelAccount,
+  type ChannelRate,
   type ChannelTestResult,
   type ModelMeta,
   type ModelOverride,
@@ -25,12 +26,14 @@ import {
 } from '../api'
 import Modal from '../components/Modal.vue'
 import AccountUsage from '../components/AccountUsage.vue'
+import BillingRateDialog from '../components/BillingRateDialog.vue'
 import UsageTrendChart from '../components/UsageTrendChart.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
 import {
   formatCompact,
   formatLatency,
+  formatMoney,
   formatNumber,
   formatPercent,
   formatTime,
@@ -63,6 +66,73 @@ const revealError = ref('')
 const revealing = ref(false)
 
 const isAdmin = (): boolean => props.user?.role === 'admin'
+
+// ---------------------------------------------------------------- 计费费率
+
+const rates = ref<ChannelRate[]>([])
+const ratesLoading = ref(false)
+const rateDialogOpen = ref(false)
+const editingRate = ref<ChannelRate | null>(null)
+
+/** 该渠道的默认费率（upstream_model = ''）；停用的不参与解析，视为未设置 */
+const defaultRate = computed(
+  () =>
+    rates.value.find(
+      (r) =>
+        r.channelId === props.channelId &&
+        r.upstreamModel === '' &&
+        r.status === 'active'
+    ) ?? null
+)
+
+/** 按模型的费率（含停用行，列表里用徽章标出） */
+const modelRates = computed(() =>
+  rates.value
+    .filter((r) => r.channelId === props.channelId && r.upstreamModel !== '')
+    .sort((a, b) => a.upstreamModel.localeCompare(b.upstreamModel))
+)
+
+/** 全局默认（解析优先级最低，用来解释「未设置时按什么计」） */
+const globalRate = computed(
+  () =>
+    rates.value.find(
+      (r) => r.channelId === null && r.upstreamModel === '' && r.status === 'active'
+    ) ?? null
+)
+
+function rateSummary(rate: ChannelRate): string {
+  return t('billing.rate.summary', {
+    input: formatMoney(rate.inputPerMtok, rate.currency),
+    output: formatMoney(rate.outputPerMtok, rate.currency),
+    perRequest: formatMoney(rate.perRequest, rate.currency)
+  })
+}
+
+async function loadRates(): Promise<void> {
+  if (!isAdmin()) return
+  ratesLoading.value = true
+  try {
+    const res = await api.get<{ rates: ChannelRate[] }>(
+      '/api/billing/rates?channelId=' + props.channelId
+    )
+    rates.value = res.rates
+  } catch {
+    // 计费接口不可用时不该让整个详情页报错 —— 卡片显示未设置即可
+    rates.value = []
+  } finally {
+    ratesLoading.value = false
+  }
+}
+
+function openRateDialog(rate?: ChannelRate): void {
+  editingRate.value = rate ?? null
+  rateDialogOpen.value = true
+}
+
+function onRateSaved(): void {
+  rateDialogOpen.value = false
+  void loadRates()
+}
 
 /** 记住上次用的统计粒度（键与概览页**不同**，两处记忆彼此独立） */
 const RANGE_KEY = 'portara.channelDetail.range'
@@ -314,6 +384,7 @@ async function loadChannel(): Promise<void> {
   await loadStats()
   void loadProxyLabel()
   void loadUsage()
+  void loadRates()
   loading.value = false
 }
 
@@ -590,6 +661,98 @@ onMounted(loadChannel)
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 计费费率 -->
+    <div v-if="isAdmin()" class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">{{ t('billing.rate.cardTitle') }}</div>
+          <div class="dim" style="font-size: 12px">{{ t('billing.rate.cardSub') }}</div>
+        </div>
+        <div class="row">
+          <button class="btn btn-sm" @click="loadRates">{{ t('common.refresh') }}</button>
+          <button class="btn btn-sm btn-primary" @click="openRateDialog()">
+            ＋ {{ t('billing.rate.newModel') }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="ratesLoading" class="loading">{{ t('common.loading') }}</div>
+      <template v-else>
+        <div class="row-between row-wrap" style="gap: 10px">
+          <div class="row row-wrap">
+            <span style="font-weight: 600">{{ t('billing.rate.defaultRow') }}</span>
+            <span v-if="!defaultRate" class="tag">{{ t('billing.rate.notSet') }}</span>
+            <span v-else class="badge badge-ok">{{ t('common.enabled') }}</span>
+            <template v-if="defaultRate">
+              <span class="tag">{{ defaultRate.currency }}</span>
+              <span class="tag">
+                {{ t('billing.rate.input') }} {{ formatMoney(defaultRate.inputPerMtok, defaultRate.currency) }}
+              </span>
+              <span class="tag">
+                {{ t('billing.rate.output') }} {{ formatMoney(defaultRate.outputPerMtok, defaultRate.currency) }}
+              </span>
+              <span class="tag">
+                {{ t('billing.rate.perRequest') }} {{ formatMoney(defaultRate.perRequest, defaultRate.currency) }}
+              </span>
+            </template>
+          </div>
+          <div class="row">
+            <span class="dim" style="font-size: 11.5px">
+              <template v-if="globalRate">
+                {{ t('billing.rate.globalFallback', { value: rateSummary(globalRate) }) }}
+              </template>
+              <template v-else>{{ t('billing.rate.globalNone') }}</template>
+            </span>
+            <button v-if="defaultRate" class="btn btn-sm" @click="openRateDialog(defaultRate)">
+              {{ t('common.edit') }}
+            </button>
+            <button v-else class="btn btn-sm btn-primary" @click="openRateDialog()">
+              {{ t('billing.rate.quickSet') }}
+            </button>
+          </div>
+        </div>
+
+        <div class="card-title" style="margin-top: 16px; font-size: 13px">
+          {{ t('billing.rate.modelRows') }}
+        </div>
+        <div v-if="modelRates.length === 0" class="empty" style="padding: 18px 0">
+          {{ t('billing.rate.noModelRows') }}
+        </div>
+        <div v-else class="table-wrap" style="margin-top: 8px">
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t('billing.rate.upstreamModel') }}</th>
+                <th>{{ t('billing.currency') }}</th>
+                <th>{{ t('billing.rate.input') }}</th>
+                <th>{{ t('billing.rate.output') }}</th>
+                <th>{{ t('billing.rate.perRequest') }}</th>
+                <th>{{ t('common.status') }}</th>
+                <th style="width: 100px">{{ t('common.actions') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in modelRates" :key="r.id">
+                <td class="mono">{{ r.upstreamModel }}</td>
+                <td class="mono">{{ r.currency }}</td>
+                <td class="mono nowrap">{{ formatMoney(r.inputPerMtok, r.currency) }}</td>
+                <td class="mono nowrap">{{ formatMoney(r.outputPerMtok, r.currency) }}</td>
+                <td class="mono nowrap">{{ formatMoney(r.perRequest, r.currency) }}</td>
+                <td>
+                  <span class="badge" :class="r.status === 'active' ? 'badge-ok' : 'badge-off'">
+                    {{ r.status === 'active' ? t('common.enabled') : t('common.disabled') }}
+                  </span>
+                </td>
+                <td>
+                  <button class="btn btn-sm" @click="openRateDialog(r)">{{ t('common.edit') }}</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
     </div>
 
     <!-- 上游账户：同一渠道的多把 Key，按优先级/权重轮转 + 故障转移 -->
@@ -994,6 +1157,16 @@ onMounted(loadChannel)
       </div>
     </div>
   </div>
+
+  <BillingRateDialog
+    v-if="rateDialogOpen && channel"
+    :rate="editingRate"
+    :fixed-channel-id="channel.id"
+    :fixed-channel-name="channel.name"
+    :models="channel.models"
+    @close="rateDialogOpen = false"
+    @saved="onRateSaved"
+  />
 
   <Modal
     v-if="overrideOpen && channel"

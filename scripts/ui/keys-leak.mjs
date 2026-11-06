@@ -26,7 +26,7 @@ import {
  * 命名空间白名单，与 web/src/i18n/zh.ts 的顶层键同步。
  * 新增命名空间时要补进来，否则新页面的键泄漏扫不到。
  */
-const LEAK = /\b(common|nav|theme|login|overview|channels|keys|chat|users|logs|channelDetail|settings|proxies|usage|toast|balance|mapping)\.[A-Za-z][\w.]*/g
+const LEAK = /\b(common|nav|theme|login|overview|channels|keys|chat|users|logs|channelDetail|settings|proxies|usage|billing|toast|balance|mapping)\.[A-Za-z][\w.]*/g
 
 const PAGES = {
   zh: [
@@ -37,6 +37,7 @@ const PAGES = {
     ['users', '用户'],
     ['logs', '请求日志'],
     ['usage', '余额用量'],
+    ['billing', '计费'],
     ['proxies', 'HTTP 代理'],
     ['settings', '系统设置']
   ],
@@ -48,6 +49,7 @@ const PAGES = {
     ['users', 'users'],
     ['logs', 'logs'],
     ['usage', 'usage'],
+    ['billing', 'billing'],
     ['proxies', 'proxies'],
     ['settings', 'settings']
   ]
@@ -57,6 +59,21 @@ const PAGES = {
 const TABS = {
   zh: { mapping: /^模型映射$/, balance: /^负载均衡$/ },
   en: { mapping: /^Model mapping$/, balance: /^Load balancing$/ }
+}
+
+/** 计费页四个页签的按钮文案（计费页是 v0.5.0 新增，四个面板都要扫） */
+const BILLING_TABS = {
+  zh: [/^套餐$/, /^费率$/, /^限额模板$/, /^用户余额$/],
+  en: [/^Plans$/, /^Rates$/, /^Limit templates$/, /^User balances$/]
+}
+
+async function scanBillingTabs(locale, label) {
+  await gotoHash(page, 'billing', 1600)
+  for (const name of BILLING_TABS[locale]) {
+    await page.getByRole('button', { name }).click()
+    await page.waitForTimeout(1000)
+    await scan(label + ' · ' + name.source)
+  }
 }
 
 /** 「余额适配器」字段的标签；选中它才会渲染条件字段（耗尽判定 / 用量地址） */
@@ -142,6 +159,8 @@ try {
 
     await openTab(locale, 'balance')
     await scan(`${locale} · 负载均衡页签`)
+
+    await scanBillingTabs(locale, `${locale} · 计费页签`)
 
     if (channel) {
       await gotoHash(page, 'channels/' + channel.id, 2200)
