@@ -10,9 +10,15 @@
  */
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Github, X } from 'lucide-vue-next'
-import LogoMark from './LogoMark.vue'
 import { useI18n } from '../i18n'
 import { meta } from '../meta'
+
+/*
+ * README 横幅与页面共用同一张源图（docs/assets/banner.svg），不在 web/public
+ * 另存副本 —— 否则改海报就要记得改两处。Vite 会把它当资源处理并按内容哈希
+ * 输出到 dist/assets/；开发态由 vite.config.ts 的 server.fs.allow 放行仓库根。
+ */
+import bannerUrl from '../../../docs/assets/banner.svg?url'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -102,19 +108,26 @@ onBeforeUnmount(() => {
 
         <div class="about-scroll">
           <div class="about-content">
+            <!-- 头部直接用 README 的海报（Logo + 标题 + 副标题都在图里），
+                 不再用组件重排一次；下方一行补 tagline 与版本号。 -->
             <header class="about-hero about-item" style="--i: 0">
-              <LogoMark :size="84" class="about-logo" />
-              <div class="about-heading">
-                <div class="about-title-row">
-                  <h1 class="about-name">{{ meta.productName }}</h1>
+              <img
+                class="about-banner"
+                :src="bannerUrl"
+                alt="Portara"
+                width="1280"
+                height="320"
+              />
+              <p class="about-tagline">
+                {{ t('about.tagline') }}
+                <template v-if="meta.version">
+                  <span class="about-version-sep" aria-hidden="true">·</span>
                   <span
-                    v-if="meta.version"
-                    class="about-version"
+                    class="about-version-text"
                     :title="t('about.versionLabel', { version: meta.version })"
                   >v{{ meta.version }}</span>
-                </div>
-                <p class="about-tagline">{{ t('about.tagline') }}</p>
-              </div>
+                </template>
+              </p>
             </header>
 
             <p class="about-intro about-item" style="--i: 1">{{ t('about.intro') }}</p>
@@ -285,50 +298,40 @@ onBeforeUnmount(() => {
 }
 
 .about-hero {
-  display: flex;
-  align-items: center;
-  gap: 22px;
+  display: block;
 }
 
-.about-logo {
-  filter: drop-shadow(0 14px 34px color-mix(in srgb, var(--accent) 30%, transparent));
-}
-
-.about-heading {
-  min-width: 0;
-}
-
-.about-title-row {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.about-name {
-  margin: 0;
-  font-size: clamp(36px, 4.4vw, 52px);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.08;
-}
-
-.about-version {
-  padding: 3px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
-  letter-spacing: 0.02em;
+/*
+ * 海报本身是深色（README 同一张图），浅色主题下靠细边框 + 圆角 + 阴影
+ * 让它读起来是一张卡片，而不是一块突兀的黑块。宽度与内容列一致。
+ */
+.about-banner {
+  display: block;
+  width: 100%;
+  max-width: 880px;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-sm);
 }
 
 .about-tagline {
-  margin: 8px 0 0;
+  margin: 14px 0 0;
   color: var(--text-dim);
   font-size: 13.5px;
+}
+
+.about-version-sep {
+  margin: 0 6px;
+  color: var(--text-faint);
+}
+
+.about-version-text {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
 }
 
 .about-intro {
@@ -513,10 +516,8 @@ onBeforeUnmount(() => {
     padding: 76px 18px 44px;
   }
 
-  .about-hero {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
+  .about-banner {
+    border-radius: var(--radius-sm);
   }
 
   .about-cards {
