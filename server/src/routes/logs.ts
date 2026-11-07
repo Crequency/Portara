@@ -89,10 +89,15 @@ logRoutes.get('/logs', async (c) => {
         ts: r.ts,
         apiKeyName: r.api_key_name,
         channelId: r.channel_id,
-        channelName: r.channel_name,
+        /*
+         * 渠道名 / 账户名是**上游供应商与凭据**信息：管理员看全名，
+         * 客户（非管理员）只看到自己的请求，不应知道背后是哪家上游 ——
+         * 统一替换成占位符，保留 id 便于支持时与管理员对账。
+         */
+        channelName: isAdmin ? r.channel_name : '—',
         // 哪个上游账户服务的 —— 排查"是不是某个号额度打爆了"的关键字段
         accountId: r.account_id,
-        accountName: r.account_name,
+        accountName: isAdmin ? r.account_name : '—',
         model: r.model,
         upstreamModel: r.upstream_model,
         path: r.path,

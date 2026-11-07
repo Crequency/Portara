@@ -5973,6 +5973,48 @@ async function main() {
 
     await apiCall('DELETE', `/api/channels/${healthChannelId}`)
 
+    /* ---- 用量读取权限同样只属于管理员（客户不能读上游账目）---- */
+    const opLogin4 = await apiCall(
+      'POST',
+      '/api/auth/login',
+      { username: OPERATOR_USER, password: OPERATOR_PASS },
+      { keepSession: true }
+    )
+    const opCookie4 = opLogin4.cookie
+    const opUsageKey = await apiCall(
+      'POST',
+      '/api/keys',
+      { name: `smoke-op-usage-${RUN}`, usageAllow: true, usageRefresh: true },
+      { cookie: opCookie4 }
+    )
+    check('限额收紧：操作员创建密钥时 usageAllow/usageRefresh 被强制关闭', () => {
+      assert.equal(opUsageKey.status, 201)
+      assert.equal(opUsageKey.body.apiKey.usageAllow, false)
+      assert.equal(opUsageKey.body.apiKey.usageRefresh, false)
+    })
+    createdKeyIds.push(opUsageKey.body?.apiKey?.id)
+
+    const opUsagePatch = await apiCall(
+      'PATCH',
+      `/api/keys/${opUsageKey.body.apiKey.id}`,
+      { usageAllow: true },
+      { cookie: opCookie4 }
+    )
+    check('限额收紧：操作员 PATCH usageAllow 返回 400', () =>
+      assert.equal(opUsagePatch.status, 400)
+    )
+
+    const opLogsMasked = await apiCall('GET', '/api/logs?limit=5', undefined, {
+      cookie: opCookie4
+    })
+    check('租户隔离：操作员日志里的渠道/账户名被掩码', () => {
+      assert.equal(opLogsMasked.status, 200)
+      for (const l of opLogsMasked.body.logs) {
+        assert.equal(l.channelName, '—')
+        assert.equal(l.accountName, '—')
+      }
+    })
+
     // ---------------------------------------------------------- 清理
     section('㊳ 清理测试数据')
 

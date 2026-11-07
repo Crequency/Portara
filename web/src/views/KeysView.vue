@@ -167,14 +167,18 @@ async function submit(): Promise<void> {
       // 渠道绑定是管理面配置：操作员不传（后端也会忽略）
       channelId: isAdmin() ? form.channelId || null : undefined,
       modelAllow: parseList(form.modelAllowText),
-      usageAllow: form.usageAllow,
-      usageRefresh: form.usageRefresh,
-      usageChannels: form.usageChannels,
       expiresAt: form.expiresAt || null
     }
+    /*
+     * usageAllow / usageRefresh / usageChannels 是管理面能力（读上游账目），
+     * 与 rpm/quota 一样：非管理员不提交 —— 创建时后端回落 false，更新时后端直接 400。
+     */
     if (isAdmin()) {
       body.rpmLimit = Number(form.rpmLimit)
       body.quotaTokens = Number(form.quotaTokens)
+      body.usageAllow = form.usageAllow
+      body.usageRefresh = form.usageRefresh
+      body.usageChannels = form.usageChannels
     }
 
     if (editingKeyId.value) {
@@ -475,22 +479,24 @@ onMounted(() => {
           <span class="hint">{{ t('keys.modelAllowHint') }}</span>
         </div>
 
-        <!-- 余额读取权限 -->
-        <div class="field">
-          <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
-            <PCheckbox v-model="form.usageAllow" />
-            {{ t('usage.canRead') }}
-          </label>
-          <span class="hint">{{ t('usage.canReadHint') }}</span>
-        </div>
+        <!-- 余额读取权限：只有管理员能授予（否则客户可读上游账目） -->
+        <template v-if="isAdmin()">
+          <div class="field">
+            <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
+              <PCheckbox v-model="form.usageAllow" />
+              {{ t('usage.canRead') }}
+            </label>
+            <span class="hint">{{ t('usage.canReadHint') }}</span>
+          </div>
 
-        <div class="field">
-          <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
-            <PCheckbox v-model="form.usageRefresh" :disabled="!form.usageAllow" />
-            {{ t('usage.canRefresh') }}
-          </label>
-          <span class="hint">{{ t('usage.canRefreshHint') }}</span>
-        </div>
+          <div class="field">
+            <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
+              <PCheckbox v-model="form.usageRefresh" :disabled="!form.usageAllow" />
+              {{ t('usage.canRefresh') }}
+            </label>
+            <span class="hint">{{ t('usage.canRefreshHint') }}</span>
+          </div>
+        </template>
 
         <!-- 可见渠道列表同样来自管理面接口；操作员只保留默认（空 = 全部）语义 -->
         <div v-if="form.usageAllow && isAdmin()" class="field">

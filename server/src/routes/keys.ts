@@ -118,6 +118,14 @@ keyRoutes.post('/', async (c) => {
    */
   const rpmLimit = isAdmin ? body.rpmLimit : await getSetting('defaultKeyRpmLimit')
   const quotaTokens = isAdmin ? body.quotaTokens : 0
+  /*
+   * 余额/用量读取权限（usageAllow / usageRefresh / usageChannels）同样是管理面能力：
+   * 它决定这把 Key 能否读上游渠道的余额与用量 —— 对客户开放等于把**上游账目**给出去。
+   * 非管理员创建时一律回落为 false / false / []（静默，理由同上面的 rpmLimit）。
+   */
+  const usageAllow = isAdmin ? body.usageAllow : false
+  const usageRefresh = isAdmin ? body.usageRefresh : false
+  const usageChannels = isAdmin ? body.usageChannels : []
   await assertRefs(ownerId, channelId)
 
   const { key, prefix, hash } = generateApiKey()
@@ -139,9 +147,9 @@ keyRoutes.post('/', async (c) => {
       rpmLimit,
       quotaTokens,
       body.expiresAt ? new Date(body.expiresAt) : null,
-      body.usageAllow,
-      body.usageChannels,
-      body.usageRefresh
+      usageAllow,
+      usageChannels,
+      usageRefresh
     ]
   )
 
@@ -168,6 +176,18 @@ keyRoutes.patch('/:id', async (c) => {
    */
   if (!isAdmin && (body.rpmLimit !== undefined || body.quotaTokens !== undefined)) {
     throw badRequest('速率限制与 Token 配额只能由管理员设置')
+  }
+  /*
+   * 余额/用量读取权限同样是管理面能力（决定这把 Key 能否读上游账目）——
+   * 与 rpm/quota 一致：更新时显式携带即 400，避免"以为改成功其实被忽略"。
+   */
+  if (
+    !isAdmin &&
+    (body.usageAllow !== undefined ||
+      body.usageRefresh !== undefined ||
+      body.usageChannels !== undefined)
+  ) {
+    throw badRequest('余额/用量读取权限只能由管理员设置')
   }
 
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
