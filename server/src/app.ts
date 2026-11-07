@@ -11,6 +11,7 @@ import { billingRoutes } from './routes/billing.js'
 import { channelAccountRoutes } from './routes/channelAccounts.js'
 import { channelRoutes } from './routes/channels.js'
 import { keyRoutes } from './routes/keys.js'
+import { lbRoutes } from './routes/lb.js'
 import { logRoutes } from './routes/logs.js'
 import { modelRouteRoutes } from './routes/modelRoutes.js'
 import { profileRoutes } from './routes/profile.js'
@@ -125,6 +126,8 @@ export function createApp(): Hono {
   app.route('/api/profile', profileRoutes)
   app.route('/api/audit', auditRoutes)
   app.route('/api/model-routes', modelRouteRoutes)
+  // 负载均衡实况：窗口内分配情况 + 故障转移事件（requireAdmin，见路由内部）
+  app.route('/api/lb', lbRoutes)
   app.route('/api/settings', settingsRoutes)
   app.route('/api', usageAdminRoutes) // /api/usage、/api/usage/adapters
   app.route('/api/proxies', proxyRoutes)

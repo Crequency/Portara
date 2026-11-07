@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { query } from '../db.js'
@@ -5,6 +6,7 @@ import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
+import { recordLbEvent } from '../services/lbEvents.js'
 import {
   precheckBilling,
   releaseBillingReservation,
@@ -154,6 +156,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   const key = c.get('apiKey') as ApiKeyRow
   const ip = clientIp(c)
   const startedAt = Date.now()
+  /**
+   * 请求级关联 id：只用于把同一次调用的多条故障转移事件串起来，
+   * **不改动现有 request_logs 结构**。
+   */
+  const requestId = randomUUID()
 
   const raw = c.req.method === 'GET' || c.req.method === 'HEAD' ? '' : await c.req.text()
   const payload = raw ? (parseJsonSafe(raw) as Record<string, unknown> | null) : null
@@ -425,6 +432,17 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   let affinity = pick.affinity
 
   /**
+   * 故障转移事件的尝试序号：跨渠道累计，从 1 开始。
+   * 与「第几个账户」不同 —— 换渠道后账户序号会重置，但一次请求的尝试总数不会。
+   */
+  let attemptNo = 0
+  /**
+   * 上一次失败的账户 —— 最终成功时用它写 failover_success 的 prev_*。
+   * 只在真正打过上游且失败时赋值；首击成功保持 null，不产生任何事件。
+   */
+  let lastFailedAccount: { id: string; name: string } | null = null
+
+  /**
    * 成功请求的结算回调（传给 fireAndForgetLog，拿到 request_log id 后执行）。
    *
    * 只在这三条同时成立时返回回调：
@@ -615,6 +633,9 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         }
       )
 
+      // 每次真正打上游算一次尝试 —— 跨渠道累计（见 attemptNo 的注释）
+      attemptNo++
+      const attemptStartedAt = Date.now()
       try {
         const attempt = await upstreamFetch(
           url,
@@ -626,6 +647,28 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
         if (attempt.ok) {
           await markAccountSuccess(candidate.id)
+          /*
+           * 之前失败过、这次换号成功 → 记一条 failover_success。
+           * 首击成功时 lastFailedAccount 为 null，不写任何事件（避免热路径写入放大）。
+           */
+          if (lastFailedAccount) {
+            await recordLbEvent({
+              requestId,
+              alias: model,
+              sessionHash,
+              channelId: channel.id,
+              channelName: channel.name,
+              accountId: candidate.id,
+              accountName: candidate.name,
+              prevAccountId: lastFailedAccount.id,
+              prevAccountName: lastFailedAccount.name,
+              attempt: attemptNo,
+              outcome: 'failover_success',
+              statusCode: attempt.status,
+              reason: '',
+              latencyMs: Date.now() - attemptStartedAt
+            })
+          }
           res = attempt
           break
         }
@@ -637,6 +680,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
         // 可重试：留下原文（全部失败时给客户端看这个，比网关自造的 502 有用）
         const text = await attempt.text()
+        const attemptLatencyMs = Date.now() - attemptStartedAt
         lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
         const retryAfter = Number(attempt.headers.get('retry-after'))
         /*
@@ -644,6 +688,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
          * 时，额度冷冻不能还按阶梯的 5m 起步 —— 那等于明知要等一天还每小时去撞一次。
          */
         const quotaResetAt = parseQuotaResetAt(text, attempt.headers.get('retry-after'))
+        /** 本次是否真的命中额度用尽（决定要不要额外写 quota_cooldown 事件） */
+        let quotaEntered: { level: number; secs: number; applied: boolean } | null = null
         /*
          * 冷却时长：**设置项说了算**，只有两处例外比它更长
          *   ① 401/403（凭据坏了）—— 至少要 COOLDOWN.auth
@@ -666,6 +712,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
             quotaResetAt
           )
           if (quota) {
+            quotaEntered = quota
             console.warn(
               `[portara] 账户「${candidate.name}」额度用尽，第 ${quota.level} 次冷冻 ` +
                 `${formatQuotaCooldown(quota.secs)}${quota.applied ? '' : '（冷冻期内，保持原样）'}`
@@ -682,11 +729,54 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
             Math.max(base, routing.accountFailureCooldownSec)
           )
         }
+
+        /*
+         * 失败事件：只有「可重试的非 2xx」才会走到这里 ——
+         * 400/404 换号也没用，不产生事件，避免把客户端错误记成故障转移。
+         */
+        await recordLbEvent({
+          requestId,
+          alias: model,
+          sessionHash,
+          channelId: channel.id,
+          channelName: channel.name,
+          accountId: candidate.id,
+          accountName: candidate.name,
+          attempt: attemptNo,
+          outcome: 'attempt_failed',
+          statusCode: attempt.status,
+          reason: lastFailure,
+          latencyMs: attemptLatencyMs
+        })
+
+        // 额度用尽额外一条：页面据此解释「这个账户为什么随后进入了冷冻」
+        if (quotaEntered) {
+          const untilIso = new Date(Date.now() + quotaEntered.secs * 1000).toISOString()
+          await recordLbEvent({
+            requestId,
+            alias: model,
+            sessionHash,
+            channelId: channel.id,
+            channelName: channel.name,
+            accountId: candidate.id,
+            accountName: candidate.name,
+            attempt: attemptNo,
+            outcome: 'quota_cooldown',
+            statusCode: attempt.status,
+            reason:
+              `${lastFailure}（level=${quotaEntered.level}, until=${untilIso}` +
+              `${quotaEntered.applied ? '' : '，冷冻期内保持原样'}）`,
+            latencyMs: attemptLatencyMs
+          })
+        }
+        lastFailedAccount = { id: candidate.id, name: candidate.name }
+
         lastUpstreamError = new Response(text, {
           status: attempt.status,
           headers: { 'content-type': attempt.headers.get('content-type') ?? 'application/json' }
         })
       } catch (err) {
+        const attemptLatencyMs = Date.now() - attemptStartedAt
         const clientGone = c.req.raw.signal.aborted
         const timedOut = !clientGone && signal.aborted
         lastFailure = clientGone
@@ -700,6 +790,24 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           lastFailure,
           Math.max(routing.accountFailureCooldownSec, COOLDOWN.upstream)
         )
+
+        // 抛异常同样算一次失败尝试（status_code 为空）
+        await recordLbEvent({
+          requestId,
+          alias: model,
+          sessionHash,
+          channelId: channel.id,
+          channelName: channel.name,
+          accountId: candidate.id,
+          accountName: candidate.name,
+          attempt: attemptNo,
+          outcome: 'attempt_failed',
+          statusCode: null,
+          reason: lastFailure,
+          latencyMs: attemptLatencyMs
+        })
+        lastFailedAccount = { id: candidate.id, name: candidate.name }
+
         // 客户端没了 / 整体预算耗尽 —— 换号没有意义
         if (clientGone || timedOut) break
       }

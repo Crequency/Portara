@@ -194,6 +194,13 @@ const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
  */
 const QUOTA_ERROR_KEY = 'sk-quota-error-account'
 /**
+ * 稳定返回 500 的伪上游密钥。
+ *
+ * 用于验证「可重试的上游失败 → 换号 → 最终成功」会写 attempt_failed +
+ * failover_success 两条事件；500 也是真实网关最常见的瞬时故障形态。
+ */
+const FAIL_UPSTREAM_KEY = 'sk-fail-account'
+/**
  * 真实 402「coding plan 额度用尽」的伪上游密钥。
  *
  * body 从线上日志抄来（一字未改），reset_at 在响应时按当前时刻动态生成：
@@ -336,7 +343,8 @@ function startMockUpstream() {
         authedKey(QUOTA_ERROR_KEY) ||
         authedKey(QUOTA_RESET_KEY) ||
         authedKey(QUOTA_RESET_FAR_KEY) ||
-        authedKey(RATE_LIMIT_KEY)
+        authedKey(RATE_LIMIT_KEY) ||
+        authedKey(FAIL_UPSTREAM_KEY)
       if (url.startsWith('/v1') && !authed) {
         res.writeHead(401, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { message: 'bad upstream key' } }))
@@ -490,6 +498,18 @@ function startMockUpstream() {
         } catch {
           /* 忽略 */
         }
+
+        // 稳定 500：用于验证故障转移事件（attempt_failed → failover_success）
+        if (authedKey(FAIL_UPSTREAM_KEY)) {
+          res.writeHead(500, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              error: { message: 'mock upstream internal error', type: 'server_error' }
+            })
+          )
+          return
+        }
+
         /*
          * 真实上游（OpenDesign）的 402：额度耗尽信号是
          * code=insufficient_balance + details.reset_at，
@@ -6435,6 +6455,255 @@ async function main() {
         assert.equal(l.channelName, '—')
         assert.equal(l.accountName, '—')
       }
+    })
+
+    // ---------------------------------------------------------- 负载均衡实况
+    section('㊲e 负载均衡实况与故障转移事件')
+
+    // 前面的用例可能切到过 operator 会话；这里显式回到管理员
+    const lbLogin = await apiCall('POST', '/api/auth/login', {
+      username: ADMIN_USER,
+      password: ADMIN_PASS
+    })
+    check('LB 实况：管理员重新登录', () => assert.equal(lbLogin.status, 200))
+
+    // ---- 迁移 026 与事件表 ----
+    const lbMigration = await smokeQuery(
+      `select id from schema_migrations where id = '026_lb_events'`
+    )
+    check('LB 实况：迁移 026 已应用', () => assert.equal(lbMigration.length, 1))
+
+    const lbTable = await smokeQuery(`select to_regclass('lb_events')::text as name`)
+    check('LB 实况：lb_events 表存在', () => assert.equal(lbTable[0]?.name, 'lb_events'))
+
+    // ---- 场景一：第一账户 500，第二账户 200 ----
+    const lbChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-lb-live-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 960
+    })
+    check('LB 实况：创建测试渠道', () => assert.equal(lbChannel.status, 201))
+    const lbChannelId = lbChannel.body.channel.id
+
+    const lbFailAcct = await apiCall('POST', `/api/channels/${lbChannelId}/accounts`, {
+      name: `故障账户-${RUN}`,
+      apiKey: FAIL_UPSTREAM_KEY,
+      priority: 1,
+      weight: 1
+    })
+    check('LB 实况：新增优先失败的账户', () => assert.equal(lbFailAcct.status, 201))
+
+    const lbAlias = `smoke-lb-live-${RUN}/model`
+    const lbRoute = await apiCall('POST', '/api/model-routes', {
+      alias: lbAlias,
+      targets: [{ channelId: lbChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    check('LB 实况：建立别名映射', () => assert.equal(lbRoute.status, 201))
+
+    const lbKeyRes = await apiCall('POST', '/api/keys', {
+      name: `smoke-lb-live-key-${RUN}`
+    })
+    createdKeyIds.push(lbKeyRes.body?.apiKey?.id)
+    const lbSecret = lbKeyRes.body.key
+
+    const lbHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: lbAlias, messages: [{ role: 'user', content: 'lb-live' }] },
+      lbSecret
+    )
+    check('故障转移：第一账户 500、第二账户 200 仍成功', () =>
+      assert.equal(lbHit.status, 200))
+
+    // 事件写入是 await 的，但给存储/网络留一点轮询余量
+    let lbEventsRes = null
+    for (let i = 0; i < 30; i++) {
+      const res = await apiCall(
+        'GET',
+        `/api/lb/events?minutes=60&alias=${encodeURIComponent(lbAlias)}`
+      )
+      if ((res.body?.events ?? []).length >= 2) {
+        lbEventsRes = res
+        break
+      }
+      await sleep(100)
+    }
+    check('故障转移：事件里有 attempt_failed 与 failover_success', () => {
+      assert.ok(lbEventsRes, '没有查到事件')
+      const events = lbEventsRes.body.events
+      const failed = events.find((e) => e.outcome === 'attempt_failed')
+      const success = events.find((e) => e.outcome === 'failover_success')
+      assert.ok(failed, `缺少 attempt_failed：${JSON.stringify(events)}`)
+      assert.equal(failed.statusCode, 500)
+      assert.equal(failed.accountName, `故障账户-${RUN}`)
+      assert.ok(success, `缺少 failover_success：${JSON.stringify(events)}`)
+      assert.equal(success.statusCode, 200)
+      assert.equal(success.prevAccountName, `故障账户-${RUN}`)
+      assert.ok(success.attempt > failed.attempt)
+    })
+
+    // 请求日志是 fire-and-forget，轮询到窗口内有 1 条再断言 share
+    let lbLive = null
+    for (let i = 0; i < 30; i++) {
+      const res = await apiCall(
+        'GET',
+        `/api/lb/live?minutes=15&alias=${encodeURIComponent(lbAlias)}`
+      )
+      const entry = res.body?.aliases?.[0]
+      if (entry && entry.accounts.some((a) => a.requests >= 1)) {
+        lbLive = res
+        break
+      }
+      await sleep(100)
+    }
+    check('实况：返回 totals / aliases / accounts 结构', () => {
+      assert.ok(lbLive, '没有轮到实况数据')
+      const body = lbLive.body
+      assert.equal(lbLive.status, 200)
+      assert.equal(body.windowMinutes, 15)
+      assert.ok(body.generatedAt)
+      assert.equal(body.aliases.length, 1)
+      assert.equal(body.aliases[0].alias, lbAlias)
+      assert.equal(body.aliases[0].targets.length, 1)
+      assert.equal(body.aliases[0].targets[0].channelId, lbChannelId)
+      assert.equal(body.aliases[0].accounts.length, 2)
+      assert.ok(body.totals.requests >= 1)
+      assert.equal(body.totals.failovers, 1)
+      assert.equal(body.totals.quotaCooldowns, 0)
+    })
+    check('实况：share 总和 ≈ 1 且成功账户份额为 1', () => {
+      const accounts = lbLive.body.aliases[0].accounts
+      const shareSum = accounts.reduce((sum, a) => sum + a.share, 0)
+      assert.ok(Math.abs(shareSum - 1) < 1e-6, `share 总和 ${shareSum}`)
+      const served = accounts.find((a) => a.requests >= 1)
+      assert.ok(served, '没有统计到实际服务的账户')
+      assert.equal(served.share, 1)
+    })
+
+    // ---- 场景二：额度用尽 → quota_cooldown + state=quotaCooling ----
+    const quotaChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-lb-quota-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 961
+    })
+    check('额度场景：创建测试渠道', () => assert.equal(quotaChannel.status, 201))
+    const quotaChannelId = quotaChannel.body.channel.id
+
+    const quotaAccount = await apiCall('POST', `/api/channels/${quotaChannelId}/accounts`, {
+      name: `额度账户-${RUN}`,
+      apiKey: QUOTA_ERROR_KEY,
+      priority: 1,
+      weight: 1
+    })
+    check('额度场景：新增额度用尽账户', () => assert.equal(quotaAccount.status, 201))
+
+    const quotaAlias = `smoke-lb-quota-${RUN}/model`
+    await apiCall('POST', '/api/model-routes', {
+      alias: quotaAlias,
+      targets: [{ channelId: quotaChannelId, upstreamModel: MOCK_MODEL }]
+    })
+
+    const quotaHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: quotaAlias, messages: [{ role: 'user', content: 'quota' }] },
+      lbSecret
+    )
+    check('额度场景：额度用尽后自动换号并成功', () => assert.equal(quotaHit.status, 200))
+
+    let quotaLive = null
+    for (let i = 0; i < 30; i++) {
+      const res = await apiCall(
+        'GET',
+        `/api/lb/live?minutes=15&alias=${encodeURIComponent(quotaAlias)}`
+      )
+      const entry = res.body?.aliases?.[0]
+      const cooling = entry?.accounts.find((a) => a.accountName === `额度账户-${RUN}`)
+      if (cooling && cooling.state === 'quotaCooling') {
+        quotaLive = res
+        break
+      }
+      await sleep(100)
+    }
+    check('额度场景：accounts 里 state=quotaCooling 且带冷却信息', () => {
+      assert.ok(quotaLive, '没有等到 quotaCooling 状态')
+      const accounts = quotaLive.body.aliases[0].accounts
+      const cooling = accounts.find((a) => a.accountName === `额度账户-${RUN}`)
+      assert.ok(cooling, '缺少额度账户')
+      assert.equal(cooling.state, 'quotaCooling')
+      assert.ok(cooling.coolingUntil, '缺少 coolingUntil')
+      assert.ok(Date.parse(cooling.coolingUntil) > Date.now())
+      assert.equal(cooling.quotaCooldownLevel, 1)
+      assert.equal(quotaLive.body.totals.quotaCooldowns, 1)
+      assert.equal(quotaLive.body.totals.coolingAccounts, 1)
+    })
+
+    let quotaEvents = null
+    for (let i = 0; i < 30; i++) {
+      const res = await apiCall(
+        'GET',
+        `/api/lb/events?minutes=60&alias=${encodeURIComponent(quotaAlias)}`
+      )
+      if ((res.body?.events ?? []).some((e) => e.outcome === 'quota_cooldown')) {
+        quotaEvents = res
+        break
+      }
+      await sleep(100)
+    }
+    check('额度场景：产生 quota_cooldown 事件（reason 带 level/until）', () => {
+      assert.ok(quotaEvents, '没有查到 quota_cooldown 事件')
+      const event = quotaEvents.body.events.find((e) => e.outcome === 'quota_cooldown')
+      assert.ok(event, '缺少 quota_cooldown')
+      assert.equal(event.accountName, `额度账户-${RUN}`)
+      assert.equal(event.statusCode, 429)
+      assert.match(event.reason, /level=1/)
+      assert.match(event.reason, /until=/)
+    })
+
+    // ---- 权限与过滤 ----
+    const lbOpLogin = await apiCall(
+      'POST',
+      '/api/auth/login',
+      { username: OPERATOR_USER, password: OPERATOR_PASS },
+      { keepSession: true }
+    )
+    const lbOpCookie = lbOpLogin.cookie
+    const lbOpLive = await apiCall('GET', '/api/lb/live', undefined, { cookie: lbOpCookie })
+    const lbOpEvents = await apiCall('GET', '/api/lb/events', undefined, {
+      cookie: lbOpCookie
+    })
+    check('权限：操作员访问两个实况接口都返回 403', () => {
+      assert.equal(lbOpLive.status, 403)
+      assert.equal(lbOpEvents.status, 403)
+    })
+
+    const lbFiltered = await apiCall(
+      'GET',
+      `/api/lb/live?minutes=15&alias=${encodeURIComponent(lbAlias)}`
+    )
+    const lbFilteredEvents = await apiCall(
+      'GET',
+      `/api/lb/events?minutes=60&alias=${encodeURIComponent(lbAlias)}`
+    )
+    check('alias 过滤：实况只返回目标别名，事件也只含该别名', () => {
+      assert.equal(lbFiltered.body.aliases.length, 1)
+      assert.equal(lbFiltered.body.aliases[0].alias, lbAlias)
+      assert.ok(lbFilteredEvents.body.events.length >= 2)
+      assert.ok(lbFilteredEvents.body.events.every((e) => e.alias === lbAlias))
+      assert.ok(
+        !lbFilteredEvents.body.events.some((e) => e.alias === quotaAlias),
+        '过滤后仍混入了其它别名的事件'
+      )
+    })
+
+    // 清理本轮渠道（级联删除账户与映射）
+    const lbClean1 = await apiCall('DELETE', `/api/channels/${lbChannelId}`)
+    const lbClean2 = await apiCall('DELETE', `/api/channels/${quotaChannelId}`)
+    check('LB 实况：清理测试渠道', () => {
+      assert.equal(lbClean1.status, 200)
+      assert.equal(lbClean2.status, 200)
     })
 
     // ---------------------------------------------------------- 清理

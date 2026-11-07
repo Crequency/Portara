@@ -721,5 +721,38 @@ export const migrations: { id: string; sql: string }[] = [
        where role = 'admin'
       on conflict (user_id) do update set plan_id = excluded.plan_id, updated_at = now();
     `
+  },
+  {
+    id: '026_lb_events',
+    sql: `
+      -- 负载均衡实况：故障转移事件流水。
+      --
+      -- 只记录**失败 / 转移**（attempt_failed / failover_success / quota_cooldown），
+      -- 首击成功不写 —— 否则每条正常请求都要多一次插入，热路径写入放大。
+      --
+      -- 名称为快照（channel_name / account_name / prev_account_name）：
+      -- 渠道或账户被删除后，历史事件仍然可读；id 上的外键用于其它场景的关联，
+      -- on delete set null 保证删除不阻塞事件表。
+      create table if not exists lb_events (
+        id bigserial primary key,
+        ts timestamptz not null default now(),
+        request_id text not null default '',
+        alias text not null default '',
+        session_hash text not null default '',
+        channel_id uuid references channels(id) on delete set null,
+        channel_name text not null default '',
+        account_id uuid references channel_accounts(id) on delete set null,
+        account_name text not null default '',
+        prev_account_id uuid,
+        prev_account_name text not null default '',
+        attempt int not null default 0,
+        outcome text not null,
+        status_code int,
+        reason text not null default '',
+        latency_ms int
+      );
+      create index if not exists idx_lb_events_ts on lb_events (ts desc);
+      create index if not exists idx_lb_events_alias_ts on lb_events (alias, ts desc);
+    `
   }
 ]
