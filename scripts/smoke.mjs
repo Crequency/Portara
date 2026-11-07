@@ -1921,6 +1921,214 @@ async function main() {
       )
     })
 
+    // ---------------------------------------------------------- 租户隔离
+    /*
+     * 客户可以开 operator 账号：日志 / 统计必须只看到自己名下 Key 的数据，
+     * 成本、售价、客户端 IP、会话哈希与管理面接口一律不可见。
+     * 这里用两条不同 Key 的请求做正反面对照。
+     */
+    section('⑭·租户隔离：operator 只能看到自己的日志与统计')
+
+    // 操作员也需要一个可用套餐，否则 /v1 会因「未绑套餐」402
+    const opBillingBefore = await apiCall('GET', '/api/billing/me', undefined, {
+      cookie: operatorCookie
+    })
+    const opBillingDelta = Number((100 - (opBillingBefore.body?.balance ?? 0)).toFixed(6))
+    await apiCall('PATCH', '/api/billing/users/' + operatorUser.id, {
+      planId: baselineStandard.id,
+      ...(opBillingDelta !== 0
+        ? { adjust: { delta: opBillingDelta, reason: 'smoke-tenant-bootstrap' } }
+        : {})
+    })
+
+    const tenantOpKey = operatorOwnKey.body.key
+    const tenantAdminChat = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '租户-管理员' }] },
+      keyFull
+    )
+    const tenantOpChat = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '租户-操作员' }] },
+      tenantOpKey
+    )
+    check('租户：管理员与操作员的两条请求都成功', () => {
+      assert.equal(tenantAdminChat.status, 200)
+      assert.equal(tenantOpChat.status, 200)
+    })
+
+    await sleep(700)
+
+    const tenantOpLogs = await apiCall('GET', '/api/logs?limit=200', undefined, {
+      cookie: operatorCookie
+    })
+    const tenantOpRows = tenantOpLogs.body?.logs ?? []
+    const tenantAdminLogs = await apiCall('GET', '/api/logs?limit=200')
+    const tenantAdminRows = tenantAdminLogs.body?.logs ?? []
+
+    check('租户：操作员日志只含自己 Key 的请求', () => {
+      assert.equal(tenantOpLogs.status, 200)
+      assert.ok(tenantOpRows.length > 0, '操作员看不到自己的请求')
+      const foreign = tenantOpRows.filter((l) => l.apiKeyName !== 'smoke-op-key-' + RUN)
+      assert.equal(
+        foreign.length,
+        0,
+        '混入了他人日志：' + JSON.stringify(foreign.map((l) => l.apiKeyName))
+      )
+    })
+
+    const tenantOpLog = tenantOpRows[0]
+    check('租户：操作员日志 DTO 不含成本 / 售价 / 客户端 IP / 会话哈希', () => {
+      assert.ok(tenantOpLog, '缺少操作员日志')
+      for (const field of [
+        'costMoney',
+        'costCurrency',
+        'sellMoney',
+        'aliasRateId',
+        'rateId',
+        'billingPlanId',
+        'clientIp',
+        'sessionHash'
+      ]) {
+        assert.ok(!(field in tenantOpLog), '不应出现字段 ' + field)
+      }
+    })
+    check('租户：操作员日志仍保留计费结果 / 状态 / token / 时间', () => {
+      assert.equal(typeof tenantOpLog.billedAmount, 'number')
+      assert.equal(typeof tenantOpLog.billingUnit, 'string')
+      assert.equal(typeof tenantOpLog.statusCode, 'number')
+      assert.equal(typeof tenantOpLog.totalTokens, 'number')
+      assert.ok(tenantOpLog.ts)
+    })
+
+    check('租户回归：管理员日志仍能看到全站（含操作员与自己）', () => {
+      const names = new Set(tenantAdminRows.map((l) => l.apiKeyName))
+      assert.ok(names.has('smoke-op-key-' + RUN), '管理员看不到操作员日志')
+      assert.ok(names.has('smoke-key-' + RUN), '管理员看不到自己的日志')
+    })
+    const tenantAdminLog = tenantAdminRows.find((l) => l.apiKeyName === 'smoke-key-' + RUN)
+    check('租户回归：管理员日志仍保留成本与客户端字段', () => {
+      assert.ok(tenantAdminLog, '缺少管理员日志')
+      assert.equal(typeof tenantAdminLog.costMoney, 'number')
+      assert.equal(typeof tenantAdminLog.costCurrency, 'string')
+      assert.equal(typeof tenantAdminLog.sellMoney, 'number')
+      assert.equal(typeof tenantAdminLog.clientIp, 'string')
+      assert.ok('sessionHash' in tenantAdminLog)
+    })
+
+    const tenantOpOverview = await apiCall(
+      'GET',
+      '/api/stats/overview?range=today&mine=0',
+      undefined,
+      { cookie: operatorCookie }
+    )
+    const tenantAdminOverview = await apiCall('GET', '/api/stats/overview?range=today')
+    check('租户：操作员 overview?mine=0 仍强制只统计自己', () => {
+      assert.equal(tenantOpOverview.status, 200)
+      assert.equal(tenantOpOverview.body.totals.requests, tenantOpRows.length)
+      assert.ok(
+        tenantAdminOverview.body.totals.requests > tenantOpOverview.body.totals.requests,
+        '管理员全站请求数未大于操作员自己的请求数'
+      )
+    })
+    check('租户：操作员 overview resources 全为 0', () => {
+      assert.deepEqual(tenantOpOverview.body.resources, {
+        users: 0,
+        channels: 0,
+        activeChannels: 0,
+        keys: 0
+      })
+    })
+
+    const tenantOpSeries = await apiCall(
+      'GET',
+      '/api/stats/series?range=today&mine=0',
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('租户：操作员 series?mine=0 仍只统计自己', () => {
+      assert.equal(tenantOpSeries.status, 200)
+      assert.equal(sumSeriesRequests(tenantOpSeries.body.series), tenantOpRows.length)
+    })
+
+    const tenantOpHeatmap = await apiCall(
+      'GET',
+      '/api/stats/heatmap?range=today&mine=0',
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('租户：操作员 heatmap?mine=0 仍只统计自己', () => {
+      assert.equal(tenantOpHeatmap.status, 200)
+      assert.equal(sumCellRequests(tenantOpHeatmap.body.cells), tenantOpRows.length)
+    })
+
+    check('租户：操作员创建密钥时传入的 channelId 被忽略', () => {
+      assert.equal(operatorOwnKey.status, 201)
+      assert.equal(operatorOwnKey.body.apiKey.channelId, null)
+    })
+    const tenantChannelPatch = await apiCall(
+      'PATCH',
+      '/api/keys/' + operatorOwnKey.body.apiKey.id,
+      { channelId },
+      { cookie: operatorCookie }
+    )
+    check('租户：操作员改自己密钥的渠道绑定被忽略', () => {
+      assert.equal(tenantChannelPatch.status, 200)
+      assert.equal(tenantChannelPatch.body.apiKey.channelId, null)
+    })
+
+    const tenantOpChannels = await apiCall('GET', '/api/channels', undefined, {
+      cookie: operatorCookie
+    })
+    check('租户：操作员不可读渠道列表（403）', () =>
+      assert.equal(tenantOpChannels.status, 403)
+    )
+    const tenantOpChannelDetail = await apiCall(
+      'GET',
+      '/api/channels/' + channelId,
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('租户：操作员不可读渠道详情（403）', () =>
+      assert.equal(tenantOpChannelDetail.status, 403)
+    )
+    const tenantOpAccounts = await apiCall(
+      'GET',
+      '/api/channels/' + channelId + '/accounts',
+      undefined,
+      { cookie: operatorCookie }
+    )
+    check('租户：操作员不可读渠道账户（403）', () =>
+      assert.equal(tenantOpAccounts.status, 403)
+    )
+    const tenantOpUsers = await apiCall('GET', '/api/users', undefined, {
+      cookie: operatorCookie
+    })
+    check('租户：操作员不可读用户列表（403）', () =>
+      assert.equal(tenantOpUsers.status, 403)
+    )
+    const tenantOpUsage = await apiCall('GET', '/api/usage', undefined, {
+      cookie: operatorCookie
+    })
+    check('租户：操作员不可读管理面余额（403）', () =>
+      assert.equal(tenantOpUsage.status, 403)
+    )
+    const tenantOpModelRoutes = await apiCall('GET', '/api/model-routes', undefined, {
+      cookie: operatorCookie
+    })
+    check('租户：操作员不可读模型映射（403）', () =>
+      assert.equal(tenantOpModelRoutes.status, 403)
+    )
+
+    const tenantAdminChannels = await apiCall('GET', '/api/channels')
+    const tenantAdminUsers = await apiCall('GET', '/api/users')
+    const tenantAdminModelRoutes = await apiCall('GET', '/api/model-routes')
+    check('租户回归：管理员仍可读渠道 / 用户 / 模型映射', () => {
+      assert.equal(tenantAdminChannels.status, 200)
+      assert.equal(tenantAdminUsers.status, 200)
+      assert.equal(tenantAdminModelRoutes.status, 200)
+    })
+
     // ---------------------------------------------------------- 模型映射
     section('⑮ 模型映射：别名 → 上游模型')
 

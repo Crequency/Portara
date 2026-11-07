@@ -467,18 +467,25 @@ export interface RequestLog {
   source: string
   latencyMs: number
   ttftMs: number | null
-  clientIp: string
+  /**
+   * 管理面字段：操作员的响应里**不存在**这些键（不是 null / 0）。
+   * 前端据此隐藏列，避免把缺失值误显示成 0。
+   */
+  clientIp?: string
   /** 会话键哈希前 8 位（会话亲和排查用）；空串 = 本次没有会话键 */
-  sessionHash: string
+  sessionHash?: string
   /** 计费落地（迁移 022）：成本始终是渠道货币口径，扣费跟随套餐单位 */
-  billingPlanId: string | null
-  costMoney: number
-  costCurrency: string
+  billingPlanId?: string | null
+  costMoney?: number
+  costCurrency?: string
   billedAmount: number
   billingUnit: BillingUnit | ''
-  rateId: string | null
+  rateId?: string | null
+  /** 对外售价与命中的别名费率（仅管理员可见） */
+  sellMoney?: number
+  aliasRateId?: string | null
   /** 结算幂等标记；非空 = 已结过账 */
-  billingChargedAt: string | null
+  billingChargedAt?: string | null
   error: string
 }
 

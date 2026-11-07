@@ -6,9 +6,12 @@ import { formatLatency, formatNumber, formatTime } from '../format'
 import { useI18n } from '../i18n'
 import { toast } from '../toast'
 
-defineProps<{ user?: User }>()
+const props = defineProps<{ user?: User }>()
 
 const { t } = useI18n()
+
+/** 成本 / 客户端 IP / 会话哈希是管理面字段；操作员只看到自己的流量 */
+const isAdmin = computed(() => props.user?.role === 'admin')
 
 const logs = ref<RequestLog[]>([])
 const loading = ref(true)
@@ -69,8 +72,13 @@ onMounted(load)
   <!-- fill-view：卡片撑满内容区，表格在内部滚动、表头吸顶、分页常驻底部 -->
   <div class="card fill-view">
     <div class="card-head">
-      <div class="card-title">
-        {{ t('logs.title') }} · {{ t('logs.count', { n: formatNumber(total) }) }}
+      <div>
+        <div class="card-title">
+          {{ t('logs.title') }} · {{ t('logs.count', { n: formatNumber(total) }) }}
+        </div>
+        <div v-if="!isAdmin" class="dim" style="font-size: 12px">
+          {{ t('logs.tenantHint') }}
+        </div>
       </div>
       <button class="btn btn-sm" @click="load">{{ t('common.refresh') }}</button>
     </div>
@@ -99,8 +107,11 @@ onMounted(load)
             <th>{{ t('logs.status') }}</th>
             <th>{{ t('logs.tokens') }}</th>
             <th>{{ t('logs.timing') }}</th>
-            <th>{{ t('logs.ip') }}</th>
-            <th :title="t('logs.sessionHint')">{{ t('logs.session') }}</th>
+            <!-- 来源 IP / 会话哈希只属于管理面；操作员的 DTO 里没有这两个字段 -->
+            <template v-if="isAdmin">
+              <th>{{ t('logs.ip') }}</th>
+              <th :title="t('logs.sessionHint')">{{ t('logs.session') }}</th>
+            </template>
           </tr>
         </thead>
         <tbody>
@@ -132,15 +143,19 @@ onMounted(load)
                 {{ log.ttftMs === null ? '—' : formatLatency(log.ttftMs) }} /
                 {{ formatLatency(log.latencyMs) }}
               </td>
-              <td class="mono dim">{{ log.clientIp }}</td>
-              <!--
-                会话哈希（前 8 位）：用来核对「同一会话是不是一直落在同一渠道」。
-                空 = 本次请求没有会话键（未启用亲和）。
-              -->
-              <td class="mono dim">{{ log.sessionHash || '—' }}</td>
+              <template v-if="isAdmin">
+                <td class="mono dim">{{ log.clientIp ?? '—' }}</td>
+                <!--
+                  会话哈希（前 8 位）：用来核对「同一会话是不是一直落在同一渠道」。
+                  空 = 本次请求没有会话键（未启用亲和）。
+                -->
+                <td class="mono dim">{{ log.sessionHash || '—' }}</td>
+              </template>
             </tr>
             <tr v-if="log.error">
-              <td colspan="10" class="err-text" style="padding-top: 0">↳ {{ log.error }}</td>
+              <td :colspan="isAdmin ? 10 : 8" class="err-text" style="padding-top: 0">
+                ↳ {{ log.error }}
+              </td>
             </tr>
           </template>
         </tbody>

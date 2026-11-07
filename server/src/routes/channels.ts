@@ -365,7 +365,7 @@ function maskOfAccount(account: { key_cipher: string } | null): string {
   return key ? maskSecret(key) : ''
 }
 
-channelRoutes.get('/', async (c) => {
+channelRoutes.get('/', requireAdmin, async (c) => {
   const rows = await query<ChannelRow>(
     'select * from channels order by priority asc, name asc'
   )
@@ -378,8 +378,8 @@ channelRoutes.get('/', async (c) => {
   })
 })
 
-/** 单个渠道详情（供渠道详情子页面使用） */
-channelRoutes.get('/:id', async (c) => {
+/** 单个渠道详情（供渠道详情子页面使用；管理面，仅管理员） */
+channelRoutes.get('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')
@@ -605,8 +605,8 @@ channelRoutes.get('/:id/usage', requireAdmin, async (c) => {
   return c.json(snapshot)
 })
 
-/** 连通性测试：拉取模型列表，并把最近一次结果（延迟/成败）落库供面板展示 */
-channelRoutes.post('/:id/test', async (c) => {
+/** 连通性测试：拉取模型列表，并把最近一次结果（延迟/成败）落库供面板展示（管理面，仅管理员） */
+channelRoutes.post('/:id/test', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
   if (!ch) throw notFound('渠道不存在')

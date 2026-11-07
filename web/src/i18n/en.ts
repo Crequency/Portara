@@ -555,6 +555,7 @@ export const en = {
   },
   logs: {
     sub: 'Metadata for every forwarded request (no bodies)',
+    tenantHint: 'Showing only requests from keys you own; cost and client details are admin-only',
     title: 'Request logs',
     count: '{n} records',
     allStatus: 'All statuses',

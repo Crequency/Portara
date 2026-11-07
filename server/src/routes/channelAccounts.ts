@@ -73,7 +73,7 @@ function assertAdapter(adapter: string | undefined): void {
   if (adapter && !getUsageAdapter(adapter)) throw badRequest(`未知的余额适配器「${adapter}」`)
 }
 
-channelAccountRoutes.get('/:id/accounts', async (c) => {
+channelAccountRoutes.get('/:id/accounts', requireAdmin, async (c) => {
   const channelId = uuid.parse(c.req.param('id'))
   await channelOf(channelId)
   const rows = await listAccounts(channelId)

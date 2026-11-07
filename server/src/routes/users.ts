@@ -26,7 +26,8 @@ const updateSchema = z.object({
 
 userRoutes.use('*', requireAuth)
 
-userRoutes.get('/', async (c) => {
+// 用户管理完全是管理面：列表、创建、改角色/状态、删除都只有管理员能做
+userRoutes.get('/', requireAdmin, async (c) => {
   const rows = await query<UserRow>('select * from users order by created_at asc')
   return c.json({ users: rows.map(toUserDto) })
 })

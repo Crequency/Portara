@@ -125,7 +125,7 @@ retryable status codes move a request to the next target.
 | `GET /v1/usage` | Balance and usage snapshots for the calling key |
 | `GET /healthz` | Liveness of the process |
 | `GET /readyz` | Readiness, including PostgreSQL and Redis |
-| `/api/*` | Admin control plane used by the console |
+| `/api/*` | Control plane used by the console; management endpoints are admin-only, operator accounts can only read their own keys, logs and statistics |
 
 Other `/v1/*` paths pass through the same authentication, rate limiting and accounting.
 
@@ -133,6 +133,7 @@ Other `/v1/*` paths pass through the same authentication, rate limiting and acco
 
 - **Envelope encryption** — channel and account credentials are sealed with AES-256-GCM under a master key supplied through `PORTARA_MASTER_KEY`.
 - **Hashed and encrypted client keys** — authentication uses a SHA-256 hash, while a separate sealed copy lets an administrator reveal a key on demand; every reveal is audited.
+- **Tenant isolation** — operator accounts see only requests produced by their own keys; cost, sell price, client IP, session hashes, channels, users and model mappings stay admin-only.
 - **Fail-closed audit** — an operation that cannot be written to the audit log fails instead of proceeding silently.
 - **Short-lived tokens** — access tokens are stateless JWTs measured in minutes; long sessions ride revocable, rotating refresh tokens.
 - **Additive migrations only** — published migrations are never edited and corrections always arrive as new ones.

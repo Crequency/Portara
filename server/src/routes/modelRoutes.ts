@@ -55,7 +55,7 @@ async function assertChannel(channelId: string): Promise<void> {
 
 // ---------------------------------------------------------------- 查询
 
-modelRouteRoutes.get('/', async (c) => {
+modelRouteRoutes.get('/', requireAdmin, async (c) => {
   const channelId = c.req.query('channelId')
   if (channelId && UUID_RE.test(channelId)) {
     const rows = await query<ModelRouteRow>(

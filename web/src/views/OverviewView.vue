@@ -732,7 +732,8 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
       <div class="card-head">
         <div class="row row-wrap" style="gap: 10px; align-items: baseline; min-width: 0">
           <div class="card-title">{{ t('overview.trend') }}</div>
-          <span class="dim" style="font-size: 12px">
+          <!-- 资源规模（渠道 / 密钥 / 用户数）只属于管理面；操作员不显示 -->
+          <span v-if="isAdmin" class="dim" style="font-size: 12px">
             {{
               t('overview.resources', {
                 active: formatNumber(stats?.resources.activeChannels),

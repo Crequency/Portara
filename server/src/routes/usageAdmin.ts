@@ -14,9 +14,12 @@ import { USAGE_ADAPTERS } from '../services/usage.js'
 export const usageAdminRoutes = new Hono()
 
 usageAdminRoutes.use('*', requireAuth)
+// 余额 / 用量管理面（自助余额走 /api/billing/me 与 /v1/usage）
+// 注意：本路由挂在 /api 下，不能用 use('*', requireAdmin) —— 那会拦到同前缀的其它路由
+
 
 /** 适配器清单（供渠道弹窗的下拉使用；含提示文案） */
-usageAdminRoutes.get('/usage/adapters', async (c) => {
+usageAdminRoutes.get('/usage/adapters', requireAdmin, async (c) => {
   return c.json({
     adapters: USAGE_ADAPTERS.map((a) => ({
       id: a.id,
@@ -28,7 +31,7 @@ usageAdminRoutes.get('/usage/adapters', async (c) => {
 })
 
 /** 全部已配置适配器的渠道快照（余额页用） */
-usageAdminRoutes.get('/usage', async (c) => {
+usageAdminRoutes.get('/usage', requireAdmin, async (c) => {
   const ids = await listUsageChannelIds()
   const force = c.req.query('refresh') === '1'
   return c.json({

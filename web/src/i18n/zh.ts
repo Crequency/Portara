@@ -555,6 +555,7 @@ export const zh = {
   },
   logs: {
     sub: '每一次转发的元数据（不含正文）',
+    tenantHint: '仅显示你名下密钥产生的请求；成本与客户端信息仅管理员可见',
     title: '请求日志',
     count: '{n} 条',
     allStatus: '全部状态',

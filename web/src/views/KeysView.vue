@@ -69,19 +69,25 @@ const channelName = computed(() => {
 async function load(): Promise<void> {
   loading.value = true
   try {
-    const [k, c] = await Promise.all([
-      api.get<{ keys: ApiKey[] }>('/api/keys'),
-      api.get<{ channels: Channel[] }>('/api/channels')
-    ])
+    const k = await api.get<{ keys: ApiKey[] }>('/api/keys')
     keys.value = k.keys
-    channels.value = c.channels
 
+    /*
+     * 渠道 / 用户列表是管理面数据（非管理员拿到 403）：操作员不请求，
+     * 渠道选择器与「绑定渠道」列也就不会以空列表的形式误显示。
+     */
+    channels.value = []
+    users.value = []
     if (isAdmin()) {
       try {
-        const u = await api.get<{ users: User[] }>('/api/users')
+        const [c, u] = await Promise.all([
+          api.get<{ channels: Channel[] }>('/api/channels'),
+          api.get<{ users: User[] }>('/api/users')
+        ])
+        channels.value = c.channels
         users.value = u.users
       } catch {
-        users.value = []
+        /* 管理面辅助数据拿不到不影响密钥列表本身 */
       }
     }
   } catch {
@@ -95,6 +101,11 @@ async function load(): Promise<void> {
 const keyDefaults = ref<{ defaultKeyRpmLimit: number } | null>(null)
 
 async function loadKeyDefaults(): Promise<void> {
+  // /api/settings 仅管理员可读；操作员直接用表单默认值
+  if (!isAdmin()) {
+    keyDefaults.value = null
+    return
+  }
   try {
     const res = await api.get<{ settings: { defaultKeyRpmLimit: number } }>('/api/settings')
     keyDefaults.value = res.settings
@@ -146,7 +157,8 @@ async function submit(): Promise<void> {
     const body = {
       name: form.name.trim(),
       userId: isAdmin() ? form.userId || null : null,
-      channelId: form.channelId || null,
+      // 渠道绑定是管理面配置：操作员不传（后端也会忽略）
+      channelId: isAdmin() ? form.channelId || null : undefined,
       modelAllow: parseList(form.modelAllowText),
       usageAllow: form.usageAllow,
       usageRefresh: form.usageRefresh,
@@ -282,7 +294,8 @@ onMounted(() => {
               <th>{{ t('common.name') }}</th>
               <th>{{ t('keys.owner') }}</th>
               <th>{{ t('keys.prefix') }}</th>
-              <th>{{ t('keys.boundChannel') }}</th>
+              <!-- 渠道绑定由管理员配置；操作员既看不到渠道列表也不应改绑定 -->
+              <th v-if="isAdmin()">{{ t('keys.boundChannel') }}</th>
               <th>{{ t('keys.rateLimit') }}</th>
               <th>{{ t('keys.quota') }}</th>
               <th>{{ t('keys.lastUsed') }}</th>
@@ -309,7 +322,7 @@ onMounted(() => {
                 </span>
               </td>
               <td class="mono">{{ k.keyPrefix }}…</td>
-              <td>{{ channelName(k.channelId) }}</td>
+              <td v-if="isAdmin()">{{ channelName(k.channelId) }}</td>
               <td class="nowrap">
                 {{ k.rpmLimit === 0 ? t('keys.unlimited') : t('keys.perMin', { n: k.rpmLimit }) }}
               </td>
@@ -441,7 +454,7 @@ onMounted(() => {
           <span class="hint">{{ t('keys.ownerHint') }}</span>
         </div>
 
-        <div class="field">
+        <div v-if="isAdmin()" class="field">
           <label>{{ t('keys.boundChannel') }}</label>
           <PSelect v-model="form.channelId" :options="channelOptions" />
           <span class="hint">{{ t('keys.boundHint') }}</span>
@@ -470,7 +483,8 @@ onMounted(() => {
           <span class="hint">{{ t('usage.canRefreshHint') }}</span>
         </div>
 
-        <div v-if="form.usageAllow" class="field">
+        <!-- 可见渠道列表同样来自管理面接口；操作员只保留默认（空 = 全部）语义 -->
+        <div v-if="form.usageAllow && isAdmin()" class="field">
           <div class="row-between">
             <label>{{ t('usage.visibleChannels') }}</label>
             <div class="row">

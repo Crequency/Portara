@@ -83,10 +83,10 @@ const isChannelDetail = computed(
 
 const NAV = [
   { id: 'overview', icon: 'M3 12h4l3 8 4-16 3 8h4', adminOnly: false },
-  { id: 'channels', icon: 'M4 7h16M4 12h16M4 17h10', adminOnly: false },
+  { id: 'channels', icon: 'M4 7h16M4 12h16M4 17h10', adminOnly: true },
   { id: 'keys', icon: 'M14 7a4 4 0 1 0-3.5 4L4 17v3h3v-2h2v-2h2l1.5-1.5', adminOnly: false },
   { id: 'chat', icon: 'M4 5h16v11H8l-4 4z', adminOnly: true },
-  { id: 'users', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: false },
+  { id: 'users', icon: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21c0-3.3 3.6-5 8-5s8 1.7 8 5', adminOnly: true },
   { id: 'logs', icon: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', adminOnly: false },
   { id: 'usage', icon: 'M4 19V9M9 19V5M14 19v-7M19 19v-4', adminOnly: true },
   // 计费管理：套餐 / 费率 / 限额模板 / 用户余额，仅管理员

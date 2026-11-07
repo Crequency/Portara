@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { z } from 'zod'
 import { query } from '../db.js'
 import { badRequest, parseQuery } from '../lib/http.js'
@@ -22,6 +23,17 @@ const listQuery = z.object({
 const uuidLike =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/**
+ * 统计 / 日志的可见范围：
+ *   - 管理员默认全站；显式 ?mine=1 时才只看自己；
+ *   - 非管理员**强制**只看自己，忽略 mine=0 —— 租户隔离不能靠前端参数放宽。
+ */
+function scopedUserId(c: Context, mine?: '0' | '1'): string | null {
+  const user = c.get('user')
+  if (user.role !== 'admin') return user.id
+  return mine === '1' ? user.id : null
+}
+
 logRoutes.get('/logs', async (c) => {
   const q = parseQuery(c, listQuery)
 
@@ -43,6 +55,15 @@ logRoutes.get('/logs', async (c) => {
   if (q.status === 'ok') where.push('status_code < 400')
   if (q.status === 'error') where.push('status_code >= 400')
 
+  // 非管理员：强制只查自己名下 Key 产生的日志（管理员保持全站）
+  const mineUserId = scopedUserId(c)
+  if (mineUserId) {
+    params.push(mineUserId)
+    where.push(
+      `api_key_id in (select id from api_keys where user_id = $${params.length})`
+    )
+  }
+
   const clause = where.length > 0 ? `where ${where.join(' and ')}` : ''
 
   const countRows = await query<{ count: string }>(
@@ -58,44 +79,57 @@ logRoutes.get('/logs', async (c) => {
     params
   )
 
+  const isAdmin = c.get('user').role === 'admin'
+
   return c.json({
     total: Number(countRows[0]?.count ?? '0'),
-    logs: rows.map((r) => ({
-      id: r.id,
-      ts: r.ts,
-      apiKeyName: r.api_key_name,
-      channelId: r.channel_id,
-      channelName: r.channel_name,
-      // 哪个上游账户服务的 —— 排查"是不是某个号额度打爆了"的关键字段
-      accountId: r.account_id,
-      accountName: r.account_name,
-      model: r.model,
-      upstreamModel: r.upstream_model,
-      path: r.path,
-      statusCode: r.status_code,
-      promptTokens: r.prompt_tokens,
-      completionTokens: r.completion_tokens,
-      totalTokens: r.total_tokens,
-      estimated: r.estimated,
-      source: r.source,
-      latencyMs: r.latency_ms,
-      ttftMs: r.ttft_ms,
-      clientIp: r.client_ip,
-      // 会话键哈希（前 8 位）—— 用来核对「同一会话是否落在同一渠道」
-      sessionHash: r.session_hash,
-      // 计费字段：单位随套餐，costMoney 永远是渠道货币口径的成本
-      billingPlanId: r.billing_plan_id,
-      costMoney: Number(r.cost_money ?? 0),
-      costCurrency: r.cost_currency ?? '',
-      billedAmount: Number(r.billed_amount ?? 0),
-      // 对外售价（别名费率算出来的）；未配别名费率时等于 costMoney
-      sellMoney: Number(r.sell_money ?? 0),
-      aliasRateId: r.alias_rate_id,
-      billingUnit: r.billing_unit ?? '',
-      rateId: r.rate_id,
-      billingChargedAt: r.billing_charged_at,
-      error: r.error
-    }))
+    logs: rows.map((r) => {
+      const dto: Record<string, unknown> = {
+        id: r.id,
+        ts: r.ts,
+        apiKeyName: r.api_key_name,
+        channelId: r.channel_id,
+        channelName: r.channel_name,
+        // 哪个上游账户服务的 —— 排查"是不是某个号额度打爆了"的关键字段
+        accountId: r.account_id,
+        accountName: r.account_name,
+        model: r.model,
+        upstreamModel: r.upstream_model,
+        path: r.path,
+        statusCode: r.status_code,
+        promptTokens: r.prompt_tokens,
+        completionTokens: r.completion_tokens,
+        totalTokens: r.total_tokens,
+        estimated: r.estimated,
+        source: r.source,
+        latencyMs: r.latency_ms,
+        ttftMs: r.ttft_ms,
+        // 计费结果字段：计价单位与扣费金额保留，成本/售价/费率只给管理员
+        billedAmount: Number(r.billed_amount ?? 0),
+        billingUnit: r.billing_unit ?? '',
+        billingChargedAt: r.billing_charged_at,
+        error: r.error
+      }
+
+      /*
+       * 成本 / 售价 / 客户端 IP / 会话哈希 / 计费依据只属于管理面。
+       * 非管理员的响应里**直接缺省这些字段**（不是 0 / 空串），
+       * 前端按「字段不存在」隐藏，不会把 0 当成真实成本展示。
+       */
+      if (isAdmin) {
+        Object.assign(dto, {
+          clientIp: r.client_ip,
+          sessionHash: r.session_hash,
+          billingPlanId: r.billing_plan_id,
+          costMoney: Number(r.cost_money ?? 0),
+          costCurrency: r.cost_currency ?? '',
+          sellMoney: Number(r.sell_money ?? 0),
+          aliasRateId: r.alias_rate_id,
+          rateId: r.rate_id
+        })
+      }
+      return dto
+    })
   })
 })
 
@@ -188,7 +222,9 @@ logRoutes.get('/stats/overview', async (c) => {
   const tz = await resolveQueryTimeZone(q.tz)
   const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
-  const params = [from, to, channelFilter]
+  // 非管理员强制只看自己（忽略 mine=0）；管理员默认全站
+  const mineUserId = scopedUserId(c, q.mine)
+  const params = [from, to, channelFilter, mineUserId]
 
   const totalsRows = await query<Record<string, string>>(
     `select
@@ -203,7 +239,10 @@ logRoutes.get('/stats/overview', async (c) => {
        coalesce(percentile_cont(0.95) within group (order by latency_ms), 0)::text as p95_latency
      from request_logs
      where ts >= $1 and ts <= $2
-       and ($3::uuid is null or channel_id = $3)`,
+       and ($3::uuid is null or channel_id = $3)
+       and ($4::uuid is null or api_key_id in (
+             select id from api_keys where user_id = $4
+           ))`,
     params
   )
   const t = totalsRows[0] ?? {}
@@ -225,21 +264,27 @@ logRoutes.get('/stats/overview', async (c) => {
            from request_logs
           where ts >= $1 and ts <= $2
             and ($3::uuid is null or channel_id = $3)
+            and ($5::uuid is null or api_key_id in (
+                  select id from api_keys where user_id = $5
+                ))
           group by 1
          having coalesce(sum(total_tokens), 0) > 0
        ) s`,
-    [from, to, channelFilter, tz]
+    [from, to, channelFilter, tz, mineUserId]
   )
   const activeDays = num(activeDaysRows[0]?.active_days)
 
-  const resourceRows = await query<Record<string, string>>(`
-    select
-      (select count(*) from users)::text                                   as users,
-      (select count(*) from channels)::text                                as channels,
-      (select count(*) from channels where status = 'active')::text         as active_channels,
-      (select count(*) from api_keys where status = 'active')::text         as keys
-  `)
-  const r = resourceRows[0] ?? {}
+  const isAdmin = c.get('user').role === 'admin'
+  // 资源规模（用户 / 渠道 / 密钥数）只属于管理面：非管理员一律 0，前端也不渲染
+  const r = isAdmin
+    ? (await query<Record<string, string>>(`
+        select
+          (select count(*) from users)::text                                   as users,
+          (select count(*) from channels)::text                                as channels,
+          (select count(*) from channels where status = 'active')::text         as active_channels,
+          (select count(*) from api_keys where status = 'active')::text         as keys
+      `))[0] ?? {}
+    : {}
 
   /**
    * Top 榜单：三种 kind 各取前 5。
@@ -259,12 +304,15 @@ logRoutes.get('/stats/overview', async (c) => {
          from (
            select 'model'   as kind, model          as name, total_tokens from request_logs
             where ts >= $1 and ts <= $2 and model <> '' and ($3::uuid is null or channel_id = $3)
+              and ($4::uuid is null or api_key_id in (select id from api_keys where user_id = $4))
            union all
            select 'channel' as kind, channel_name   as name, total_tokens from request_logs
             where ts >= $1 and ts <= $2 and channel_name <> '' and ($3::uuid is null or channel_id = $3)
+              and ($4::uuid is null or api_key_id in (select id from api_keys where user_id = $4))
            union all
            select 'key'     as kind, api_key_name   as name, total_tokens from request_logs
             where ts >= $1 and ts <= $2 and api_key_name <> '' and ($3::uuid is null or channel_id = $3)
+              and ($4::uuid is null or api_key_id in (select id from api_keys where user_id = $4))
          ) x
         group by kind, name
      ),
@@ -364,16 +412,14 @@ logRoutes.get('/stats/series', async (c) => {
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
   /*
-   * 「只看自己」：个人资料页的用量趋势只统计当前用户名下 API Key 的流量。
-   *
-   * 用户 id 来自 requireAuth 写入的 c.get('user') —— 本路由挂在
-   * `logRoutes.use('*', requireAuth)` 之下，未登录在中间件层就 401 了，
-   * 走到这里一定已登录。mine 不传（或 '0'）时为 null，SQL 退回全局口径。
+   * 可见范围来自 requireAuth 写入的 c.get('user')：
+   *   - 管理员默认全站，显式 mine=1 时才只看自己；
+   *   - 非管理员**强制**只看自己名下的 Key（传入 mine=0 也会被覆盖）。
    *
    * 过滤条件写成 `$n::uuid is null or ...`，这样参数个数与 SQL 形状
    * 不随 mine 变化 —— 两种口径走的是同一条查询，分桶逻辑零改动。
    */
-  const mineUserId = q.mine === '1' ? c.get('user').id : null
+  const mineUserId = scopedUserId(c, q.mine)
 
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
   const plan = resolveSeriesPlan(q.range, spanHours)
@@ -754,8 +800,8 @@ logRoutes.get('/stats/heatmap', async (c) => {
   const { from, to } = await resolveBounds(q.range, tz, q.from, q.to)
   const channelFilter = q.channelId && UUID_RE.test(q.channelId) ? q.channelId : null
 
-  /** 「只看自己」——口径与 /stats/series 完全一致（见那里的注释） */
-  const mineUserId = q.mine === '1' ? c.get('user').id : null
+  /** 可见范围与 /stats/series 完全一致：非管理员强制只看自己（见那里的注释） */
+  const mineUserId = scopedUserId(c, q.mine)
 
   const spanHours = (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000
   const fromDay = dayNumber(localDateParts(from, tz))

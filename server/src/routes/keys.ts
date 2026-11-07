@@ -101,7 +101,12 @@ keyRoutes.post('/', async (c) => {
   const actor = c.get('user')
   // 非管理员强制归属自己 —— 不允许替别人签发
   const ownerId = actor.role === 'admin' ? body.userId || actor.id : actor.id
-  await assertRefs(ownerId, body.channelId)
+  /*
+   * 渠道绑定属于管理面配置：非管理员即便传入 channelId 也**忽略**（不报错，
+   * 保持旧客户端兼容），落库为未绑定；管理员不受影响。
+   */
+  const channelId = actor.role === 'admin' ? body.channelId || null : null
+  await assertRefs(ownerId, channelId)
 
   const { key, prefix, hash } = generateApiKey()
 
@@ -117,7 +122,7 @@ keyRoutes.post('/', async (c) => {
       // 可解密副本，供管理员在面板上查看与复制（见 DECISIONS D-013）
       encryptSecret(key, env.masterKey),
       ownerId,
-      body.channelId || null,
+      channelId,
       body.modelAllow,
       body.rpmLimit,
       body.quotaTokens,
@@ -145,7 +150,17 @@ keyRoutes.patch('/:id', async (c) => {
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!current) throw notFound('密钥不存在')
   assertCanManage(c, current)
-  await assertRefs(null, body.channelId)
+  /*
+   * 非管理员不能改渠道绑定：传了也忽略，保留管理员原有绑定（通常为空）。
+   * 管理员沿用原语义：undefined = 不改，null/'' = 解绑。
+   */
+  const channelId =
+    c.get('user').role === 'admin'
+      ? body.channelId === undefined
+        ? current.channel_id
+        : body.channelId || null
+      : current.channel_id
+  await assertRefs(null, channelId)
 
   const row = await one<ApiKeyRow>(
     `update api_keys set
@@ -165,7 +180,7 @@ keyRoutes.patch('/:id', async (c) => {
       id,
       body.name ?? null,
       body.status ?? null,
-      body.channelId === undefined ? current.channel_id : body.channelId || null,
+      channelId,
       body.modelAllow ?? null,
       body.rpmLimit ?? null,
       body.quotaTokens ?? null,
