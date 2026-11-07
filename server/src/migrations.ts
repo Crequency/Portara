@@ -690,5 +690,36 @@ export const migrations: { id: string; sql: string }[] = [
               '免费套餐占位，绑定后仍需充值或由管理员授予额度')
       on conflict (name) do nothing;
     `
+  },
+  {
+    id: '025_billing_unlimited_plan',
+    sql: `
+      -- 内置 Infinity 套餐：不限额、不扣费，默认只绑定 admin。
+      --
+      --   unlimited = true  → precheckBilling 直接放行，不查余额 / 限额窗口 /
+      --                        不做 Redis 预留；settleRequestBilling 的扣费额为 0，
+      --                        但 cost_money / sell_money 仍写入 request_logs 供核算。
+      --   built_in = true   → 不允许在管理端删除（Free / Standard 一并标记）。
+      --
+      -- 幂等：add column if not exists / update by name / on conflict。
+      alter table billing_plans
+        add column if not exists unlimited boolean not null default false,
+        add column if not exists built_in  boolean not null default false;
+
+      update billing_plans set built_in = true where name in ('Free','Standard');
+
+      insert into billing_plans (name, unit, currency, credits_per_currency, unlimited, built_in, note)
+      values ('Infinity', 'money', 'USD', 100, true, true,
+              '内置无限套餐：不校验余额与限额，计费金额记 0')
+      on conflict (name) do update set unlimited = true, built_in = true;
+
+      -- admin 默认绑定 Infinity，但**保留现有余额**（只改 plan_id）。
+      -- 其它用户完全不动：迁移不替任何人做套餐决策。
+      insert into user_billing (user_id, plan_id, balance)
+      select id, (select id from billing_plans where name = 'Infinity'), 0
+        from users
+       where role = 'admin'
+      on conflict (user_id) do update set plan_id = excluded.plan_id, updated_at = now();
+    `
   }
 ]

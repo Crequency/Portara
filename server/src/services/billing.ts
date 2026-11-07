@@ -8,9 +8,10 @@ import {
   mergeRuleThresholds,
   pickBestRate,
   planAllowsBilling,
+  planIsUnlimited,
   round6,
   round8,
-  toBilledAmount,
+  settlementBilledAmount,
   windowExceeded,
   windowResetAt,
   windowStart,
@@ -126,6 +127,10 @@ export interface PlanRow {
   currency: string
   credits_per_currency: string | number
   status: 'active' | 'disabled'
+  /** 内置无限套餐：跳过余额 / 限额 / 预留，结算金额为 0 */
+  unlimited: boolean
+  /** 内置套餐（Infinity / Free / Standard）：不允许在管理端删除 */
+  built_in: boolean
   note: string
   created_at: string
   updated_at: string
@@ -221,6 +226,8 @@ export function planToDto(p: PlanRow) {
     currency: p.currency,
     creditsPerCurrency: Number(p.credits_per_currency),
     status: p.status,
+    unlimited: Boolean(p.unlimited),
+    builtIn: Boolean(p.built_in),
     note: p.note ?? '',
     createdAt: p.created_at,
     updatedAt: p.updated_at
@@ -233,7 +240,8 @@ export function planLikeOf(p: PlanRow): BillingPlanLike {
     name: p.name,
     unit: p.unit,
     currency: p.currency,
-    creditsPerCurrency: Number(p.credits_per_currency)
+    creditsPerCurrency: Number(p.credits_per_currency),
+    unlimited: Boolean(p.unlimited)
   }
 }
 
@@ -365,6 +373,16 @@ export async function loadBillingSummary(userId: string): Promise<{
       planDto: state.plan ? planToDto(state.plan) : null
     }
   }
+  // unlimited 套餐不受限额模板约束：窗口一律为空，前端据此显示「不限额」空态。
+  if (planIsUnlimited(state.plan)) {
+    return {
+      plan: state.plan,
+      balance: state.balance,
+      windows: [],
+      planDto: planToDto(state.plan)
+    }
+  }
+
   const rules = await loadAppliedRules(userId)
   const windows = await loadWindowUsage(userId, state.plan.unit, rules)
   return {
@@ -673,6 +691,8 @@ export async function invalidateUsersByTemplate(templateId: string): Promise<voi
 
 interface EligibilityOk {
   ok: true
+  /** 内置无限套餐：资格直接通过，后续跳过余额 / 窗口 / 预留 */
+  unlimited?: boolean
 }
 type Eligibility = EligibilityOk | PrecheckFail
 
@@ -699,6 +719,15 @@ async function checkBillingEligibility(userId: string): Promise<Eligibility> {
   // 未绑套餐 / 套餐停用 → 402 no_plan（免费也必须绑一个套餐，见迁移 024）
   if (!planAllowsBilling(state.plan)) {
     return { ok: false, code: 'no_plan', balance: state.balance }
+  }
+
+  /*
+   * 内置无限套餐：**直接通过**，不查余额、不查限额窗口，也不写资格缓存。
+   * 预留同样不参与（precheckBilling 返回 estimate=0），避免 Redis 里留下
+   * 永远不会被结算释放的预留键。
+   */
+  if (planIsUnlimited(state.plan)) {
+    return { ok: true, unlimited: true }
   }
 
   // 余额 <= 0：连 0 成本请求也不放行（保持改造前的语义）
@@ -877,6 +906,17 @@ export async function precheckBilling(
   if (!planAllowsBilling(state.plan)) {
     return { ok: false, code: 'no_plan', balance: state.balance }
   }
+
+  /*
+   * unlimited 套餐：预检短路。
+   *
+   * 不解析费率、不估算、不做预留 —— estimate=0 让调用方不会向 Redis 写入预留键；
+   * 余额为 0 / 负数也照样放行，这是 Infinity 的核心语义。
+   */
+  if (planIsUnlimited(state.plan)) {
+    return { ok: true, estimate: 0, reserved: 0, available: state.balance }
+  }
+
   if (state.balance <= 0) {
     return {
       ok: false,
@@ -1104,7 +1144,14 @@ export async function settleRequestBilling(args: SettleArgs): Promise<ChargeResu
   const totalTokens =
     args.totalTokens ?? Math.max(0, args.inputTokens) + Math.max(0, args.outputTokens)
   const plan = planLikeOf(state.plan)
-  const billed = toBilledAmount(sellMoney, plan, totalTokens)
+  /*
+   * unlimited 套餐：计费金额恒为 0。
+   *
+   * 仍然把 costMoney / sellMoney / plan / 单位交给 chargeBilling —— 它的 0 金额
+   * 分支会写 request_logs 的计费列并设置 billing_charged_at（幂等闸门），
+   * 但不写 balance_ledger、不动余额。这样管理员仍能按成本 / 售价核算。
+   */
+  const billed = settlementBilledAmount(plan, sellMoney, totalTokens)
 
   return chargeBilling(args.userId, {
     billedAmount: billed,

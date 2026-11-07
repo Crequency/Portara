@@ -89,6 +89,8 @@ const ledgerExpanded = ref(false)
 
 const plan = computed(() => billing.value?.plan ?? null)
 const hasPlan = computed(() => plan.value !== null)
+/** 内置无限套餐：余额与限额窗口都按「无限」展示 */
+const isUnlimited = computed(() => plan.value?.unlimited === true)
 const billingUnit = computed(() => billing.value?.unit || plan.value?.unit || '')
 const billingCurrency = computed(() => billing.value?.currency || plan.value?.currency || 'USD')
 
@@ -120,13 +122,15 @@ const planUnitText = computed(() => {
   return unitLabel(p.unit)
 })
 
-const balanceText = computed(() =>
-  billing.value ? formatUnitValue(billing.value.balance, billingUnit.value) : '—'
-)
+const balanceText = computed(() => {
+  if (!billing.value) return '—'
+  if (isUnlimited.value) return t('myBilling.unlimitedBalance')
+  return formatUnitValue(billing.value.balance, billingUnit.value)
+})
 
 /** 余额告警：后端按套餐单位换算好的布尔值，前端只负责展示 */
-const lowBalance = computed(() => billing.value?.lowBalance === true)
-const nearLimit = computed(() => billing.value?.nearLimit === true)
+const lowBalance = computed(() => !isUnlimited.value && billing.value?.lowBalance === true)
+const nearLimit = computed(() => !isUnlimited.value && billing.value?.nearLimit === true)
 
 function windowPercent(w: BillingWindowUsage): number {
   if (!Number.isFinite(w.limit) || w.limit <= 0) return 0
@@ -460,7 +464,12 @@ onMounted(() => {
           <div class="my-billing-summary">
             <div class="stat">
               <div class="stat-label">{{ t('myBilling.plan') }}</div>
-              <div class="stat-value my-plan-name">{{ plan?.name }}</div>
+              <div class="stat-value my-plan-name">
+                {{ plan?.name }}
+                <span v-if="isUnlimited" class="badge badge-info">
+                  {{ t('myBilling.unlimited') }}
+                </span>
+              </div>
               <div class="stat-hint">
                 {{ t('myBilling.unit') }}：{{ planUnitText }}
               </div>
@@ -489,7 +498,10 @@ onMounted(() => {
           </div>
 
           <div class="my-section-title">{{ t('myBilling.windows') }}</div>
-          <div v-if="windows.length === 0" class="dim my-empty-line">
+          <div v-if="isUnlimited" class="dim my-empty-line">
+            {{ t('myBilling.unlimitedWindows') }}
+          </div>
+          <div v-else-if="windows.length === 0" class="dim my-empty-line">
             {{ t('myBilling.noWindows') }}
           </div>
           <div v-else class="my-windows">

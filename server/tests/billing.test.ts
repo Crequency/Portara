@@ -12,7 +12,9 @@ import {
   mergeRuleThresholds,
   pickBestRate,
   planAllowsBilling,
+  planIsUnlimited,
   planSettlement,
+  settlementBilledAmount,
   rateSpecificity,
   round6,
   round8,
@@ -307,6 +309,50 @@ test('planAllowsBilling：未绑 / 停用套餐都视为 no_plan', () => {
   assert.equal(planAllowsBilling(undefined), false)
   assert.equal(planAllowsBilling({ status: 'disabled' }), false)
   assert.equal(planAllowsBilling({ status: 'active' }), true)
+})
+
+test('unlimited 套餐：预检短路（不查余额 / 限额）', () => {
+  // 预检命中 unlimited 后不再进入余额与窗口判定；纯函数只负责识别标记。
+  assert.equal(planIsUnlimited({ unlimited: true }), true)
+  assert.equal(planIsUnlimited({ unlimited: false }), false)
+  assert.equal(planIsUnlimited({}), false)
+  assert.equal(planIsUnlimited(null), false)
+  assert.equal(planIsUnlimited(undefined), false)
+})
+
+test('unlimited 套餐：结算金额恒为 0（成本 / 售价仍由 request_logs 记录）', () => {
+  const unlimitedMoney = {
+    unit: 'money' as const,
+    creditsPerCurrency: 100,
+    unlimited: true
+  }
+  assert.equal(settlementBilledAmount(unlimitedMoney, 12.345678, 999), 0)
+  assert.equal(
+    settlementBilledAmount(
+      { unit: 'credits', creditsPerCurrency: 100, unlimited: true },
+      2,
+      0
+    ),
+    0
+  )
+  assert.equal(
+    settlementBilledAmount(
+      { unit: 'tokens', creditsPerCurrency: 100, unlimited: true },
+      2,
+      2048
+    ),
+    0
+  )
+  // 非 unlimited 仍按原单位换算，证明短路只对 Infinity 生效
+  assert.equal(settlementBilledAmount({ ...unlimitedMoney, unlimited: false }, 2, 999), 2)
+  assert.equal(
+    settlementBilledAmount(
+      { unit: 'tokens', creditsPerCurrency: 100, unlimited: false },
+      2,
+      2048
+    ),
+    2048
+  )
 })
 
 test('isNearLimit：任一窗口 used/limit >= 0.9', () => {

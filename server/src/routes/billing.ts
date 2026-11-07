@@ -55,6 +55,8 @@ const planCreateSchema = z.object({
   currency: z.enum(['USD', 'CNY']).default('USD'),
   creditsPerCurrency: z.coerce.number().finite().positive().default(100),
   status: z.enum(['active', 'disabled']).default('active'),
+  /** 内置无限套餐标记：跳过余额 / 限额 / 预留，结算金额为 0 */
+  unlimited: z.boolean().default(false),
   note: z.string().max(500).default('')
 })
 /*
@@ -69,6 +71,7 @@ const planUpdateSchema = z.object({
   currency: z.enum(['USD', 'CNY']).optional(),
   creditsPerCurrency: z.coerce.number().finite().positive().optional(),
   status: z.enum(['active', 'disabled']).optional(),
+  unlimited: z.boolean().optional(),
   note: z.string().max(500).optional()
 })
 
@@ -201,21 +204,24 @@ billingRoutes.post('/plans', requireAdmin, async (c) => {
   if (exists) throw badRequest('套餐名已存在')
 
   const row = await one<PlanRow>(
-    `insert into billing_plans (name, unit, currency, credits_per_currency, status, note)
-     values ($1,$2,$3,$4,$5,$6) returning *`,
+    `insert into billing_plans
+       (name, unit, currency, credits_per_currency, status, unlimited, note)
+     values ($1,$2,$3,$4,$5,$6,$7) returning *`,
     [
       body.name,
       body.unit,
       body.currency,
       String(body.creditsPerCurrency),
       body.status,
+      body.unlimited,
       body.note
     ]
   )
   await recordAudit(c, 'billing.plan.create', { type: 'billing_plan', id: row!.id }, {
     name: row!.name,
     unit: row!.unit,
-    currency: row!.currency
+    currency: row!.currency,
+    unlimited: row!.unlimited
   })
   return c.json({ plan: planToDto(row!) }, 201)
 })
@@ -241,7 +247,8 @@ billingRoutes.patch('/plans/:id', requireAdmin, async (c) => {
        currency = coalesce($4, currency),
        credits_per_currency = coalesce($5::numeric, credits_per_currency),
        status = coalesce($6, status),
-       note = coalesce($7, note),
+       unlimited = coalesce($7::boolean, unlimited),
+       note = coalesce($8, note),
        updated_at = now()
      where id = $1
      returning *`,
@@ -252,6 +259,7 @@ billingRoutes.patch('/plans/:id', requireAdmin, async (c) => {
       body.currency ?? null,
       body.creditsPerCurrency === undefined ? null : String(body.creditsPerCurrency),
       body.status ?? null,
+      body.unlimited ?? null,
       body.note ?? null
     ]
   )
@@ -264,6 +272,10 @@ billingRoutes.delete('/plans/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const target = await one<PlanRow>('select * from billing_plans where id = $1', [id])
   if (!target) throw notFound('套餐不存在')
+  // 内置套餐由系统维护（Infinity / Free / Standard），删除会让语义与绑定关系失去锚点。
+  if (target.built_in) {
+    throw new ApiError(409, 'built_in_plan', '内置套餐不允许删除')
+  }
   // 先失效缓存再删：删除后 user_billing.plan_id 被置空，查不到绑定关系
   await invalidateUsersByPlan(id)
   await query('delete from billing_plans where id = $1', [id])

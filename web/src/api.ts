@@ -632,6 +632,10 @@ export interface BillingPlan {
   /** 1 货币单位兑换多少积分（仅 credits 单位有意义） */
   creditsPerCurrency: number
   status: 'active' | 'disabled'
+  /** 内置无限套餐：跳过余额 / 限额，扣费恒为 0（成本仍记日志） */
+  unlimited: boolean
+  /** 内置套餐（Infinity / Free / Standard）：不允许删除 */
+  builtIn: boolean
   note: string
   createdAt: string
   updatedAt: string

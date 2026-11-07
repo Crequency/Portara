@@ -28,6 +28,7 @@ import BillingAliasRateDialog from '../components/BillingAliasRateDialog.vue'
 import BillingRateDialog from '../components/BillingRateDialog.vue'
 import BillingUserDialog from '../components/BillingUserDialog.vue'
 import Modal from '../components/Modal.vue'
+import PCheckbox from '../components/PCheckbox.vue'
 import PSelect from '../components/PSelect.vue'
 import { toastError } from '../error'
 import { formatMoney, formatNumber, formatTime } from '../format'
@@ -111,6 +112,7 @@ const planForm = reactive({
   currency: 'USD' as 'USD' | 'CNY',
   creditsPerCurrency: '100',
   status: 'active' as 'active' | 'disabled',
+  unlimited: false,
   note: ''
 })
 
@@ -122,6 +124,7 @@ function openPlanDialog(plan?: BillingPlan): void {
     currency: plan?.currency ?? 'USD',
     creditsPerCurrency: String(plan?.creditsPerCurrency ?? 100),
     status: plan?.status ?? 'active',
+    unlimited: plan?.unlimited ?? false,
     note: plan?.note ?? ''
   })
   planDialogOpen.value = true
@@ -158,6 +161,7 @@ async function savePlan(): Promise<void> {
       currency: planForm.currency,
       creditsPerCurrency: Number.isFinite(credits) && credits > 0 ? credits : 100,
       status: planForm.status,
+      unlimited: planForm.unlimited,
       note: planForm.note.trim()
     }
     if (editingPlan.value) {
@@ -177,6 +181,11 @@ async function savePlan(): Promise<void> {
 }
 
 async function removePlan(plan: BillingPlan): Promise<void> {
+  // 内置套餐在 UI 里不显示删除按钮；这里再兜一道，防止误触历史按钮。
+  if (plan.builtIn) {
+    toast.error(t('billing.plan.deleteBuiltIn'))
+    return
+  }
   if (!confirm(t('billing.plan.deleteConfirm', { name: plan.name }))) return
   try {
     await api.del('/api/billing/plans/' + plan.id)
@@ -809,7 +818,19 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-for="p in plans" :key="p.id">
-              <td style="font-weight: 560">{{ p.name }}</td>
+              <td style="font-weight: 560">
+                {{ p.name }}
+                <span
+                  v-if="p.unlimited"
+                  class="badge badge-info"
+                  style="margin-left: 6px"
+                >{{ t('billing.plan.unlimitedBadge') }}</span>
+                <span
+                  v-if="p.builtIn"
+                  class="badge badge-off"
+                  style="margin-left: 6px"
+                >{{ t('billing.plan.builtInBadge') }}</span>
+              </td>
               <td><span class="tag">{{ unitLabel(p.unit) }}</span></td>
               <td class="mono">{{ p.currency }}</td>
               <td class="mono">
@@ -824,7 +845,11 @@ onMounted(() => {
               <td>
                 <div class="row">
                   <button class="btn btn-sm" @click="openPlanDialog(p)">{{ t('common.edit') }}</button>
-                  <button class="btn btn-sm btn-danger" @click="removePlan(p)">
+                  <button
+                    v-if="!p.builtIn"
+                    class="btn btn-sm btn-danger"
+                    @click="removePlan(p)"
+                  >
                     {{ t('common.delete') }}
                   </button>
                 </div>
@@ -1147,6 +1172,11 @@ onMounted(() => {
                   {{ t('billing.user.unbound') }}
                 </span>
                 <span v-else class="tag" style="color: var(--accent)">{{ u.planName }}</span>
+                <span
+                  v-if="u.plan?.unlimited"
+                  class="badge badge-info"
+                  style="margin-left: 6px"
+                >{{ t('billing.user.unlimited') }}</span>
               </td>
               <td class="mono nowrap">{{ userBalanceText(u) }}</td>
               <td>
@@ -1311,6 +1341,11 @@ onMounted(() => {
 
       <div class="field">
         <span class="hint">{{ t('billing.plan.unitHint') }}</span>
+      </div>
+
+      <div class="field">
+        <PCheckbox v-model="planForm.unlimited" :label="t('billing.plan.unlimited')" />
+        <span class="hint">{{ t('billing.plan.unlimitedHint') }}</span>
       </div>
 
       <div class="form-row">

@@ -87,6 +87,9 @@ export const zh = {
     plan: '当前套餐',
     unit: '计价单位',
     balance: '余额',
+    unlimitedBalance: '无限额度',
+    unlimited: '无限',
+    unlimitedWindows: '不限额（不受限额模板约束）',
     lowBalance: '余额偏低',
     lowBalanceHint: '余额已低于告警阈值，请及时充值',
     nearLimit: '接近限额',
@@ -843,7 +846,13 @@ export const zh = {
       created: '套餐已创建',
       updated: '套餐已更新',
       deleted: '套餐已删除',
-      saveFailed: '保存套餐失败'
+      saveFailed: '保存套餐失败',
+      unlimited: '不限额（unlimited）',
+      unlimitedHint:
+        '不限额套餐跳过余额、限额窗口与预留校验；请求仍记录成本 / 售价供核算，但计费金额为 0。',
+      unlimitedBadge: '无限',
+      builtInBadge: '内置',
+      deleteBuiltIn: '内置套餐不允许删除'
     },
     aliasRate: {
       sub: '按复杂均衡规则里的对外模型名配置售价',
@@ -990,6 +999,8 @@ export const zh = {
       balance: '余额',
       noPlan: '未指定套餐',
       unbound: '未绑套餐',
+      unlimited: '无限',
+      unlimitedNoLimits: '不限额（无窗口限制）',
       bindDefault: '为未绑套餐用户绑定 Free',
       bindDefaultConfirm: '将为 {n} 个未绑套餐用户绑定内置 Free 套餐（余额不变），继续？',
       bindDefaultDone: '已为 {n} 个用户绑定 {name}',

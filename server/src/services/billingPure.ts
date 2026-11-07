@@ -35,6 +35,8 @@ export interface BillingPlanLike {
   unit: BillingUnit
   currency: string
   creditsPerCurrency: number
+  /** 内置无限套餐：不查余额 / 限额窗口，结算金额恒为 0 */
+  unlimited?: boolean
 }
 
 /**
@@ -139,6 +141,33 @@ export function toBilledAmount(
     default:
       return round6(Math.max(0, money))
   }
+}
+
+/**
+ * 是否为「内置无限套餐」。
+ *
+ * unlimited 套餐的语义是**完全跳过余额与限额判定**（precheckBilling 直接 ok），
+ * 结算时只把成本 / 售价写进 request_logs 供核算，计费金额恒为 0。
+ */
+export function planIsUnlimited(
+  plan: { unlimited?: boolean | null } | null | undefined
+): boolean {
+  return Boolean(plan?.unlimited)
+}
+
+/**
+ * 结算应扣金额：unlimited 套餐恒为 0。
+ *
+ * 注意这里只决定「扣多少钱」，不影响成本 / 售价的计算与落库 ——
+ * 调用方仍要按费率算出 costMoney / sellMoney 写进 request_logs。
+ */
+export function settlementBilledAmount(
+  plan: Pick<BillingPlanLike, 'unit' | 'creditsPerCurrency' | 'unlimited'>,
+  money: number,
+  totalTokens: number
+): number {
+  if (plan.unlimited) return 0
+  return toBilledAmount(money, plan, totalTokens)
 }
 
 /** 本地时区的当天 00:00 */

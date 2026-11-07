@@ -182,11 +182,25 @@ onMounted(load)
           <div class="stat-value">{{ balanceText }}</div>
           <div class="stat-hint">
             {{ t('billing.user.currentPlan') }}：{{ row.planName || t('billing.user.noPlan') }}
+            <span v-if="row.plan?.unlimited" class="badge badge-info">
+              {{ t('billing.user.unlimited') }}
+            </span>
           </div>
         </div>
         <div class="stat">
           <div class="stat-label">{{ t('billing.user.windows') }}</div>
-          <div v-if="row.windows.length === 0" class="dim" style="margin-top: 6px; font-size: 12px">
+          <div
+            v-if="row.plan?.unlimited"
+            class="dim"
+            style="margin-top: 6px; font-size: 12px"
+          >
+            {{ t('billing.user.unlimitedNoLimits') }}
+          </div>
+          <div
+            v-else-if="row.windows.length === 0"
+            class="dim"
+            style="margin-top: 6px; font-size: 12px"
+          >
             {{ t('billing.user.noWindows') }}
           </div>
           <div v-else class="tag-list" style="margin-top: 6px">

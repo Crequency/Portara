@@ -761,6 +761,34 @@ async function main() {
     const baselineStandard = baselinePlans.body.plans.find((p) => p.name === 'Standard')
     check('计费基线：Standard 套餐随迁移存在', () => assert.ok(baselineStandard))
 
+    const infinityPlan = baselinePlans.body.plans.find((p) => p.name === 'Infinity')
+    check('迁移 025：Infinity 为内置不限套餐（unlimited / builtIn）', () => {
+      assert.ok(infinityPlan, '缺少 Infinity 套餐')
+      assert.equal(infinityPlan.unlimited, true)
+      assert.equal(infinityPlan.builtIn, true)
+      const free = baselinePlans.body.plans.find((p) => p.name === 'Free')
+      assert.equal(free.builtIn, true)
+      assert.equal(baselineStandard.builtIn, true)
+    })
+
+    /*
+     * 迁移 025 在已有 admin 的库上会直接绑定 Infinity；冒烟 schema 是复用的，
+     * 且 ensureAdmin 在迁移之后才创建管理员，因此这里用幂等 PATCH 复现
+     * 「admin 默认绑定 Infinity」的迁移语义，保证重复运行同样可断言。
+     */
+    const beforeInfinityBind = await apiCall('GET', '/api/billing/me')
+    if (infinityPlan && beforeInfinityBind.body?.plan?.name !== 'Infinity') {
+      await apiCall('PATCH', `/api/billing/users/${baselineUserId}`, {
+        planId: infinityPlan.id
+      })
+    }
+    const infinityDefaultMe = await apiCall('GET', '/api/billing/me')
+    check('迁移 025：admin 默认绑定 Infinity，/api/billing/me 返回 plan.unlimited=true', () => {
+      assert.equal(infinityDefaultMe.status, 200)
+      assert.equal(infinityDefaultMe.body.plan?.name, 'Infinity')
+      assert.equal(infinityDefaultMe.body.plan?.unlimited, true)
+    })
+
     const baselineMe = await apiCall('GET', '/api/billing/me')
     const baselineDelta = Number((100 - baselineMe.body.balance).toFixed(6))
     const baselinePatch = await apiCall('PATCH', `/api/billing/users/${baselineUserId}`, {
@@ -5778,6 +5806,105 @@ async function main() {
     await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
       templateIds: []
     })
+
+    /* ---------------------------------------------------------- Infinity 内置不限套餐 */
+    section('㊲d 内置 Infinity 套餐（不限额）')
+
+    const bindInfinity = infinityPlan
+      ? await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+          planId: infinityPlan.id
+        })
+      : null
+    const meInfinity = await apiCall('GET', '/api/billing/me')
+    check('内置 Infinity 套餐：admin 可绑定且 /billing/me 返回 plan.unlimited=true', () => {
+      assert.ok(infinityPlan, '缺少 Infinity 套餐')
+      assert.equal(bindInfinity.status, 200)
+      assert.equal(meInfinity.body.plan?.name, 'Infinity')
+      assert.equal(meInfinity.body.plan?.unlimited, true)
+    })
+
+    // 余额归零：unlimited 的预检不应再被余额挡住
+    await setBillingBalance(0)
+    const zeroInfinityHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: 'Infinity 零余额' }] },
+      billKeyFull
+    )
+    const zeroInfinityMe = await apiCall('GET', '/api/billing/me')
+    check('内置 Infinity 套餐：余额为 0 时 /v1 请求仍放行（200，不 402）', () => {
+      assert.equal(zeroInfinityMe.body.balance, 0)
+      assert.equal(zeroInfinityMe.body.plan?.unlimited, true)
+      assert.equal(zeroInfinityHit.status, 200)
+    })
+
+    const infinityLog = infinityPlan
+      ? await waitFor(async () => {
+          const res = await apiCall('GET', '/api/logs?limit=30')
+          return (
+            res.body.logs.find(
+              (l) => l.billingPlanId === infinityPlan.id && l.billingChargedAt
+            ) ?? null
+          )
+        })
+      : null
+    check('内置 Infinity 套餐：request_logs 记成本/售价，billed_amount=0 且已结算', () => {
+      assert.ok(infinityLog, '没有找到 Infinity 的已结算日志')
+      assert.equal(Number(infinityLog.billedAmount), 0)
+      assert.ok(Number(infinityLog.costMoney) > 0, `costMoney=${infinityLog.costMoney}`)
+      assert.ok(Number(infinityLog.sellMoney) > 0, `sellMoney=${infinityLog.sellMoney}`)
+      assert.ok(infinityLog.billingChargedAt)
+    })
+
+    const infinityMeAfter = await apiCall('GET', '/api/billing/me')
+    const infinityLedger = await apiCall(
+      'GET',
+      `/api/billing/ledger?userId=${billingUserId}&limit=100`
+    )
+    check('内置 Infinity 套餐：请求后余额不变且不产生 usage 流水', () => {
+      assert.equal(infinityMeAfter.body.balance, 0)
+      const usage = infinityLog
+        ? infinityLedger.body.ledger.find(
+            (l) => l.reason === 'usage' && l.refId === infinityLog.id
+          )
+        : null
+      assert.ok(!usage, 'Infinity 请求不应写入 usage 流水')
+    })
+
+    // 绑定一个极严的限额模板：unlimited 仍应放行（预检根本不查窗口）
+    const infinityTpl = await apiCall('POST', '/api/billing/templates', {
+      name: `smoke-infinity-${RUN}`,
+      rules: [{ window: '5h', threshold: 0.000001 }]
+    })
+    await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
+      templateIds: [infinityTpl.body.template.id]
+    })
+    const infinityTemplateHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: 'Infinity 不受限额' }] },
+      billKeyFull
+    )
+    check('内置 Infinity 套餐：绑定限额模板后仍放行（不查窗口）', () => {
+      assert.equal(infinityTpl.status, 201)
+      assert.equal(infinityTemplateHit.status, 200)
+    })
+    await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
+      templateIds: []
+    })
+    await apiCall('DELETE', `/api/billing/templates/${infinityTpl.body.template.id}`)
+
+    const infinityDelete = infinityPlan
+      ? await apiCall('DELETE', `/api/billing/plans/${infinityPlan.id}`)
+      : { status: 0 }
+    check('内置套餐：DELETE 被拒绝（409/400）', () => {
+      assert.ok([400, 409].includes(infinityDelete.status), `status=${infinityDelete.status}`)
+    })
+
+    // 恢复 Standard + 余额，避免影响后续批次（Infinity 的日志仍保留供核对）
+    await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+      planId: baselineStandard.id
+    })
+    await setBillingBalance(5)
+
     // 清理本段创建的数据（不影响后续「密钥不泄漏」与清理段）
     await apiCall('DELETE', `/api/billing/templates/${strictTpl.body.template.id}`)
     await apiCall('DELETE', `/api/billing/templates/${looseTpl.body.template.id}`)

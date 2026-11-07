@@ -87,6 +87,9 @@ export const en = {
     plan: 'Current plan',
     unit: 'Billing unit',
     balance: 'Balance',
+    unlimitedBalance: 'Unlimited',
+    unlimited: 'Unlimited',
+    unlimitedWindows: 'Unlimited — no usage limits apply',
     lowBalance: 'Low balance',
     lowBalanceHint: 'The balance is below the alert threshold; top up soon',
     nearLimit: 'Near limit',
@@ -843,7 +846,13 @@ export const en = {
       created: 'Plan created',
       updated: 'Plan updated',
       deleted: 'Plan deleted',
-      saveFailed: 'Failed to save the plan'
+      saveFailed: 'Failed to save the plan',
+      unlimited: 'Unlimited usage (unlimited)',
+      unlimitedHint:
+        'Unlimited plans bypass balance, limit-window and reservation checks. Requests are still recorded with cost and sell price for accounting, but are billed 0.',
+      unlimitedBadge: 'Unlimited',
+      builtInBadge: 'Built-in',
+      deleteBuiltIn: 'Built-in plans cannot be deleted'
     },
     aliasRate: {
       sub: 'Sell prices keyed by the public model name in complex balancing rules',
@@ -990,6 +999,8 @@ export const en = {
       balance: 'Balance',
       noPlan: 'No plan',
       unbound: 'No plan',
+      unlimited: 'Unlimited',
+      unlimitedNoLimits: 'Unlimited — no limit windows apply',
       bindDefault: 'Bind Free to unplanned users',
       bindDefaultConfirm:
         'Bind the built-in Free plan to {n} user(s) without a plan? Balances are unchanged.',
