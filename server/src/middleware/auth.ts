@@ -73,14 +73,38 @@ export const apiKeyAuth: MiddlewareHandler = async (c, next) => {
     throw unauthorized('缺少 API Key：请在 Authorization 头使用 Bearer sk-portara-…')
   }
 
-  // 只存哈希 → 用哈希直查（唯一索引）
+  // 只存哈希 → 用哈希直查（唯一索引），同时带出 owner 的状态
   const hash = hashApiKey(token)
-  const key = await one<ApiKeyRow>('select * from api_keys where key_hash = $1', [hash])
+  const key = await one<ApiKeyRow & { owner_status: string | null }>(
+    `select k.*, u.status as owner_status
+       from api_keys k
+       left join users u on u.id = k.user_id
+      where k.key_hash = $1`,
+    [hash]
+  )
   if (!key) throw unauthorized('API Key 无效')
 
   if (key.status !== 'active') throw forbidden('API Key 已被禁用')
   if (key.expires_at && new Date(key.expires_at).getTime() < Date.now()) {
     throw forbidden('API Key 已过期')
+  }
+
+  /*
+   * 属主校验 —— 没有它，"删除/禁用用户"就只是关掉了控制面入口：
+   * 其名下 Key 仍能调 /v1，而且因为 user_id 被 on delete set null 置空，
+   * 计费还会直接跳过（免费且无限）。
+   *
+   * 三种情况分开报：无主（历史数据）→ 403；属主已删除 → 401；属主被禁用 → 403。
+   * 顺序上先判 user_id：它为空时 owner_status 也必然为空，不能误报成"已删除"。
+   */
+  if (!key.user_id) {
+    throw forbidden('该 Key 无归属用户，请联系管理员重新签发')
+  }
+  if (!key.owner_status) {
+    throw unauthorized('API Key 的所属用户已被删除')
+  }
+  if (key.owner_status !== 'active') {
+    throw forbidden('API Key 的所属用户已被禁用')
   }
 
   c.set('apiKey', key)

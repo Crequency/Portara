@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  balanceBelow,
   computeMoneyCost,
+  decideReservation,
+  estimateBilledAmount,
+  estimateTokens,
+  isNearLimit,
+  lowBalanceThreshold,
   mergeRuleThresholds,
   pickBestRate,
+  planAllowsBilling,
   planSettlement,
   rateSpecificity,
   round6,
@@ -217,4 +224,101 @@ test('结算幂等：余额允许扣成负数（最后一笔语义）', () => {
   assert.equal(result.apply, true)
   assert.equal(result.delta, -2)
   assert.equal(result.balanceAfter, -1)
+})
+
+
+// ------------------------------------------------------------ 预检预留（防并发透支）
+
+test('estimateTokens：缺省按 1024 输入 + 1024 输出估算', () => {
+  assert.deepEqual(estimateTokens({}), { inputTokens: 1024, outputTokens: 1024 })
+  assert.deepEqual(estimateTokens({ maxTokens: 256 }), { inputTokens: 1024, outputTokens: 256 })
+})
+
+test('estimateTokens：非法 max_tokens 回退默认值，小数向上取整', () => {
+  for (const value of [0, -1, Number.NaN, 'abc', undefined, null]) {
+    assert.equal(estimateTokens({ maxTokens: value }).outputTokens, 1024)
+  }
+  assert.equal(estimateTokens({ maxTokens: 12.2 }).outputTokens, 13)
+})
+
+const EST_RATE = { inputPerMtok: 1, outputPerMtok: 2, perRequest: 0.01 }
+const EST_PLAN = { unit: 'money' as const, creditsPerCurrency: 100 }
+
+test('estimateBilledAmount：money 套餐按费率算（1024 输入 + max_tokens 输出 + 每请求费）', () => {
+  // 1024/1e6*1 + 1024/1e6*2 + 0.01 = 0.013072
+  assert.equal(estimateBilledAmount({ rate: EST_RATE, plan: EST_PLAN }), 0.013072)
+  // max_tokens = 100：0.001024 + 0.0002 + 0.01 = 0.011224
+  assert.equal(
+    estimateBilledAmount({ maxTokens: 100, rate: EST_RATE, plan: EST_PLAN }),
+    0.011224
+  )
+})
+
+test('estimateBilledAmount：credits 按兑换率换算，tokens 按预估总 token 数', () => {
+  assert.equal(
+    estimateBilledAmount({
+      rate: EST_RATE,
+      plan: { unit: 'credits', creditsPerCurrency: 100 }
+    }),
+    1.3072
+  )
+  assert.equal(
+    estimateBilledAmount({
+      rate: EST_RATE,
+      plan: { unit: 'tokens', creditsPerCurrency: 100 }
+    }),
+    2048
+  )
+})
+
+test('decideReservation：available = balance - reserved，够才放行', () => {
+  const first = decideReservation({ balance: 10, reserved: 0 }, 0.5)
+  assert.deepEqual(
+    {
+      ok: first.ok,
+      available: first.available,
+      reservedAfter: first.reservedAfter,
+      availableAfter: first.availableAfter,
+      shortfall: first.shortfall
+    },
+    { ok: true, available: 10, reservedAfter: 0.5, availableAfter: 9.5, shortfall: 0 }
+  )
+})
+
+test('decideReservation：并发第二个请求看到第一个的预留后被拒', () => {
+  const second = decideReservation({ balance: 10, reserved: 9.8 }, 0.5)
+  assert.equal(second.ok, false)
+  assert.equal(second.available, 0.2)
+  assert.equal(second.shortfall, 0.3)
+  assert.equal(second.reservedAfter, 9.8)
+  assert.equal(second.availableAfter, 0.2)
+})
+
+test('decideReservation：余额 <= 0 一律拒绝（0 成本请求也一样）', () => {
+  assert.equal(decideReservation({ balance: 0, reserved: 0 }, 0).ok, false)
+  assert.equal(decideReservation({ balance: 0, reserved: 0 }, 0.01).ok, false)
+  // 已透支（负数）同样拒绝
+  assert.equal(decideReservation({ balance: -1, reserved: 0 }, 0).ok, false)
+})
+
+test('planAllowsBilling：未绑 / 停用套餐都视为 no_plan', () => {
+  assert.equal(planAllowsBilling(null), false)
+  assert.equal(planAllowsBilling(undefined), false)
+  assert.equal(planAllowsBilling({ status: 'disabled' }), false)
+  assert.equal(planAllowsBilling({ status: 'active' }), true)
+})
+
+test('isNearLimit：任一窗口 used/limit >= 0.9', () => {
+  assert.equal(isNearLimit([{ used: 9, limit: 10 }]), true)
+  assert.equal(isNearLimit([{ used: 8.99, limit: 10 }]), false)
+  assert.equal(isNearLimit([{ used: 0.009, limit: 0.01 }]), true)
+  assert.equal(isNearLimit([{ used: 100, limit: 0 }]), false)
+})
+
+test('lowBalanceThreshold：金额直用，credits 按兑换率换算', () => {
+  assert.equal(lowBalanceThreshold(1, { unit: 'money', creditsPerCurrency: 100 }), 1)
+  assert.equal(lowBalanceThreshold(1, { unit: 'credits', creditsPerCurrency: 100 }), 100)
+  assert.equal(lowBalanceThreshold(1, null), 1)
+  assert.equal(balanceBelow(0.5, 1), true)
+  assert.equal(balanceBelow(1, 1), false)
 })

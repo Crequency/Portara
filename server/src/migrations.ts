@@ -670,5 +670,25 @@ export const migrations: { id: string; sql: string }[] = [
         add column if not exists sell_money     numeric(20,8) not null default 0,
         add column if not exists alias_rate_id  uuid references alias_rates(id) on delete set null;
     `
+  },
+  {
+    id: '024_billing_free_plan',
+    sql: `
+      -- 内置免费套餐（计费 P0）：
+      --   未绑套餐的用户不再被放行（precheckBilling 返回 no_plan → 402），
+      --   但也不自动给任何人绑套餐 —— 隐藏状态会让「为什么这个用户突然有套餐」
+      --   变成无法追溯的事实。绑定统一由管理端「为所有未绑套餐用户绑定 Free」
+      --   一键完成（或逐用户 PATCH）。
+      --
+      --   unit = money / currency = USD / credits = 100 只是占位：真实扣费仍按
+      --   channel_rates + alias_rates 计算，绑定 Free 之后仍需充值或由管理员
+      --   授予额度（余额为 0 时预检同样会 402）。
+      --
+      -- 幂等：name 上有唯一约束，重复执行什么都不做。
+      insert into billing_plans (name, unit, currency, credits_per_currency, note)
+      values ('Free', 'money', 'USD', 100,
+              '免费套餐占位，绑定后仍需充值或由管理员授予额度')
+      on conflict (name) do nothing;
+    `
   }
 ]

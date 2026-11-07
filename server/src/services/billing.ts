@@ -2,9 +2,11 @@ import { one, pool, query } from '../db.js'
 import { redis } from '../redis.js'
 import {
   computeMoneyCost,
+  estimateBilledAmount,
   LIMIT_WINDOWS,
   mergeRuleThresholds,
   pickBestRate,
+  planAllowsBilling,
   round6,
   round8,
   toBilledAmount,
@@ -35,6 +37,53 @@ import {
 const RATE_VERSION_KEY = 'portara:billing:rates:version'
 const RATE_TTL_SECONDS = 30
 const PRECHECK_TTL_SECONDS = 15
+
+/**
+ * 预检预留：
+ *   - 每个用户一个浮点聚合键（INCRBYFLOAT / DECRBYFLOAT），由 Lua 保证「判定 + 累加」原子；
+ *   - TTL 300 秒兜底 —— 进程崩溃 / 结算回调丢失时，预留不会永久占住余额；
+ *   - 结算方从 chargeBilling 拿实际金额，预留在 finally 里释放（只释放一次）。
+ */
+const RESERVED_KEY_PREFIX = 'portara:billing:reserved:'
+const RESERVED_TTL_SECONDS = 300
+
+/**
+ * 原子预留脚本。
+ *
+ * 入参：KEYS[1]=用户预留键；ARGV[1]=余额；ARGV[2]=预估成本；ARGV[3]=TTL 秒。
+ * 返回：{ '1'|'0', 预留总额, 可用额度 } —— 数字用 tostring 返回，
+ * 避免 Redis Lua 把浮点数截断成整数（tonumber 返回值会被截断）。
+ *
+ * 与 billingPure.decideReservation 同口径：balance>0 且 balance-reserved>=estimate。
+ */
+const RESERVE_SCRIPT = `
+local reserved = tonumber(redis.call('GET', KEYS[1]) or '0')
+local balance = tonumber(ARGV[1])
+local estimate = tonumber(ARGV[2])
+local available = balance - reserved
+if balance <= 0 or available < estimate then
+  return {'0', tostring(reserved), tostring(available)}
+end
+local after = tonumber(redis.call('INCRBYFLOAT', KEYS[1], ARGV[2]))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+return {'1', tostring(after), tostring(balance - after)}
+`
+
+/**
+ * 原子释放脚本。
+ *
+ * 不刷新 TTL（释放不该延长别人的预留），键已过期则什么都不做；
+ * 释放到 <= 0 直接 DEL，避免浮点残渣让键永远留着。
+ */
+const RELEASE_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then return '0' end
+local left = tonumber(redis.call('INCRBYFLOAT', KEYS[1], ARGV[1]))
+if left <= 0 then
+  redis.call('DEL', KEYS[1])
+  return '0'
+end
+return tostring(left)
+`
 
 export interface PlanRow {
   id: string
@@ -106,11 +155,23 @@ export interface BillingState {
 
 export interface PrecheckOk {
   ok: true
+  /** 本次落进 Redis 的预估预留（0 = 未预留，例如 Redis 不可用时降级放行） */
+  estimate: number
+  /** 预留后的总额度 */
+  reserved: number
+  /** 预留后的可用额度 */
+  available: number
+  /** Redis 不可用导致降级放行（没有并发保护，但请求仍会被记账） */
+  degraded?: boolean
 }
 export interface PrecheckFail {
   ok: false
-  code: 'insufficient_balance' | 'usage_limit_exceeded'
+  code: 'insufficient_balance' | 'usage_limit_exceeded' | 'no_plan'
   balance?: number
+  /** 余额 - 已预留额度（insufficient_balance 时给出） */
+  available?: number
+  /** 当前已被在途请求占住的额度 */
+  reserved?: number
   window?: LimitWindow
   limit?: number
   used?: number
@@ -336,6 +397,78 @@ export async function resolveRate(
 }
 
 /**
+ * 全局默认费率（channel_id is null + upstream_model = ''）。
+ *
+ * 只在「选路后仍然拿不到具体渠道费率」时兜底：正常路径由 /v1 在 selectTargets
+ * 之后把命中的渠道与上游模型传进来，按精确费率估算预留；全局默认主要服务于
+ * 历史调用方与测试。
+ */
+export async function resolveGlobalRate(): Promise<RateLike> {
+  let version = '0'
+  try {
+    version = (await redis.get(RATE_VERSION_KEY)) ?? '0'
+  } catch {
+    /* Redis 挂了就直接读库 */
+  }
+  const cacheKey = `portara:billing:globalrate:${version}`
+
+  try {
+    const cached = await redis.get(cacheKey)
+    if (cached) return JSON.parse(cached) as RateLike
+  } catch {
+    /* 缓存失败不阻塞计费 */
+  }
+
+  const row = await one<ChannelRateRow>(
+    `select * from channel_rates
+      where channel_id is null and upstream_model = '' and status = 'active'
+      limit 1`
+  )
+
+  const rate: RateLike = row
+    ? rateRowToRate(row)
+    : {
+        id: null,
+        channelId: null,
+        upstreamModel: '',
+        currency: 'USD',
+        inputPerMtok: 0,
+        outputPerMtok: 0,
+        perRequest: 0
+      }
+
+  try {
+    await redis.set(cacheKey, JSON.stringify(rate), 'EX', RATE_TTL_SECONDS)
+  } catch {
+    /* 忽略 */
+  }
+  return rate
+}
+
+/**
+ * 预检估算用的费率：别名售价 > 绑定渠道费率 > 全局默认。
+ *
+ * 为什么把别名放最前：结算时用户实际被扣的是 alias_rates（售价），
+ * 预留当然要按售价估；没配别名售价时结算回退渠道成本价，这里也就用渠道费率。
+ */
+export async function resolveEstimateRate(input: {
+  channelId: string | null
+  /** 客户端请求的对外模型名（命中 alias_rates 时优先按售价估算） */
+  model: string
+  /** 选路后确定的上游模型；缺省回退到 model */
+  upstreamModel?: string
+}): Promise<RateLike> {
+  if (input.model) {
+    const alias = await resolveAliasRate(input.model)
+    if (alias) return alias
+  }
+  if (input.channelId) {
+    return resolveRate(input.channelId, input.upstreamModel || input.model)
+  }
+  return resolveGlobalRate()
+}
+
+/**
  * 解析「复杂均衡别名」的对外售价。
  *
  * 与 resolveRate 共用同一个缓存版本号：管理端改任何费率（渠道或别名）都会
@@ -462,33 +595,51 @@ export async function invalidateUsersByTemplate(templateId: string): Promise<voi
   await Promise.all(rows.map((r) => invalidatePrecheck(r.user_id)))
 }
 
+// ------------------------------------------------------------ 预检与预留
+
+interface EligibilityOk {
+  ok: true
+}
+type Eligibility = EligibilityOk | PrecheckFail
+
 /**
- * 计费预检：
- *   1. 用户没有套餐 / 套餐停用 → 视为未启用计费，放行（迁移只给管理员建行，
- *      普通用户未绑套餐时不应被一刀切拦死）。
- *   2. 余额 <= 0 → insufficient_balance。
- *   3. 任一窗口 used >= threshold → usage_limit_exceeded（多模板按窗口取最严）。
+ * 计费资格预检（套餐 + 余额 + 限额窗口），成功结果缓存 15 秒。
  *
- * 只缓存 ok；失败实时计算，避免管理员充值后还要等缓存过期。
+ * 只缓存「资格」不缓存「预留」：预留必须每次实时计算，否则缓存命中时
+ * 多个并发请求会绕过额度判定。余额的精确可用额度（balance - reserved）
+ * 由 reserveBilling 里的 Lua 原子完成。
+ *
+ * 失败实时计算，避免管理员充值后还要等缓存过期。
  */
-export async function precheckBilling(userId: string): Promise<PrecheckResult> {
+async function checkBillingEligibility(userId: string): Promise<Eligibility> {
   const cacheKey = precheckCacheKey(userId)
   try {
     const cached = await redis.get(cacheKey)
-    if (cached) return JSON.parse(cached) as PrecheckOk
+    if (cached) return { ok: true }
   } catch {
     /* 忽略 */
   }
 
   const state = await loadUserBilling(userId)
-  if (!state.plan || state.plan.status !== 'active') return { ok: true }
 
+  // 未绑套餐 / 套餐停用 → 402 no_plan（免费也必须绑一个套餐，见迁移 024）
+  if (!planAllowsBilling(state.plan)) {
+    return { ok: false, code: 'no_plan', balance: state.balance }
+  }
+
+  // 余额 <= 0：连 0 成本请求也不放行（保持改造前的语义）
   if (state.balance <= 0) {
-    return { ok: false, code: 'insufficient_balance', balance: state.balance }
+    return {
+      ok: false,
+      code: 'insufficient_balance',
+      balance: state.balance,
+      reserved: 0,
+      available: state.balance
+    }
   }
 
   const rules = await loadAppliedRules(userId)
-  const windows = await loadWindowUsage(userId, state.plan.unit, rules)
+  const windows = await loadWindowUsage(userId, state.plan!.unit, rules)
   const hit = windows.find((w) => windowExceeded(w.used, w.limit))
   if (hit) {
     return {
@@ -508,6 +659,190 @@ export async function precheckBilling(userId: string): Promise<PrecheckResult> {
     /* 忽略 */
   }
   return { ok: true }
+}
+
+export interface ReserveResult {
+  ok: boolean
+  /** 判定时的可用额度（balance - reserved） */
+  available: number
+  /** 判定时的预留总额 */
+  reserved: number
+  /** 判定通过后的预留总额；失败时保持原值 */
+  reservedAfter: number
+  /** 判定通过后的可用额度；失败时保持原值 */
+  availableAfter: number
+  /** Redis 不可用 → 降级放行（没有并发保护） */
+  degraded: boolean
+}
+
+/**
+ * 原子预留：把「读余额 / 读已预留 / 判定 / 累加 / 续 TTL」放进一个 Lua 脚本。
+ *
+ * 这是防并发透支的关键 —— 两个请求同时预检时，Redis 串行执行脚本，
+ * 第二个一定看到第一个的预留，不会双双按同一份余额放行。
+ *
+ * Redis 不可用时**降级放行**：此时限流本身也已失效，为了不让网关整体 503，
+ * 只打日志并依赖结算记账（可能短暂超额，但不会静默免费）。
+ */
+export async function reserveBilling(
+  userId: string,
+  balance: number,
+  estimate: number
+): Promise<ReserveResult> {
+  const key = RESERVED_KEY_PREFIX + userId
+  const need = Math.max(0, round6(Number(estimate) || 0))
+  const snapshotBalance = round6(Number(balance) || 0)
+
+  // 0 成本请求不占额度：避免 Redis 里堆积值为 0 的键
+  if (need <= 0) {
+    let reserved = 0
+    try {
+      reserved = Math.max(0, Number(await redis.get(key)) || 0)
+    } catch {
+      /* 忽略 */
+    }
+    const available = round6(snapshotBalance - reserved)
+    return {
+      ok: snapshotBalance > 0,
+      available,
+      reserved,
+      reservedAfter: reserved,
+      availableAfter: available,
+      degraded: false
+    }
+  }
+
+  try {
+    const raw = (await redis.eval(
+      RESERVE_SCRIPT,
+      1,
+      key,
+      String(snapshotBalance),
+      String(need),
+      String(RESERVED_TTL_SECONDS)
+    )) as unknown[]
+    const ok = String(raw[0]) === '1'
+    const reserved = round6(Number(raw[1]) || 0)
+    const available = round6(Number(raw[2]) || 0)
+    return {
+      ok,
+      available,
+      reserved,
+      reservedAfter: reserved,
+      availableAfter: available,
+      degraded: false
+    }
+  } catch (err) {
+    console.error(
+      '[portara][billing] 预留失败（Redis 不可用，降级放行）：',
+      err instanceof Error ? err.message : String(err)
+    )
+    const available = snapshotBalance
+    return {
+      ok: true,
+      available,
+      reserved: 0,
+      reservedAfter: 0,
+      availableAfter: available,
+      degraded: true
+    }
+  }
+}
+
+/**
+ * 释放预留（结算 / 失败 / 超时后调用，调用方用 try/finally 保证只释放一次）。
+ *
+ * 不刷新 TTL；键已过期则什么都不做。金额 <= 0 时直接返回。
+ */
+export async function releaseBillingReservation(
+  userId: string,
+  estimate: number
+): Promise<void> {
+  const amount = round6(Number(estimate) || 0)
+  if (!(amount > 0)) return
+  try {
+    await redis.eval(RELEASE_SCRIPT, 1, RESERVED_KEY_PREFIX + userId, String(-amount))
+  } catch (err) {
+    console.error(
+      '[portara][billing] 释放预留失败：',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+}
+
+export interface PrecheckInput {
+  /** 请求体里的 max_tokens（缺失时按 1024 输出估算） */
+  maxTokens?: unknown
+  /** Key 绑定的渠道；null = 未绑定（用别名售价 / 全局默认估算） */
+  channelId?: string | null
+  /** 客户端请求的对外模型名（用于命中别名售价） */
+  model?: string
+  /** 选路后确定的上游模型（用于命中渠道费率） */
+  upstreamModel?: string
+}
+
+/**
+ * 计费预检：
+ *   1. 没有套餐 / 套餐停用 → no_plan（402，免费套餐也必须显式绑定）。
+ *   2. 余额 <= 0 → insufficient_balance。
+ *   3. 任一窗口 used >= threshold → usage_limit_exceeded（多模板按窗口取最严）。
+ *   4. 按预估成本预留额度：available = balance - reserved，不足 → insufficient_balance
+ *      （带 available / reserved，便于调用方展示「还差多少」）。
+ *
+ * 资格结果缓存 15 秒；预留每次实时做。失败结果不缓存。
+ */
+export async function precheckBilling(
+  userId: string,
+  input: PrecheckInput = {}
+): Promise<PrecheckResult> {
+  const eligibility = await checkBillingEligibility(userId)
+  if (!eligibility.ok) return eligibility
+
+  // 资格命中缓存时仍要读一次余额：可用额度必须实时
+  const state = await loadUserBilling(userId)
+  if (!planAllowsBilling(state.plan)) {
+    return { ok: false, code: 'no_plan', balance: state.balance }
+  }
+  if (state.balance <= 0) {
+    return {
+      ok: false,
+      code: 'insufficient_balance',
+      balance: state.balance,
+      reserved: 0,
+      available: state.balance
+    }
+  }
+
+  const rate = await resolveEstimateRate({
+    channelId: input.channelId ?? null,
+    model: input.model ?? '',
+    upstreamModel: input.upstreamModel
+  })
+  const estimate = estimateBilledAmount({
+    maxTokens: input.maxTokens,
+    rate,
+    plan: planLikeOf(state.plan!)
+  })
+
+  const reservation = await reserveBilling(userId, state.balance, estimate)
+  if (!reservation.ok) {
+    return {
+      ok: false,
+      code: 'insufficient_balance',
+      balance: state.balance,
+      reserved: reservation.reserved,
+      available: reservation.available
+    }
+  }
+
+  return {
+    ok: true,
+    // 降级放行时没有预留，调用方按 0 释放（否则会把别人的预留减掉）
+    estimate: reservation.degraded ? 0 : estimate,
+    reserved: reservation.reservedAfter,
+    available: reservation.availableAfter,
+    degraded: reservation.degraded
+  }
 }
 
 // ------------------------------------------------------------ 扣费

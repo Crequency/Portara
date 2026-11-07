@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { one, query } from '../db.js'
+import { one, pool, query } from '../db.js'
 import { hashPassword } from '../lib/crypto.js'
 import { badRequest, notFound, parseJson } from '../lib/http.js'
 import { passwordSchema, usernameSchema, uuidSchema } from '../lib/validation.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
+import { recordAudit } from '../services/audit.js'
 import { toUserDto, type UserRow } from '../types.js'
 
 export const userRoutes = new Hono()
@@ -109,6 +110,49 @@ userRoutes.delete('/:id', requireAdmin, async (c) => {
     }
   }
 
-  await query('delete from users where id = $1', [id])
+  /*
+   * 删除用户是**不可逆**的，必须在同一个事务里先处理其名下 Key：
+   *
+   *   api_keys.user_id 是 on delete set null —— 直接删用户会留下一批
+   *   「无主但仍 active」的 Key。历史上它们继续可用且不结算（免费无限），
+   *   这正是审计确认的 P0 问题。这里先把 Key 置为 disabled（保留审计），
+   *   再删用户；两步同事务，绝不会出现"用户没了、Key 还活着"。
+   *
+   * 保留 Key 行而不是物理删除：请求日志、审计、Key 前缀都还能对上账。
+   */
+  const client = await pool.connect()
+  let disabledKeys = 0
+  try {
+    await client.query('begin')
+
+    const disabled = await client.query<{ id: string }>(
+      `update api_keys
+          set status = 'disabled'
+        where user_id = $1 and status <> 'disabled'
+        returning id`,
+      [id]
+    )
+    disabledKeys = disabled.rowCount ?? 0
+
+    await client.query('delete from users where id = $1', [id])
+    await client.query('commit')
+  } catch (err) {
+    try {
+      await client.query('rollback')
+    } catch {
+      /* 忽略回滚失败 */
+    }
+    throw err
+  } finally {
+    client.release()
+  }
+
+  // 审计写不进去就让请求失败（fail-closed）：删除是不可逆操作，必须留痕
+  await recordAudit(c, 'user.delete', { type: 'user', id }, {
+    username: target.username,
+    role: target.role,
+    disabledKeys
+  })
+
   return c.json({ ok: true })
 })

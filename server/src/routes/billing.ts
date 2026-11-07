@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, pool, query } from '../db.js'
+import { env } from '../env.js'
 import { ApiError, badRequest, notFound, parseJson, parseQuery } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
@@ -13,6 +14,7 @@ import {
   invalidateUsersByTemplate,
   ledgerToDto,
   loadBillingSummary,
+  planLikeOf,
   planToDto,
   rateRowToDto,
   setUserPlan,
@@ -21,7 +23,13 @@ import {
   type LedgerRow,
   type PlanRow
 } from '../services/billing.js'
-import { LIMIT_WINDOWS, type LimitWindow } from '../services/billingPure.js'
+import {
+  balanceBelow,
+  isNearLimit,
+  LIMIT_WINDOWS,
+  lowBalanceThreshold,
+  type LimitWindow
+} from '../services/billingPure.js'
 import type { UserRow } from '../types.js'
 
 /**
@@ -860,6 +868,75 @@ billingRoutes.post('/users/:id/templates', requireAdmin, async (c) => {
   }
 })
 
+/**
+ * 一键给「所有未绑套餐用户」绑定内置 Free 套餐。
+ *
+ * 为什么需要它：P0 起未绑套餐 = 402，所以上线后必须有一个可执行的补绑入口，
+ * 否则所有普通用户会突然全部不可用。不放在迁移里自动绑定，是因为那会制造
+ * 无法追溯的隐藏状态（用户会「莫名其妙有套餐」）—— 绑定必须是管理员显式动作，
+ * 且留审计。
+ *
+ * 「未绑套餐」的口径包含：没有 user_billing 行、plan_id 为空、套餐已被删除、
+ * 或套餐已停用。绑定只改 plan_id，不动余额。
+ */
+billingRoutes.post('/users/bind-default', requireAdmin, async (c) => {
+  const plan = await one<PlanRow>(
+    `select * from billing_plans where name = 'Free' and status = 'active'`
+  )
+  if (!plan) {
+    throw badRequest('内置 Free 套餐不存在或已停用，请先执行迁移 024')
+  }
+
+  const targets = await query<{ id: string }>(
+    `select u.id
+       from users u
+       left join user_billing ub on ub.user_id = u.id
+       left join billing_plans p on p.id = ub.plan_id
+      where ub.plan_id is null or p.id is null or p.status <> 'active'
+      order by u.created_at asc`
+  )
+
+  if (targets.length > 0) {
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      for (const row of targets) {
+        await client.query(
+          `insert into user_billing (user_id, plan_id, balance)
+           values ($1, $2, 0)
+           on conflict (user_id) do update
+             set plan_id = excluded.plan_id, updated_at = now()`,
+          [row.id, plan.id]
+        )
+      }
+      await client.query('commit')
+    } catch (err) {
+      try {
+        await client.query('rollback')
+      } catch {
+        /* 忽略 */
+      }
+      throw err
+    } finally {
+      client.release()
+    }
+    await Promise.all(targets.map((row) => invalidatePrecheck(row.id)))
+  }
+
+  await recordAudit(
+    c,
+    'billing.users.bind_default',
+    { type: 'billing_plan', id: plan.id },
+    { planId: plan.id, planName: plan.name, userIds: targets.map((row) => row.id) }
+  )
+
+  return c.json({
+    planId: plan.id,
+    planName: plan.name,
+    bound: targets.map((row) => row.id)
+  })
+})
+
 // ------------------------------------------------------------ 用户列表 / 调整
 
 billingRoutes.get('/users', requireAdmin, async (c) => {
@@ -980,12 +1057,26 @@ billingRoutes.get('/me', async (c) => {
       order by created_at desc limit 20`,
     [user.id]
   )
+
+  /*
+   * 余额告警：不再等到被 402 才发现。
+   *   lowBalance —— 余额低于阈值（PORTARA_BILLING_LOW_BALANCE_USD，默认 1；
+   *                 credits 套餐按兑换率换算，tokens 套餐按原始数值比较）
+   *   nearLimit  —— 任一限额窗口 used/limit >= 0.9
+   */
+  const threshold = lowBalanceThreshold(
+    env.billingLowBalanceUsd,
+    summary.plan ? planLikeOf(summary.plan) : null
+  )
+
   return c.json({
     plan: summary.planDto,
     balance: summary.balance,
     unit: summary.plan?.unit ?? '',
     currency: summary.plan?.currency ?? '',
     windows: summary.windows,
+    lowBalance: balanceBelow(summary.balance, threshold),
+    nearLimit: isNearLimit(summary.windows),
     ledger: ledger.map(ledgerToDto)
   })
 })

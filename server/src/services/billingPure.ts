@@ -239,3 +239,146 @@ export function mergeRuleThresholds(
 export function windowExceeded(used: number, limit: number): boolean {
   return limit > 0 && Number(used) >= limit
 }
+
+// ------------------------------------------------------------ 预检预留（防并发透支）
+
+/** 预检预估使用的输入 token 数：请求体通常不告诉网关输入有多长，取一个保守默认 */
+export const ESTIMATE_INPUT_TOKENS = 1024
+
+/** 请求体没给 max_tokens 时的默认输出 token 预估 */
+export const ESTIMATE_DEFAULT_OUTPUT_TOKENS = 1024
+
+/**
+ * 预估本次请求的 token 数：输入固定 1024，输出取 max_tokens（缺失/非法时 1024）。
+ *
+ * 这是**预留**用的上界估算，不是最终计量 —— 真正的扣费仍以响应里的 usage 为准。
+ * 宁可多留一点让并发排队，也不能少留导致穿透。
+ */
+export function estimateTokens(input: { maxTokens?: unknown }): {
+  inputTokens: number
+  outputTokens: number
+} {
+  const raw = Number(input.maxTokens)
+  const outputTokens =
+    Number.isFinite(raw) && raw > 0 ? Math.ceil(raw) : ESTIMATE_DEFAULT_OUTPUT_TOKENS
+  return { inputTokens: ESTIMATE_INPUT_TOKENS, outputTokens }
+}
+
+/**
+ * 预检预留金额：按请求命中的费率与套餐单位估算本次请求的最坏成本。
+ *
+ * 拿不到具体费率时由调用方传入全局默认（或全 0）费率 —— 纯函数不访问数据库，
+ * 保证单测可覆盖；「拿不到费率」的回退在 services/billing.ts 里做。
+ */
+export function estimateBilledAmount(input: {
+  maxTokens?: unknown
+  rate: Pick<RateLike, 'inputPerMtok' | 'outputPerMtok' | 'perRequest'>
+  plan: Pick<BillingPlanLike, 'unit' | 'creditsPerCurrency'>
+}): number {
+  const { inputTokens, outputTokens } = estimateTokens({ maxTokens: input.maxTokens })
+  const money = computeMoneyCost({ inputTokens, outputTokens, requests: 1 }, input.rate)
+  return toBilledAmount(money, input.plan, inputTokens + outputTokens)
+}
+
+export interface ReservationSnapshot {
+  balance: number
+  reserved: number
+}
+
+export interface ReservationDecision {
+  ok: boolean
+  /** balance - reserved，当前真正可用的额度 */
+  available: number
+  /** 已预留额度（判定前） */
+  reserved: number
+  /** 判定通过后的预留总额 */
+  reservedAfter: number
+  /** 判定通过后的可用额度 */
+  availableAfter: number
+  /** 差多少才够（失败时 > 0） */
+  shortfall: number
+}
+
+/**
+ * 预留判定（纯函数）。Redis 里的 Lua 脚本是它的**原子实现**，两处必须同口径。
+ *
+ * 规则：
+ *   ① available = balance - reserved（预留是「已被别的在途请求占住」的钱）
+ *   ② balance > 0 是硬门槛 —— 余额见底时连 0 成本请求也不放行，
+ *      与改造前「余额 <= 0 → 402」的语义保持一致
+ *   ③ available >= estimate 才允许预留
+ *
+ * 注意这不是账本扣费：余额只在结算时真正扣，预留只是把并发请求挡在门外。
+ */
+export function decideReservation(
+  snapshot: ReservationSnapshot,
+  estimate: number
+): ReservationDecision {
+  const balance = round6(Number(snapshot.balance) || 0)
+  const reserved = Math.max(0, round6(Number(snapshot.reserved) || 0))
+  const need = Math.max(0, round6(Number(estimate) || 0))
+  const available = round6(balance - reserved)
+  const ok = balance > 0 && available >= need
+  return {
+    ok,
+    available,
+    reserved,
+    reservedAfter: ok ? round6(reserved + need) : reserved,
+    availableAfter: ok ? round6(available - need) : available,
+    shortfall: ok ? 0 : round6(Math.max(0, need - available))
+  }
+}
+
+/** 套餐是否可用于计费：未绑定 / 已停用都算「没有套餐」→ no_plan */
+export function planAllowsBilling(
+  plan: { status?: string | null } | null | undefined
+): boolean {
+  return Boolean(plan && plan.status === 'active')
+}
+
+/** 任一窗口使用率 >= ratio 视为接近上限（默认 90%） */
+export function isNearLimit(
+  windows: { used: number; limit: number }[],
+  ratio = 0.9
+): boolean {
+  return windows.some((w) => {
+    const limit = Number(w.limit)
+    const used = Number(w.used)
+    return (
+      Number.isFinite(limit) &&
+      Number.isFinite(used) &&
+      limit > 0 &&
+      // 浮点除法在边界上会差一个 ulp（0.009/0.01 = 0.899999…），
+      // 留 1e-9 的容差，避免「恰好 90%」被判成没到线
+      used / limit >= ratio - 1e-9
+    )
+  })
+}
+
+/**
+ * 余额告警阈值换算到套餐单位。
+ *
+ * 环境变量 PORTARA_BILLING_LOW_BALANCE_USD 的语义是「美元阈值」：
+ *   money   —— 直接比金额（非 USD 币种也按同一数值，P0 不做汇率换算）
+ *   credits —— 按 credits_per_currency 换成积分
+ *   tokens  —— 没有金额→token 的换算口径，直接按原始数值比较（文档已注明）
+ */
+export function lowBalanceThreshold(
+  thresholdMoney: number,
+  plan: Pick<BillingPlanLike, 'unit' | 'creditsPerCurrency'> | null | undefined
+): number {
+  const threshold = Number(thresholdMoney)
+  if (!Number.isFinite(threshold) || threshold < 0) return 0
+  if (plan?.unit === 'credits') {
+    return round6(threshold * (Number(plan.creditsPerCurrency) || 0))
+  }
+  return round6(threshold)
+}
+
+/** 余额是否低于告警阈值 */
+export function balanceBelow(balance: number, threshold: number): boolean {
+  const b = Number(balance)
+  const t = Number(threshold)
+  if (!Number.isFinite(b) || !Number.isFinite(t)) return false
+  return b < t
+}

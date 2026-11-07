@@ -143,6 +143,48 @@ async function setAccountWindowExhausted(accountId, exhausted) {
   }
 }
 
+/**
+ * 直接读写测试 schema（仅限 schema 名含 smoke 的隔离库）。
+ *
+ * 有些安全性断言只能从库里取证（例如「删除用户后 Key 是否真的被置为 disabled」），
+ * 面板 API 故意不暴露这些行。连接串与 search_path 必须与冒烟服务完全一致。
+ */
+async function smokeQuery(sql, params = []) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(SMOKE_SCHEMA)) {
+    throw new Error(`SMOKE_DB_SCHEMA 非法：${SMOKE_SCHEMA}`)
+  }
+  const requireFromServer = createRequire(path.join(ROOT, 'server/package.json'))
+  const { Client } = requireFromServer('pg')
+  const client = new Client({
+    connectionString:
+      process.env.DATABASE_URL ?? 'postgres://portara:portara@127.0.0.1:52744/portara',
+    options: `-c search_path=${SMOKE_SCHEMA}`
+  })
+  await client.connect()
+  try {
+    return (await client.query(sql, params)).rows
+  } finally {
+    await client.end()
+  }
+}
+
+/** 直接读 Redis（断言预留键是否真的被释放） */
+async function smokeRedisGet(key) {
+  const requireFromServer = createRequire(path.join(ROOT, 'server/package.json'))
+  const mod = requireFromServer('ioredis')
+  const Redis = mod.Redis ?? mod
+  const client = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:52745', {
+    lazyConnect: true,
+    maxRetriesPerRequest: 1
+  })
+  try {
+    await client.connect()
+    return await client.get(key)
+  } finally {
+    client.disconnect()
+  }
+}
+
 const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
 /**
  * 触发「额度用尽」的伪上游密钥。
@@ -449,6 +491,35 @@ function startMockUpstream() {
           res.end(JSON.stringify({ error: { message: 'model rejected', type: 'invalid_request_error' } }))
           return
         }
+
+        /*
+         * 可控延迟：用于验证「预检预留」在请求在途期间确实占住额度。
+         * 两个并发请求里先发的那个被延迟，后发的那个必须看到预留并被 402 拒绝。
+         */
+        const delayMs = Math.min(Math.max(0, Number(body.mock_delay_ms) || 0), 5000)
+        if (delayMs > 0) {
+          setTimeout(() => {
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(
+              JSON.stringify({
+                id: `chatcmpl-${RUN}`,
+                object: 'chat.completion',
+                model: MOCK_MODEL,
+                received_model: body.model,
+                choices: [
+                  {
+                    index: 0,
+                    message: { role: 'assistant', content: '你好，世界' },
+                    finish_reason: 'stop'
+                  }
+                ],
+                usage: MOCK_USAGE
+              })
+            )
+          }, delayMs)
+          return
+        }
+
         const id = `chatcmpl-${RUN}`
 
         if (body.stream === true) {
@@ -676,6 +747,32 @@ async function main() {
     check('无 Cookie 访问控制面被拒（401）', () => {
       assert.equal(noAuth.status, 200) // 有 cookie 时正常
       assert.equal(unauth.status, 401)
+    })
+
+    // ---------------------------------------------------------- 计费基线
+    /*
+     * P0 起「未绑套餐 = 402」：后面所有 /v1 转发用例都挂在管理员 Key 上，
+     * 所以必须先给管理员绑定套餐并预置一笔可预期的余额，否则整轮冒烟会在
+     * 第一个网关请求处全部 402。余额固定为 100，保证重复运行结果可复现。
+     */
+    section('①b 计费基线（未绑套餐会被 402 拒绝）')
+    const baselineUserId = me.body.user.id
+    const baselinePlans = await apiCall('GET', '/api/billing/plans')
+    const baselineStandard = baselinePlans.body.plans.find((p) => p.name === 'Standard')
+    check('计费基线：Standard 套餐随迁移存在', () => assert.ok(baselineStandard))
+
+    const baselineMe = await apiCall('GET', '/api/billing/me')
+    const baselineDelta = Number((100 - baselineMe.body.balance).toFixed(6))
+    const baselinePatch = await apiCall('PATCH', `/api/billing/users/${baselineUserId}`, {
+      planId: baselineStandard.id,
+      ...(baselineDelta !== 0
+        ? { adjust: { delta: baselineDelta, reason: 'smoke-bootstrap' } }
+        : {})
+    })
+    check('计费基线：管理员绑定 Standard 且余额预置为 100', () => {
+      assert.equal(baselinePatch.status, 200)
+      assert.equal(baselinePatch.body.user.planId, baselineStandard.id)
+      assert.equal(baselinePatch.body.user.balance, 100)
     })
 
     // ---------------------------------------------------------- 渠道
@@ -4649,6 +4746,15 @@ async function main() {
       assert.equal(standard.currency, 'USD')
     })
 
+    const freePlan = planList.body.plans.find((p) => p.name === 'Free')
+    check('计费：迁移 024 内置 Free 套餐（money/USD/100 + 占位说明）', () => {
+      assert.ok(freePlan, '缺少 Free 套餐')
+      assert.equal(freePlan.unit, 'money')
+      assert.equal(freePlan.currency, 'USD')
+      assert.equal(freePlan.creditsPerCurrency, 100)
+      assert.match(freePlan.note, /免费套餐占位/)
+    })
+
     const planMoneyRes = await apiCall('POST', '/api/billing/plans', {
       name: `smoke-money-${RUN}`,
       unit: 'money',
@@ -4861,6 +4967,13 @@ async function main() {
       assert.equal(zeroHit.body?.error?.code, 'insufficient_balance')
     })
 
+    const zeroMe = await apiCall('GET', '/api/billing/me')
+    check('计费告警：余额为 0 时 /api/billing/me 的 lowBalance=true', () => {
+      assert.equal(zeroMe.status, 200)
+      assert.equal(zeroMe.body.lowBalance, true)
+      assert.equal(zeroMe.body.nearLimit, false)
+    })
+
     const rechargeRes = await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
       adjust: { delta: 5, reason: 'smoke-recharge' }
     })
@@ -4868,6 +4981,221 @@ async function main() {
       assert.equal(rechargeRes.status, 200)
       assert.equal(rechargeRes.body.user.balance, 5)
     })
+
+    const rechargedMe = await apiCall('GET', '/api/billing/me')
+    check('计费告警：余额高于阈值后 lowBalance=false', () => {
+      assert.equal(rechargedMe.body.lowBalance, false)
+    })
+
+    /* ---------------------------------------------------------- 预留 / no_plan / 属主 */
+    section('㊲b 预检预留 / 未绑套餐 / 密钥属主')
+
+    const setBillingBalance = async (target) => {
+      const cur = await apiCall('GET', '/api/billing/me')
+      const delta = Number((target - cur.body.balance).toFixed(6))
+      if (delta !== 0) {
+        await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
+          adjust: { delta, reason: 'smoke-reserve-set' }
+        })
+      }
+    }
+    /*
+     * 预留测试专用 Key：**绑定计费渠道**，这样预估费率能命中该渠道的精确费率
+     * （未绑定 Key 在选路前只能按全局默认估算，而冒烟只配了渠道级费率）。
+     */
+    const reserveKeyRes = await apiCall('POST', '/api/keys', {
+      name: `smoke-reserve-key-${RUN}`,
+      channelId: billingChannelId,
+      rpmLimit: 0
+    })
+    createdKeyIds.push(reserveKeyRes.body.apiKey.id)
+    const reserveKeyFull = reserveKeyRes.body.key
+
+    const reservedKey = `portara:billing:reserved:${billingUserId}`
+    const waitReservationReleased = () =>
+      waitFor(async () => {
+        const v = await smokeRedisGet(reservedKey)
+        return v === null || Number(v) <= 0 ? (v ?? 'null') : null
+      })
+
+    /*
+     * 低余额 + 慢请求：先发的请求在途时占住预估成本，后发的请求必须看到
+     * 「balance - reserved」不足而被 402 拒绝。没有预留的话两个都会放行，
+     * 然后各扣一笔，直接透支。
+     */
+    await setBillingBalance(0.02)
+    const slowReservation = proxyCall(
+      '/v1/chat/completions',
+      {
+        model: MOCK_MODEL,
+        messages: [{ role: 'user', content: '预留-慢请求' }],
+        mock_delay_ms: 600
+      },
+      reserveKeyFull
+    )
+    await sleep(200)
+    const concurrentHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '预留-并发' }] },
+      reserveKeyFull
+    )
+    const slowResult = await slowReservation
+
+    check('计费预留：低余额并发 2 个请求只放行 1 个（不会双双透支）', () => {
+      assert.deepEqual(
+        [slowResult.status, concurrentHit.status].sort((a, b) => a - b),
+        [200, 402]
+      )
+    })
+
+    const blockedHit = slowResult.status === 402 ? slowResult : concurrentHit
+    check('计费预留：被拒请求是 402 insufficient_balance 且带 available/reserved', () => {
+      assert.equal(blockedHit.body?.error?.code, 'insufficient_balance')
+      assert.equal(Number(blockedHit.body.error.balance), 0.02)
+      assert.ok(blockedHit.body.error.reserved > 0, '缺少 reserved')
+      assert.ok(blockedHit.body.error.available < 0.013072, 'available 应小于预估成本')
+      assert.equal(
+        Number((blockedHit.body.error.available + blockedHit.body.error.reserved).toFixed(6)),
+        0.02
+      )
+    })
+
+    const afterConcurrentSettle = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/me')
+      return Math.abs(res.body.balance - 0.009975) < 1e-9 ? res.body : null
+    })
+    check('计费预留：放行的那笔正常结算（0.02 → 0.009975）', () => {
+      assert.ok(afterConcurrentSettle, '放行的请求没有结算')
+    })
+
+    const releasedAfterSettle = await waitReservationReleased()
+    check('计费预留：结算后 Redis 预留键归零/删除', () => {
+      assert.ok(releasedAfterSettle !== null, '预留键没有被释放')
+    })
+
+    /* ---------------------------------------------------------- 未绑套餐 / 批量补绑 */
+
+    const mkBillingUser = async (suffix) => {
+      const res = await apiCall('POST', '/api/users', {
+        username: `smoke-bill-${suffix}-${RUN}`,
+        displayName: `smoke-bill-${suffix}`,
+        password: 'smoke-bill-password',
+        role: 'operator'
+      })
+      return res.body.user
+    }
+    const mkKeyFor = async (userId, suffix) => {
+      const res = await apiCall('POST', '/api/keys', {
+        name: `smoke-bill-${suffix}-${RUN}`,
+        userId,
+        rpmLimit: 0
+      })
+      createdKeyIds.push(res.body.apiKey.id)
+      return res
+    }
+
+    const noPlanUser = await mkBillingUser('noplan')
+    const noPlanKey = await mkKeyFor(noPlanUser.id, 'noplan')
+    const noPlanHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '未绑套餐' }] },
+      noPlanKey.body.key
+    )
+    check('计费：未绑套餐的用户请求返回 402 no_plan', () => {
+      assert.equal(noPlanHit.status, 402)
+      assert.equal(noPlanHit.body?.error?.code, 'no_plan')
+      assert.match(String(noPlanHit.body?.error?.message), /未绑定计费套餐/)
+    })
+
+    const bindDefault = await apiCall('POST', '/api/billing/users/bind-default')
+    check('计费：管理员可一键为所有未绑套餐用户绑定 Free', () => {
+      assert.equal(bindDefault.status, 200)
+      assert.equal(bindDefault.body.planId, freePlan.id)
+      assert.ok(bindDefault.body.bound.includes(noPlanUser.id))
+    })
+
+    await apiCall('PATCH', `/api/billing/users/${noPlanUser.id}`, {
+      adjust: { delta: 5, reason: 'smoke-free-topup' }
+    })
+    const afterBindHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '绑定 Free 后' }] },
+      noPlanKey.body.key
+    )
+    check('计费：绑定 Free 并充值后可正常请求', () =>
+      assert.equal(afterBindHit.status, 200)
+    )
+
+    /* ---------------------------------------------------------- 属主校验 */
+
+    const deletedUser = await mkBillingUser('delete')
+    const deletedKey = await mkKeyFor(deletedUser.id, 'delete')
+    const delUserRes = await apiCall('DELETE', `/api/users/${deletedUser.id}`)
+    const deletedKeyHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '已删除用户' }] },
+      deletedKey.body.key
+    )
+    check('密钥安全：删除用户后其 Key 立即不可用（403）', () => {
+      assert.equal(delUserRes.status, 200)
+      assert.equal(deletedKeyHit.status, 403)
+      assert.match(String(deletedKeyHit.body?.error?.message), /禁用|删除/)
+    })
+    const deletedKeyRow = await smokeQuery(
+      'select status, user_id from api_keys where id = $1',
+      [deletedKey.body.apiKey.id]
+    )
+    check('密钥安全：删除用户时同事务把 Key 置为 disabled（保留行）', () => {
+      assert.equal(deletedKeyRow.length, 1)
+      assert.equal(deletedKeyRow[0].status, 'disabled')
+      assert.equal(deletedKeyRow[0].user_id, null)
+    })
+    const deleteAudit = await apiCall('GET', '/api/audit?action=user.delete&limit=20')
+    check('密钥安全：删除用户写入审计（含被禁用 Key 数量）', () => {
+      const row = deleteAudit.body.events.find((e) => e.targetId === deletedUser.id)
+      assert.ok(row, '缺少 user.delete 审计')
+      assert.equal(row.detail.disabledKeys, 1)
+    })
+
+    const disabledUser = await mkBillingUser('disabled')
+    const disabledKey = await mkKeyFor(disabledUser.id, 'disabled')
+    await apiCall('PATCH', `/api/users/${disabledUser.id}`, { status: 'disabled' })
+    const disabledKeyHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '属主已禁用' }] },
+      disabledKey.body.key
+    )
+    check('密钥安全：属主被禁用后其 Key 返回 403', () => {
+      assert.equal(disabledKeyHit.status, 403)
+      assert.match(String(disabledKeyHit.body?.error?.message), /禁用/)
+    })
+
+    /*
+     * 无主 Key（历史数据）只能直接改库模拟：on delete set null 会把 user_id 置空，
+     * 但新代码删除用户时会同步禁用 Key，所以正常路径已经造不出这种行。
+     */
+    const orphanUser = await mkBillingUser('orphan')
+    const orphanKey = await mkKeyFor(orphanUser.id, 'orphan')
+    await smokeQuery('update api_keys set user_id = null where id = $1', [
+      orphanKey.body.apiKey.id
+    ])
+    const orphanHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: '无主 Key' }] },
+      orphanKey.body.key
+    )
+    check('密钥安全：无主 Key 返回 403 并提示重新签发', () => {
+      assert.equal(orphanHit.status, 403)
+      assert.match(String(orphanHit.body?.error?.message), /无归属用户/)
+    })
+
+    // 清理本段用户（Key 行留给最后的统一清理）
+    await apiCall('DELETE', `/api/users/${noPlanUser.id}`)
+    await apiCall('DELETE', `/api/users/${disabledUser.id}`)
+    await apiCall('DELETE', `/api/users/${orphanUser.id}`)
+
+    // 恢复到 5，继续后面的限额模板用例
+    await setBillingBalance(5)
 
     // 限额模板：5h 极严 + 1d 宽松，叠加后应取 5h
     const strictTpl = await apiCall('POST', '/api/billing/templates', {
@@ -4926,20 +5254,34 @@ async function main() {
       assert.ok(limitHit.body.error.used >= 0.001)
     })
 
+    const nearLimitMe = await apiCall('GET', '/api/billing/me')
+    check('计费告警：窗口使用率超过 90% 时 /api/billing/me 的 nearLimit=true', () => {
+      assert.equal(nearLimitMe.body.nearLimit, true)
+    })
+
     // 清掉模板，继续验证 tokens 套餐
     await apiCall('POST', `/api/billing/users/${billingUserId}/templates`, {
       templateIds: []
     })
+    const clearedTemplatesMe = await apiCall('GET', '/api/billing/me')
+    check('计费告警：清掉模板后 nearLimit=false', () => {
+      assert.equal(clearedTemplatesMe.body.nearLimit, false)
+    })
 
     const preTokensMe = await apiCall('GET', '/api/billing/me')
+    /*
+     * tokens 套餐的预留按「1024 输入 + 1024 输出 = 2048 tokens」估算，
+     * 余额必须高于单次预估才能放行（这正是预留防透支的代价：并发上限取决于余额）。
+     * 这里充 5000，断言扣费后为 5000 - 18 = 4982。
+     */
     const switchTokens = await apiCall('PATCH', `/api/billing/users/${billingUserId}`, {
       planId: tokensPlanId,
-      adjust: { delta: 100 - preTokensMe.body.balance, reason: 'smoke-tokens-topup' }
+      adjust: { delta: 5000 - preTokensMe.body.balance, reason: 'smoke-tokens-topup' }
     })
     check('计费：可切换 tokens 套餐并按新单位充值', () => {
       assert.equal(switchTokens.status, 200)
       assert.equal(switchTokens.body.user.unit, 'tokens')
-      assert.equal(switchTokens.body.user.balance, 100)
+      assert.equal(switchTokens.body.user.balance, 5000)
     })
 
     const tokensChat = await proxyCall(
@@ -4949,13 +5291,13 @@ async function main() {
     )
     const tokensSettled = await waitFor(async () => {
       const res = await apiCall('GET', '/api/billing/me')
-      return res.body.balance !== 100 ? res.body : null
+      return res.body.balance !== 5000 ? res.body : null
     })
     check('计费：tokens 套餐直接扣 total_tokens（18）', () => {
       assert.equal(tokensChat.status, 200)
       assert.ok(tokensSettled, '余额未变化')
       assert.equal(tokensSettled.unit, 'tokens')
-      assert.equal(tokensSettled.balance, 82)
+      assert.equal(tokensSettled.balance, 4982)
     })
 
     // 失败请求不扣费：上游 400 透传
@@ -4963,6 +5305,17 @@ async function main() {
     await apiCall('POST', '/api/model-routes', {
       alias: billingBadAlias,
       targets: [{ channelId: billingChannelId, upstreamModel: 'bad-request' }]
+    })
+    /*
+     * 给失败别名配一个售价：这样预估费率命中 alias_rates，失败请求才会真的
+     * 预占额度 —— 否则预估为 0，「失败后释放预留」就成了空断言。
+     */
+    const failAliasRate = await apiCall('PUT', '/api/billing/alias-rates', {
+      alias: billingBadAlias,
+      currency: 'USD',
+      inputPerMtok: 1,
+      outputPerMtok: 2,
+      perRequest: 0.01
     })
     const failHit = await proxyCall(
       '/v1/chat/completions',
@@ -4973,8 +5326,15 @@ async function main() {
     const meAfterFail = await apiCall('GET', '/api/billing/me')
     check('计费：失败请求（上游 400）不扣费', () => {
       assert.equal(failHit.status, 400)
-      assert.equal(meAfterFail.body.balance, 82)
+      assert.equal(meAfterFail.body.balance, 4982)
     })
+
+    const releasedAfterFail = await waitReservationReleased()
+    check('计费预留：失败请求（上游 400）同样释放预留', () => {
+      assert.ok(releasedAfterFail !== null, '失败请求的预留没有释放')
+    })
+
+    await apiCall('DELETE', `/api/billing/alias-rates/${failAliasRate.body.rate.id}`)
     await apiCall('POST', '/api/model-routes/purge', { alias: billingBadAlias })
 
     /* ---------------------------------------------------------- 别名售价 */

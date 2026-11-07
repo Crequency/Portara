@@ -124,6 +124,10 @@ const balanceText = computed(() =>
   billing.value ? formatUnitValue(billing.value.balance, billingUnit.value) : '—'
 )
 
+/** 余额告警：后端按套餐单位换算好的布尔值，前端只负责展示 */
+const lowBalance = computed(() => billing.value?.lowBalance === true)
+const nearLimit = computed(() => billing.value?.nearLimit === true)
+
 function windowPercent(w: BillingWindowUsage): number {
   if (!Number.isFinite(w.limit) || w.limit <= 0) return 0
   return Math.min(100, Math.round((w.used / w.limit) * 100))
@@ -463,7 +467,23 @@ onMounted(() => {
             </div>
             <div class="stat">
               <div class="stat-label">{{ t('myBilling.balance') }}</div>
-              <div class="stat-value my-balance">{{ balanceText }}</div>
+              <div class="stat-value my-balance">
+                {{ balanceText }}
+                <span
+                  v-if="lowBalance"
+                  class="badge badge-warn my-balance-badge"
+                  :title="t('myBilling.lowBalanceHint')"
+                >
+                  {{ t('myBilling.lowBalance') }}
+                </span>
+                <span
+                  v-if="nearLimit"
+                  class="badge badge-err my-balance-badge"
+                  :title="t('myBilling.nearLimitHint')"
+                >
+                  {{ t('myBilling.nearLimit') }}
+                </span>
+              </div>
               <div class="stat-hint">{{ planUnitText }}</div>
             </div>
           </div>
@@ -874,6 +894,13 @@ onMounted(() => {
 
 .my-balance {
   font-size: 32px;
+}
+
+/* 余额旁边的告警徽章：不要跟着 32px 的字号一起放大 */
+.my-balance-badge {
+  margin-left: 8px;
+  font-size: 11.5px;
+  vertical-align: middle;
 }
 
 .my-section-title {

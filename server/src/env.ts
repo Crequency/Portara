@@ -106,12 +106,25 @@ const maxChannelAttempts = Math.max(1, Number(process.env.PORTARA_MAX_CHANNEL_AT
  */
 const affinityContext = process.env.PORTARA_AFFINITY_CONTEXT === 'true'
 
+/**
+ * 余额告警阈值（美元，默认 1）。
+ *
+ * 低于它时 /api/billing/me 的 lowBalance 为 true，个人资料页显示预警徽章 ——
+ * 让用户在被动 402 之前就能看到「快没钱了」。credits 套餐按兑换率换算，
+ * tokens 套餐没有金额→token 的统一口径，直接按原始数值比较。
+ */
+const billingLowBalanceUsd = (() => {
+  const raw = Number(process.env.PORTARA_BILLING_LOW_BALANCE_USD)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1
+})()
+
 export const env = {
   port: num(process.env.PORTARA_PORT, 52740),
   affinityTtlSeconds,
   affinityMaxAgeSeconds,
   maxChannelAttempts,
   affinityContext,
+  billingLowBalanceUsd,
   host: process.env.PORTARA_HOST ?? '0.0.0.0',
 
   databaseUrl:

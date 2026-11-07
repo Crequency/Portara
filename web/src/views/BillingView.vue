@@ -600,6 +600,40 @@ watch(userQuery, () => {
   searchTimer = setTimeout(() => void loadBillingUsers(), 300)
 })
 
+/** 未绑套餐：没有 planId，或绑的套餐已被停用（后端 bind-default 同口径） */
+function isUnbound(row: BillingUserRow): boolean {
+  return !row.planId || row.plan?.status !== 'active'
+}
+
+const unboundCount = computed(() => billingUsers.value.filter(isUnbound).length)
+const bindingDefault = ref(false)
+
+async function bindDefaultPlan(): Promise<void> {
+  if (unboundCount.value === 0) {
+    toast.success(t('billing.user.bindDefaultNone'))
+    return
+  }
+  if (!confirm(t('billing.user.bindDefaultConfirm', { n: unboundCount.value }))) return
+
+  bindingDefault.value = true
+  try {
+    const res = await api.post<{ planName: string; bound: string[] }>(
+      '/api/billing/users/bind-default'
+    )
+    toast.success(
+      t('billing.user.bindDefaultDone', {
+        n: res.bound.length,
+        name: res.planName
+      })
+    )
+    await loadBillingUsers()
+  } catch (err) {
+    toastError(err, t('billing.user.bindDefaultFailed'))
+  } finally {
+    bindingDefault.value = false
+  }
+}
+
 function userBalanceText(row: BillingUserRow): string {
   const unit = row.unit ?? row.plan?.unit ?? ''
   if (unit === 'money') return formatMoney(row.balance, row.currency ?? row.plan?.currency ?? 'USD')
@@ -1013,6 +1047,14 @@ onMounted(() => {
               type="search"
             />
           </div>
+          <button
+            class="btn btn-sm"
+            :disabled="bindingDefault || unboundCount === 0"
+            @click="bindDefaultPlan"
+          >
+            {{ bindingDefault ? t('common.saving') : t('billing.user.bindDefault') }}
+            <span v-if="unboundCount > 0" class="tag">{{ unboundCount }}</span>
+          </button>
           <button class="btn btn-sm" @click="loadBillingUsers">{{ t('common.refresh') }}</button>
         </div>
       </div>
@@ -1041,8 +1083,10 @@ onMounted(() => {
                 </span>
               </td>
               <td>
-                <span v-if="u.planName" class="tag" style="color: var(--accent)">{{ u.planName }}</span>
-                <span v-else class="dim">{{ t('billing.user.noPlan') }}</span>
+                <span v-if="isUnbound(u)" class="badge badge-warn">
+                  {{ t('billing.user.unbound') }}
+                </span>
+                <span v-else class="tag" style="color: var(--accent)">{{ u.planName }}</span>
               </td>
               <td class="mono nowrap">{{ userBalanceText(u) }}</td>
               <td>

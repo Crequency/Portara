@@ -710,6 +710,10 @@ export interface BillingMe {
   unit: BillingUnit | ''
   currency: string
   windows: BillingWindowUsage[]
+  /** 余额低于告警阈值（PORTARA_BILLING_LOW_BALANCE_USD，默认 1） */
+  lowBalance: boolean
+  /** 任一限额窗口 used/limit >= 0.9 */
+  nearLimit: boolean
   ledger: BalanceLedgerEntry[]
 }
 

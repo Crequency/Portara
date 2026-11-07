@@ -5,7 +5,11 @@ import { clientIp, openaiError } from '../lib/http.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
-import { precheckBilling, settleRequestBilling } from '../services/billing.js'
+import {
+  precheckBilling,
+  releaseBillingReservation,
+  settleRequestBilling
+} from '../services/billing.js'
 import {
   COOLDOWN,
   MAX_ACCOUNT_ATTEMPTS,
@@ -166,10 +170,28 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   const sessionHash = shortSessionHash(session.hash)
 
   /**
-   * 计费归属：以 Key 的 owner 为准。没有 owner 的 Key（历史数据 / 管理员代签
-   * 但未署名）不参与计费 —— 没有主体可以扣。
+   * 计费归属：以 Key 的 owner 为准。
+   *
+   * 无主 Key（user_id 为空）在 apiKeyAuth 里已被 403 拒绝，这里只是类型上
+   * 仍可能为 null；真正的计费主体一定有值。
    */
   const billingUserId = key.user_id
+
+  /** 本次请求在 Redis 里的预估预留（0 = 未占用 / 已释放） */
+  let billingReservation = 0
+  let billingReservationReleased = false
+
+  /**
+   * 释放预留：重复调用无副作用。
+   *
+   * 结算回调（含 finally）、预检后的各类早退、上游失败 / 空流都会走到这里；
+   * 万一有遗漏，Redis 的 300 秒 TTL 是最后一道兜底。
+   */
+  async function releaseReservationOnce(): Promise<void> {
+    if (billingReservationReleased || billingReservation <= 0 || !billingUserId) return
+    billingReservationReleased = true
+    await releaseBillingReservation(billingUserId, billingReservation)
+  }
 
   const baseLog = {
     apiKeyId: key.id,
@@ -199,6 +221,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     code: string
     extra?: Record<string, unknown>
   }): Response => {
+    // 预检已经预留过额度时，早退必须归还，否则这个用户会被自己的失败请求占住额度
+    void releaseReservationOnce()
     fireAndForgetLog({
       ...baseLog,
       statusCode: opts.status,
@@ -254,50 +278,6 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
 
   /*
-   * ③b 计费预检（余额 + 各限额窗口）。
-   *
-   * 放在配额之后、选路之前：拒绝时不必浪费一次上游路由。
-   * precheckBilling 内部对「通过」结果做 15 秒 Redis 缓存；扣费/改套餐/调余额
-   * 会主动删除该缓存，失败结果**不缓存**（充值后立刻生效）。
-   *
-   * 没有套餐的用户直接放行 —— user_billing 行在迁移里只给管理员预建，
-   * 普通用户未绑套餐时不应被一刀切成 402。
-   */
-  if (billingUserId) {
-    const billing = await precheckBilling(billingUserId)
-    if (!billing.ok) {
-      if (billing.code === 'insufficient_balance') {
-        return rejectEarly({
-          status: 402,
-          logError: `计费余额不足（余额 ${billing.balance ?? 0}）`,
-          message: `计费余额不足，请充值后再试（当前余额 ${billing.balance ?? 0}）`,
-          type: 'insufficient_quota',
-          code: 'insufficient_balance',
-          extra: { balance: billing.balance ?? 0 }
-        })
-      }
-      // 结构化提示：body.error 里带 window/limit/used/resetAt，header 里也放一份，
-      // 便于 SDK 或网关日志直接读到「哪个窗口、何时重置」。
-      c.header('x-portara-billing-window', billing.window ?? '')
-      c.header('x-portara-billing-reset-at', billing.resetAt ?? '')
-      c.header('retry-after', String(billing.resetAt ? Math.max(1, Math.ceil((Date.parse(billing.resetAt) - Date.now()) / 1000)) : 60))
-      return rejectEarly({
-        status: 429,
-        logError: `用量限额超限（${billing.window}：${billing.used}/${billing.limit}）`,
-        message: `用量限额已超限：${billing.window} 窗口已用 ${billing.used}/${billing.limit}，重置时间 ${billing.resetAt}`,
-        type: 'rate_limit_error',
-        code: 'usage_limit_exceeded',
-        extra: {
-          window: billing.window,
-          limit: billing.limit,
-          used: billing.used,
-          resetAt: billing.resetAt
-        }
-      })
-    }
-  }
-
-  /*
    * 路由策略（可配）：失败冷却时长 + 是否跳过打满窗口的账户。
    *
    * 一次请求读一次（内部有 Redis 短缓存，5 秒），不逐次查库。
@@ -335,6 +315,82 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       code: 'model_not_found'
     })
   }
+  /*
+   * ④.6 计费预检（套餐 / 余额 / 各限额窗口 / 并发预留）。
+   *
+   * 放在选路之后、真正打上游之前：预估成本需要知道「这次请求命中哪个渠道」。
+   * 未绑定渠道的 Key 在选路前无从得知渠道费率；若只按全局默认估算，而全局
+   * 默认又是 0，预留就永远是 0，防并发透支形同虚设。绑定 Key 同样受益——
+   * 它的渠道是确定的，但上游模型可能来自映射，这里一并取选路结果。
+   *
+   * 拒绝仍发生在任何上游请求之前，只是多花一次（本地的）选路计算。
+   * 资格结果在 precheckBilling 内部缓存 15 秒；扣费/改套餐/调余额会主动
+   * 删除该缓存，失败结果**不缓存**（充值后立刻生效）。
+   *
+   * **未绑套餐不再放行**：没有套餐 → 402 no_plan。免费用户也要显式绑定
+   * 内置 Free 套餐（迁移 024），否则「谁在用免费额度」没有可追溯的状态。
+   *
+   * 预检通过后会按预估成本在 Redis 里预留额度；拿到 billing.estimate 后，
+   * 后续所有路径（早退 / 失败 / 结算）都必须释放它。
+   */
+  if (billingUserId) {
+    const billing = await precheckBilling(billingUserId, {
+      maxTokens: payload?.max_tokens,
+      channelId: channel.id,
+      model,
+      upstreamModel
+    })
+    if (!billing.ok) {
+      if (billing.code === 'no_plan') {
+        return rejectEarly({
+          status: 402,
+          logError: '未绑定计费套餐',
+          message: '未绑定计费套餐，请联系管理员绑定后再调用',
+          type: 'insufficient_quota',
+          code: 'no_plan'
+        })
+      }
+      if (billing.code === 'insufficient_balance') {
+        const available = billing.available ?? billing.balance ?? 0
+        const reserved = billing.reserved ?? 0
+        return rejectEarly({
+          status: 402,
+          logError:
+            `计费余额不足（余额 ${billing.balance ?? 0}，已预留 ${reserved}，可用 ${available}）`,
+          message:
+            `计费余额不足，请充值后再试（当前余额 ${billing.balance ?? 0}，` +
+            `已预留 ${reserved}，可用 ${available}）`,
+          type: 'insufficient_quota',
+          code: 'insufficient_balance',
+          extra: {
+            balance: billing.balance ?? 0,
+            available,
+            reserved
+          }
+        })
+      }
+      // 结构化提示：body.error 里带 window/limit/used/resetAt，header 里也放一份，
+      // 便于 SDK 或网关日志直接读到「哪个窗口、何时重置」。
+      c.header('x-portara-billing-window', billing.window ?? '')
+      c.header('x-portara-billing-reset-at', billing.resetAt ?? '')
+      c.header('retry-after', String(billing.resetAt ? Math.max(1, Math.ceil((Date.parse(billing.resetAt) - Date.now()) / 1000)) : 60))
+      return rejectEarly({
+        status: 429,
+        logError: `用量限额超限（${billing.window}：${billing.used}/${billing.limit}）`,
+        message: `用量限额已超限：${billing.window} 窗口已用 ${billing.used}/${billing.limit}，重置时间 ${billing.resetAt}`,
+        type: 'rate_limit_error',
+        code: 'usage_limit_exceeded',
+        extra: {
+          window: billing.window,
+          limit: billing.limit,
+          used: billing.used,
+          resetAt: billing.resetAt
+        }
+      })
+    }
+    billingReservation = billing.estimate
+  }
+
   /*
    * ⑤ 上游账户 + 故障转移（双层：先换号，再换渠道）。
    *
@@ -383,22 +439,32 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     completionTokens: number
     totalTokens: number
   }): ((logId: string) => Promise<void>) | undefined => {
-    if (!billingUserId || !res?.ok || c.req.raw.signal.aborted) return undefined
+    if (!billingUserId) return undefined
+    if (!res?.ok || c.req.raw.signal.aborted) {
+      // 失败 / 客户端断开：不会结算，立即归还预留
+      void releaseReservationOnce()
+      return undefined
+    }
     const channelId = channel.id
     const servedModel = upstreamModel
     // 对外模型名：命中 alias_rates 时按售价扣费；cost_money 仍是渠道成本
     const servedAlias = model
     return async (logId: string) => {
-      await settleRequestBilling({
-        userId: billingUserId,
-        requestLogId: logId,
-        channelId,
-        upstreamModel: servedModel,
-        alias: servedAlias,
-        inputTokens: usage.promptTokens,
-        outputTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens
-      })
+      try {
+        await settleRequestBilling({
+          userId: billingUserId,
+          requestLogId: logId,
+          channelId,
+          upstreamModel: servedModel,
+          alias: servedAlias,
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens
+        })
+      } finally {
+        // 结算成功 / 幂等跳过 / 结算抛错都要释放，try/finally 保证不漏
+        await releaseReservationOnce()
+      }
     }
   }
 
@@ -625,6 +691,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   res ??= lastUpstreamError
   if (!res) {
     const clientGone = c.req.raw.signal.aborted
+    // 一个可用的上游响应都没拿到：不会结算，归还预留
+    void releaseReservationOnce()
     fireAndForgetLog({
       ...logCtx,
       statusCode: clientGone ? 499 : 504,
@@ -686,6 +754,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     const parsed = parseJsonSafe(text)
 
     if (!res.ok || !parsed || typeof parsed !== 'object') {
+      // 解析失败 / 上游非 2xx：不会结算，归还预留
+      void releaseReservationOnce()
       fireAndForgetLog({
         ...logCtx,
         statusCode: res.status,
@@ -767,6 +837,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   // ⑨ 流式：tee 出两条支路 —— 一条原样下传，一条旁路扫描 usage
   const upstreamBody = res.body
   if (!upstreamBody) {
+    void releaseReservationOnce()
     return openaiError(c, 502, '上游返回了空的流式响应', 'api_error', 'empty_stream')
   }
 
