@@ -778,6 +778,120 @@ a { color: var(--accent); text-decoration: none; }
 }
 .sk-heat-foot-item { height: 9px; }
 
+/* ---- 余额用量骨架屏 ---- */
+
+/*
+ * 余额用量页的整页骨架（API 卡 / 汇总卡 / 渠道卡）。
+ *
+ * 只写几何：所有占位块都带 .sk（底色与流光见上方骨架屏段），
+ * 这里不出现任何颜色字面量，全部走主题变量。
+ *
+ * 高度一律是固定值，不靠文字撑开 —— 行盒按真实字号 × 1.55 行高算出来：
+ *   14.5px → 22.5、12.5px → 19.4、12px → 18.6、11.5px → 17.8
+ * 这样数据到达、骨架换成真实卡片时高度基本不变，页面不会上下跳。
+ */
+.sk-usage { min-width: 0; }
+
+/*
+ * 视觉隐藏（但仍参与文本流）的「加载中」：
+ * role="status" 的 live region 需要有文本内容才播报，读屏读得到、屏幕上看不见；
+ * 顺带让只读 innerText 的巡检脚本（scripts/ui）不会把加载中的页面当成空页。
+ */
+.sk-usage-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 卡片头：标题 22.5 + 副标题 18.6；右侧按钮与 .btn-sm 同高 */
+.sk-usage-head-main { display: flex; flex-direction: column; min-width: 0; }
+.sk-usage-title { display: flex; align-items: center; height: 22.5px; }
+.sk-usage-title-bar { width: 132px; max-width: 52%; height: 14px; }
+.sk-usage-sub { display: flex; align-items: center; height: 18.6px; }
+.sk-usage-sub-bar { width: 208px; max-width: 72%; height: 10px; }
+.sk-usage-head-btn { flex: 0 0 auto; width: 84px; height: 29px; border-radius: var(--radius-sm); }
+.sk-usage-head-hint { flex: 0 0 auto; width: 148px; height: 17.8px; }
+
+/* ① API 卡：两行「GET + 说明 + 地址 + 复制」（.api-url 实测 31.4 高）+ 一行按钮 */
+.sk-usage .sk-usage-api-rows { gap: 8px; }
+.sk-usage-api-row { display: flex; align-items: center; gap: 8px; min-width: 0; height: 31.4px; }
+.sk-usage-api-tag { flex: 0 0 auto; width: 74px; height: 21.8px; border-radius: 5px; }
+.sk-usage-api-label { flex: 0 0 auto; width: 72px; height: 17.8px; }
+.sk-usage-api-code { flex: 1 1 auto; min-width: 0; height: 31.4px; border-radius: var(--radius-sm); }
+.sk-usage-api-copy { flex: 0 0 auto; width: 34px; height: 31.4px; border-radius: var(--radius-sm); }
+.sk-usage-api-row-foot { height: 29px; }
+.sk-usage-api-btn { width: 124px; height: 29px; border-radius: var(--radius-sm); }
+
+/*
+ * ② / ③ 里所有 .stat：真实 stat 由「标签 18.6 + 数字 38.75（上边距 3）
+ * + 提示 17.8（上边距 2）」撑到 112.16；骨架只画标签条与大数字条，
+ * 余下的高度用 min-height 补齐，保证与真实卡片同高（实测值见下）。
+ */
+.sk-usage-stat { display: flex; flex-direction: column; min-height: 112.16px; }
+.sk-usage-stat-label { display: flex; align-items: center; height: 18.6px; }
+.sk-usage-stat-label-bar { width: 66%; max-width: 132px; height: 10px; }
+.sk-usage-stat-value {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 38.75px;
+  margin-top: 3px;
+}
+.sk-usage-stat-value-bar { width: 62%; max-width: 156px; height: 22px; }
+
+/*
+ * ③ 渠道卡：渠道名行带 tag 时实测 23，与 .card-title.row 同高。
+ *
+ * 真实渠道卡的高度取决于「币种数 / 窗口数 / 账户数」，骨架对齐的是与它同构的
+ * 那一档（2 币种 + 2 窗口 + 多账户）—— 用真实组件按同样结构渲染，实测 489.88px。
+ * 固定骨架不可能贴合所有真实卡片（当前实例里简约卡 248.78、带账期累计的富卡 701–807），
+ * 所以按「同构样本」定高，数据到达时不会整体上下跳。
+ */
+.sk-usage-channel { min-height: 489.9px; }
+.sk-usage-chname { display: flex; align-items: center; gap: 8px; height: 23px; min-width: 0; }
+.sk-usage-name { flex: 0 1 auto; width: 118px; max-width: 46%; height: 14px; }
+.sk-usage-tag { flex: 0 0 auto; width: 58px; height: 21.8px; border-radius: 5px; }
+
+.sk-usage-balances { margin-bottom: 14px; }
+
+/* 额度窗口：说明行 18.6 + 8，每条窗口「行 19.4 + 轨道 5（上边距 5）」 */
+.sk-usage-windows { margin-bottom: 14px; }
+.sk-usage-section-label { display: flex; align-items: center; height: 18.6px; margin-bottom: 8px; }
+.sk-usage-section-label-bar { width: 92px; height: 10px; }
+.sk-usage .sk-usage-window-list { gap: 10px; }
+.sk-usage-window-head { height: 19.4px; }
+.sk-usage-window-label { width: 96px; height: 11px; }
+.sk-usage-window-value { width: 148px; height: 11px; }
+.sk-usage-window-track { height: 5px; border-radius: 3px; margin-top: 5px; }
+
+/* 按账户：与 .usage-acct-section 同构（虚线上边线 + 12 上内边距），内容压成两行短条 */
+.sk-usage-acct {
+  margin-bottom: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.sk-usage-acct .sk-usage-section-label { margin-bottom: 10px; }
+.sk-usage-acct-rows { display: flex; flex-direction: column; gap: 8px; }
+.sk-usage-acct-row { width: 58%; height: 24px; border-radius: var(--radius-sm); }
+.sk-usage-acct-row:last-child { width: 40%; }
+
+/* 查看原始数据按钮 */
+.sk-usage-foot { display: flex; margin-top: 10px; }
+.sk-usage-foot-btn { width: 148px; height: 29px; border-radius: var(--radius-sm); }
+
+/* 窄屏：.stat-value 在 ≤620 收成 22px，行盒跟着降到 34.1，骨架同步 */
+@media (max-width: 620px) {
+  .sk-usage-stat { min-height: 107.5px; }
+  .sk-usage-stat-value { height: 34.1px; }
+}
+
 /* 余额页顶部展示的 API 地址：可选中、可换行，不撑破卡片 */
 .api-url {
   flex: 1 1 auto;

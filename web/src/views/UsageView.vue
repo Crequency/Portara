@@ -152,7 +152,110 @@ onMounted(() => void load())
 </script>
 
 <template>
-  <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
+  <!--
+    加载中：整页骨架，与下面的真实结构一一对应（API 卡 / 汇总卡 / 渠道卡）。
+    容器带 role="status"，占位块全部 aria-hidden —— 读屏只念一次「加载中」。
+  -->
+  <div
+    v-if="loading"
+    class="stack sk-usage"
+    role="status"
+    :aria-label="t('common.loading')"
+  >
+    <!-- 视觉隐藏的状态文本：live region 要有文本才会播报，文本巡检也不会把「加载中」判成空页 -->
+    <span class="sk-usage-live">{{ t('common.loading') }}</span>
+
+    <!-- ① 网关自身的余额 API：卡片头 + 两行地址 + 一行按钮 -->
+    <div class="card" aria-hidden="true">
+      <div class="card-head sk-usage-head">
+        <div class="sk-usage-head-main">
+          <div class="sk-usage-title"><span class="sk sk-usage-title-bar"></span></div>
+          <div class="sk-usage-sub"><span class="sk sk-usage-sub-bar"></span></div>
+        </div>
+        <span class="sk sk-usage-head-hint"></span>
+      </div>
+      <div class="form-grid sk-usage-api-rows">
+        <div v-for="n in 2" :key="'api' + n" class="sk-usage-api-row">
+          <span class="sk sk-usage-api-tag"></span>
+          <span class="sk sk-usage-api-label"></span>
+          <span class="sk sk-usage-api-code"></span>
+          <span class="sk sk-usage-api-copy"></span>
+        </div>
+        <div class="sk-usage-api-row sk-usage-api-row-foot">
+          <span class="sk sk-usage-api-btn"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ② 页内概览：卡片头 + 4 个等宽 stat -->
+    <div class="card" aria-hidden="true">
+      <div class="card-head sk-usage-head">
+        <div class="sk-usage-head-main">
+          <div class="sk-usage-title"><span class="sk sk-usage-title-bar"></span></div>
+          <div class="sk-usage-sub"><span class="sk sk-usage-sub-bar"></span></div>
+        </div>
+        <span class="sk sk-usage-head-btn"></span>
+      </div>
+      <div class="grid grid-4">
+        <div v-for="n in 4" :key="'sum' + n" class="stat sk-usage-stat">
+          <div class="sk-usage-stat-label"><span class="sk sk-usage-stat-label-bar"></span></div>
+          <div class="sk-usage-stat-value"><span class="sk sk-usage-stat-value-bar"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 渠道卡：卡片头 / 余额 / 窗口 / 账户区（固定 2 张） -->
+    <div
+      v-for="n in 2"
+      :key="'ch' + n"
+      class="card sk-usage-channel"
+      aria-hidden="true"
+    >
+      <div class="card-head sk-usage-head">
+        <div class="sk-usage-head-main">
+          <div class="sk-usage-chname">
+            <span class="sk sk-usage-name"></span>
+            <span class="sk sk-usage-tag"></span>
+          </div>
+          <div class="sk-usage-sub"><span class="sk sk-usage-sub-bar"></span></div>
+        </div>
+        <span class="sk sk-usage-head-btn"></span>
+      </div>
+
+      <!-- 金额余额 -->
+      <div class="grid grid-3 sk-usage-balances">
+        <div v-for="b in 2" :key="'bal' + b" class="stat sk-usage-stat">
+          <div class="sk-usage-stat-label"><span class="sk sk-usage-stat-label-bar"></span></div>
+          <div class="sk-usage-stat-value"><span class="sk sk-usage-stat-value-bar"></span></div>
+        </div>
+      </div>
+
+      <!-- 额度窗口 -->
+      <div class="sk-usage-windows">
+        <div class="sk-usage-section-label"><span class="sk sk-usage-section-label-bar"></span></div>
+        <div class="form-grid sk-usage-window-list">
+          <div v-for="w in 2" :key="'win' + w" class="sk-usage-window">
+            <div class="row-between sk-usage-window-head">
+              <span class="sk sk-usage-window-label"></span>
+              <span class="sk sk-usage-window-value"></span>
+            </div>
+            <div class="sk sk-usage-window-track"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 按账户：两行短条 -->
+      <div class="sk-usage-acct">
+        <div class="sk-usage-section-label"><span class="sk sk-usage-section-label-bar"></span></div>
+        <div class="sk-usage-acct-rows">
+          <span v-for="a in 2" :key="'acct' + a" class="sk sk-usage-acct-row"></span>
+        </div>
+      </div>
+
+      <!-- 查看原始数据 -->
+      <div class="sk-usage-foot"><span class="sk sk-usage-foot-btn"></span></div>
+    </div>
+  </div>
 
   <div v-else class="stack">
     <!-- 网关自身的余额 API（供程序调用） -->
