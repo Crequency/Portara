@@ -12,6 +12,12 @@
  *   ② 响应体里出现下面关键词之一（大小写不敏感、子串匹配）。
  *      只收各家**明确表达额度/余额不足**的文案，不收泛化的 "rate limit" ——
  *      限流是瞬时的，该走普通冷却而不是阶梯冷冻。
+ *
+ * 另外提供两个纯函数：
+ *   - parseQuotaResetAt：从响应体（details.reset_at / reset_at）或 Retry-After
+ *     头解析上游明确给出的重置时刻；
+ *   - quotaCooldownWithReset：把 reset_at 当成**下限**参与阶梯冷冻时长的 max，
+ *     最多不超过 3d（与阶梯封顶一致）。
  */
 
 /** 只有这两个状态码可能表示「钱/额度用完了」 */
@@ -34,11 +40,27 @@ export const QUOTA_EXHAUSTED_KEYWORDS: readonly string[] = [
   'quota_exceeded',
   'quota exhausted',
   'quota_exhausted',
+  'quota is exhausted',
   'out of credits',
   'insufficient credits',
   'insufficient credit',
   'credit balance is too low',
   'billing',
+  /*
+   * OpenAI 兼容网关常见的「钱包余额不足」—— 与 insufficient_quota 是
+   * 两个不同的 code，只认前者会漏掉 402 + insufficient_balance 这一类。
+   */
+  'insufficient_balance',
+  'wallet balance is insufficient',
+  /*
+   * 套餐/计划额度（OpenDesign 的 coding plan 就是如此）：
+   * 文案里根本不出现 "quota exhausted"，而是 "Coding Plan quota is exhausted"。
+   * 同时收下 coding_plan / coding plan / plan quota 三个变体（下划线与空格
+   * 都有人用），仍然只在 402/429 上生效。
+   */
+  'coding_plan',
+  'coding plan',
+  'plan quota',
   // 中文厂商
   '余额不足',
   '额度已用尽',
@@ -85,11 +107,145 @@ export const QUOTA_COOLDOWN_LADDER_SEC: readonly number[] = [
 /** 阶梯封顶对应的触发次数（第 8 次起都是 3d） */
 export const QUOTA_COOLDOWN_MAX_LEVEL = QUOTA_COOLDOWN_LADDER_SEC.length + 1
 
+/**
+ * reset_at 参与冷冻时的上限：**3 天**。
+ *
+ * 取阶梯最后一项而不是另写一个魔数：两者必须一致，否则
+ * 「reset_at 给了一年」会把账户冻到天荒地老，运营连人工恢复都等不到。
+ */
+export const QUOTA_COOLDOWN_CAP_SEC = QUOTA_COOLDOWN_LADDER_SEC[QUOTA_COOLDOWN_LADDER_SEC.length - 1]!
+
 /** 第 N 次触发对应的冷冻秒数；level < 1 按 1 算 */
 export function quotaCooldownSecForLevel(level: number): number {
   const n = Math.max(1, Math.floor(Number.isFinite(level) ? level : 1))
   const index = Math.min(n, QUOTA_COOLDOWN_LADDER_SEC.length) - 1
   return QUOTA_COOLDOWN_LADDER_SEC[index]!
+}
+
+// ---------------------------------------------------------------- reset_at
+
+/** 上游可能用的重置字段名（下划线/驼峰都有人用） */
+const RESET_AT_KEYS = new Set(['reset_at', 'resetat'])
+
+/** JSON 递归查找 reset_at 的最大深度：只做兜底，不做无限下钻 */
+const MAX_RESET_JSON_DEPTH = 6
+
+/** 把 reset_at 的值转成毫秒时间戳：ISO 字符串或秒/毫秒数字 */
+function resetValueToMs(value: unknown): number | null {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    // 10 位是秒级时间戳，13 位是毫秒级 —— 两者在真实上游里都出现过
+    return value < 1e12 ? value * 1000 : value
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const ms = Date.parse(value)
+    return Number.isFinite(ms) ? ms : null
+  }
+  return null
+}
+
+/** 在已解析的 JSON 里递归找 reset_at（不依赖它嵌在第几层 details 下） */
+function findResetAt(node: unknown, depth: number): number | null {
+  if (depth > MAX_RESET_JSON_DEPTH || node === null || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findResetAt(item, depth + 1)
+      if (found !== null) return found
+    }
+    return null
+  }
+  const record = node as Record<string, unknown>
+  for (const [key, value] of Object.entries(record)) {
+    if (!RESET_AT_KEYS.has(key.toLowerCase())) continue
+    const ms = resetValueToMs(value)
+    if (ms !== null) return ms
+  }
+  for (const value of Object.values(record)) {
+    const found = findResetAt(value, depth + 1)
+    if (found !== null) return found
+  }
+  return null
+}
+
+/**
+ * 解析 Retry-After：秒数（相对）或 HTTP-date（绝对）。
+ * 返回毫秒时间戳；解析失败返回 null。
+ */
+function retryAfterToMs(
+  header: string | number | null | undefined,
+  now: number
+): number | null {
+  if (header === null || header === undefined) return null
+  if (typeof header === 'number') {
+    return Number.isFinite(header) && header > 0 ? now + header * 1000 : null
+  }
+  const text = header.trim()
+  if (!text) return null
+  if (/^\d+$/.test(text)) {
+    const secs = Number(text)
+    return secs > 0 ? now + secs * 1000 : null
+  }
+  const ms = Date.parse(text)
+  return Number.isFinite(ms) ? ms : null
+}
+
+/**
+ * 上游明确给出的「额度何时恢复」。
+ *
+ * 优先响应体里的 `reset_at`（有的上游放在 `details.reset_at`，有的放在顶层），
+ * 没有才退回 `Retry-After` 头。返回**绝对毫秒时间戳**，取不到 = null。
+ *
+ * 注意：这里只负责「解析」，不判断是否已过期 —— 过期由 quotaCooldownWithReset
+ * 处理（按阶梯兜底），保留单一职责。
+ */
+export function parseQuotaResetAt(
+  bodyText: string,
+  retryAfterHeader?: string | number | null,
+  now: number = Date.now()
+): number | null {
+  const text = String(bodyText ?? '').slice(0, MAX_SCAN_CHARS)
+  if (text) {
+    try {
+      const found = findResetAt(JSON.parse(text), 0)
+      if (found !== null) return found
+    } catch {
+      // 非 JSON（或被截断）：退回正则，至少把裸露的 reset_at 字段捞出来
+      const match = /"reset_at"\s*:\s*"([^"]+)"/i.exec(text)
+      if (match?.[1]) {
+        const ms = Date.parse(match[1])
+        if (Number.isFinite(ms)) return ms
+      }
+    }
+  }
+  return retryAfterToMs(retryAfterHeader, now)
+}
+
+/**
+ * 本次额度冷冻的秒数：`max(阶梯值, min(reset_at - now, 3d))`。
+ *
+ * - 阶梯值仍是下限：上游说「1 分钟后就恢复」也不会比第 1 档 5m 更短，
+ *   避免同一账户被反复打爆；
+ * - reset_at 更远时以它为准（最长 3 天），因为上游已经明确告诉我们
+ *   这段时间内都用不了；
+ * - reset_at 已过期 / 解析失败 → 完全按阶梯值，不引入额外不确定性。
+ */
+export function quotaCooldownWithReset(
+  level: number,
+  resetAt: Date | string | number | null | undefined,
+  now: number
+): number {
+  const ladder = quotaCooldownSecForLevel(level)
+  const resetMs =
+    resetAt instanceof Date
+      ? resetAt.getTime()
+      : typeof resetAt === 'number'
+        ? resetAt
+        : resetAt
+          ? Date.parse(resetAt)
+          : Number.NaN
+  if (!Number.isFinite(resetMs) || resetMs <= now) return ladder
+  const fromReset = Math.ceil((resetMs - now) / 1000)
+  return Math.max(ladder, Math.min(fromReset, QUOTA_COOLDOWN_CAP_SEC))
 }
 
 export interface QuotaCooldownDecision {
@@ -108,11 +264,13 @@ export interface QuotaCooldownDecision {
  * @param currentLevel 已触发次数（0 = 从未）
  * @param currentUntil 本次冷冻到期时间（null = 从未冷冻）
  * @param now         当前毫秒时间戳
+ * @param resetAt     上游给出的重置时刻（可选；参与 quotaCooldownWithReset）
  */
 export function decideQuotaCooldown(
   currentLevel: number,
   currentUntil: Date | string | null,
-  now: number
+  now: number,
+  resetAt?: Date | string | number | null
 ): QuotaCooldownDecision {
   const level = Math.max(0, Math.floor(Number.isFinite(currentLevel) ? currentLevel : 0))
   const untilMs = currentUntil ? new Date(currentUntil).getTime() : Number.NaN
@@ -121,7 +279,7 @@ export function decideQuotaCooldown(
     return { applies: false, level, secs: Math.max(1, Math.ceil((untilMs - now) / 1000)) }
   }
   const next = level + 1
-  return { applies: true, level: next, secs: quotaCooldownSecForLevel(next) }
+  return { applies: true, level: next, secs: quotaCooldownWithReset(next, resetAt, now) }
 }
 
 /** 日志用的短时长：5m / 15m / 2h / 3d；不足 1 分钟按秒 */

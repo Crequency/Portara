@@ -51,6 +51,49 @@ export function classifyAccountState(
   return 'ok'
 }
 
+/** 一个账户池的「额度冻结」摘要 */
+export interface QuotaFrozenPool {
+  /**
+   * true = 池子里**没有任何 ok 账户**，且全部处于 usageLimited / quotaCooling。
+   *
+   * 两种情况都必须成立才为 true：只要还有一个 ok 账户，或有一个
+   * genericCooling（通用失败冷却，可能是 5xx 瞬时错误）账户，
+   * 就维持既有「退化到池子里最差的账户也不自造 503」的语义。
+   */
+  allFrozen: boolean
+  /** 这些冻结账户里**最早**的额度重置时间（毫秒）；取不到 = null */
+  retryAtMs: number | null
+}
+
+/**
+ * 汇总账户池的额度冻结情况（供 /v1 决定要不要快速 429）。
+ *
+ * 只认 `quota_cooldown_until` 这一个重置时间来源：
+ * usageLimited 往往来自余额/窗口（没有"何时恢复"的答案），
+ * 这时 retryAtMs 为 null，调用方就不会短路 —— 保持原有退化行为。
+ */
+export function summarizeQuotaFrozenPool(
+  pool: Array<{ id: string; quota_cooldown_until: Date | string | null }>,
+  states: Map<string, AccountState>,
+  now: number
+): QuotaFrozenPool {
+  if (pool.length === 0) return { allFrozen: false, retryAtMs: null }
+  let retryAtMs: number | null = null
+  for (const account of pool) {
+    const state = states.get(account.id) ?? 'ok'
+    if (state !== 'usageLimited' && state !== 'quotaCooling') {
+      return { allFrozen: false, retryAtMs: null }
+    }
+    const untilMs = account.quota_cooldown_until
+      ? new Date(account.quota_cooldown_until).getTime()
+      : Number.NaN
+    if (Number.isFinite(untilMs) && untilMs > now) {
+      if (retryAtMs === null || untilMs < retryAtMs) retryAtMs = untilMs
+    }
+  }
+  return { allFrozen: true, retryAtMs }
+}
+
 /**
  * 退化阶梯：ok → quotaCooling → genericCooling → usageLimited → 全部。
  *

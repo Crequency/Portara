@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   classifyAccountState,
   orderByDegradation,
+  summarizeQuotaFrozenPool,
   type AccountState,
   type ClassifiableAccount
 } from '../src/services/accountState.js'
@@ -121,6 +122,81 @@ test('退化阶梯：ok → quotaCooling → genericCooling → usageLimited', (
 
 test('退化阶梯：空池返回空数组', () => {
   assert.deepEqual(orderByDegradation([], new Map(), () => ''), [])
+})
+
+test('额度冻结摘要：全池 usageLimited/quotaCooling 且能取到最早重置', () => {
+  const pool = [
+    acct('a', { quota_cooldown_until: new Date(NOW + 900_000) }),
+    acct('b', { quota_exhausted: true }),
+    acct('c', { quota_cooldown_until: new Date(NOW + 300_000) })
+  ]
+  const states = new Map<string, AccountState>([
+    ['a', 'quotaCooling'],
+    ['b', 'usageLimited'],
+    ['c', 'quotaCooling']
+  ])
+  assert.deepEqual(summarizeQuotaFrozenPool(pool, states, NOW), {
+    allFrozen: true,
+    retryAtMs: NOW + 300_000
+  })
+})
+
+test('额度冻结摘要：全池 usageLimited 但不知道何时恢复 → retryAtMs 为 null', () => {
+  const pool = [acct('a'), acct('b')]
+  const states = new Map<string, AccountState>([
+    ['a', 'usageLimited'],
+    ['b', 'usageLimited']
+  ])
+  assert.deepEqual(summarizeQuotaFrozenPool(pool, states, NOW), {
+    allFrozen: true,
+    retryAtMs: null
+  })
+  // 过期的冷冻不算「可恢复时间」
+  const expired = [acct('a', { quota_cooldown_until: PAST })]
+  assert.equal(
+    summarizeQuotaFrozenPool(
+      expired,
+      new Map<string, AccountState>([['a', 'quotaCooling']]),
+      NOW
+    ).retryAtMs,
+    null
+  )
+})
+
+test('额度冻结摘要：只要有 ok / genericCooling 账户就不算全冻结', () => {
+  const pool = [
+    acct('a', { quota_cooldown_until: new Date(NOW + 60_000) }),
+    acct('b')
+  ]
+  assert.deepEqual(
+    summarizeQuotaFrozenPool(
+      pool,
+      new Map<string, AccountState>([
+        ['a', 'quotaCooling'],
+        ['b', 'ok']
+      ]),
+      NOW
+    ),
+    { allFrozen: false, retryAtMs: null }
+  )
+  assert.deepEqual(
+    summarizeQuotaFrozenPool(
+      pool,
+      new Map<string, AccountState>([
+        ['a', 'quotaCooling'],
+        ['b', 'genericCooling']
+      ]),
+      NOW
+    ),
+    { allFrozen: false, retryAtMs: null }
+  )
+})
+
+test('额度冻结摘要：空池不短路', () => {
+  assert.deepEqual(summarizeQuotaFrozenPool([], new Map(), NOW), {
+    allFrozen: false,
+    retryAtMs: null
+  })
 })
 
 test('退化阶梯：同一级内保持原顺序', () => {

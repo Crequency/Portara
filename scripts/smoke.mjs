@@ -193,6 +193,23 @@ const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
  * 429 + insufficient_quota，用于验证阶梯冷冻与幂等。
  */
 const QUOTA_ERROR_KEY = 'sk-quota-error-account'
+/**
+ * 真实 402「coding plan 额度用尽」的伪上游密钥。
+ *
+ * body 从线上日志抄来（一字未改），reset_at 在响应时按当前时刻动态生成：
+ * 旧关键词表一个都不命中，所以它走了 1h 通用冷却，到期后又打同一个
+ * 已用尽账户 —— 24 小时内同类 402 重复出现 29 次，正是本次要修的问题。
+ */
+const QUOTA_RESET_KEY = 'sk-quota-reset-account'
+/** 同上，但 reset_at 在 10 天后 —— 验证冷冻被 3d 截断 */
+const QUOTA_RESET_FAR_KEY = 'sk-quota-reset-far-account'
+/** 普通 429（不含任何额度关键词）—— 必须走通用冷却，不能进阶梯冷冻 */
+const RATE_LIMIT_KEY = 'sk-plain-ratelimit-account'
+/** reset_at 相对响应时刻的提前量（秒） */
+const QUOTA_RESET_AHEAD_SEC = 30 * 60
+const QUOTA_RESET_FAR_AHEAD_SEC = 10 * 24 * 3600
+/** 伪上游收到 QUOTA_RESET_KEY 的 chat 请求次数 —— 断言「冻结后不再打上游」 */
+let quotaResetUpstreamHits = 0
 // 固定管理凭据：配合「按用户名引导」语义，脚本可无限次重复运行
 const ADMIN_USER = 'smoke-admin'
 const ADMIN_PASS = 'smoke-admin-password'
@@ -313,11 +330,13 @@ function startMockUpstream() {
       // 具体用了哪种由断言去校验（伪上游不该替应用规定用哪种）。
       const auth = req.headers.authorization ?? ''
       const xApiKey = req.headers['x-api-key'] ?? ''
+      const authedKey = (key) => auth === `Bearer ${key}` || xApiKey === key
       const authed =
-        auth === `Bearer ${UPSTREAM_KEY}` ||
-        xApiKey === UPSTREAM_KEY ||
-        auth === `Bearer ${QUOTA_ERROR_KEY}` ||
-        xApiKey === QUOTA_ERROR_KEY
+        authedKey(UPSTREAM_KEY) ||
+        authedKey(QUOTA_ERROR_KEY) ||
+        authedKey(QUOTA_RESET_KEY) ||
+        authedKey(QUOTA_RESET_FAR_KEY) ||
+        authedKey(RATE_LIMIT_KEY)
       if (url.startsWith('/v1') && !authed) {
         res.writeHead(401, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { message: 'bad upstream key' } }))
@@ -471,6 +490,44 @@ function startMockUpstream() {
         } catch {
           /* 忽略 */
         }
+        /*
+         * 真实上游（OpenDesign）的 402：额度耗尽信号是
+         * code=insufficient_balance + details.reset_at，
+         * message 里是 "Coding Plan quota is exhausted and wallet balance is insufficient."
+         */
+        if (authedKey(QUOTA_RESET_KEY) || authedKey(QUOTA_RESET_FAR_KEY)) {
+          if (authedKey(QUOTA_RESET_KEY)) quotaResetUpstreamHits++
+          const aheadSec = authedKey(QUOTA_RESET_KEY)
+            ? QUOTA_RESET_AHEAD_SEC
+            : QUOTA_RESET_FAR_AHEAD_SEC
+          res.writeHead(402, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'insufficient_balance',
+                details: {
+                  coding_plan_exhausted: true,
+                  reset_at: new Date(Date.now() + aheadSec * 1000).toISOString()
+                },
+                message:
+                  '[code=insufficient_balance] Coding Plan quota is exhausted and wallet balance is insufficient.'
+              }
+            })
+          )
+          return
+        }
+
+        // 普通限流：文案里没有额度关键词，必须走通用冷却而不是阶梯冷冻
+        if (authedKey(RATE_LIMIT_KEY)) {
+          res.writeHead(429, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              error: { message: 'rate limit exceeded', type: 'rate_limit_error' }
+            })
+          )
+          return
+        }
+
         // 额度用尽：429 + insufficient_quota，用于验证阶梯冷冻
         if (auth === `Bearer ${QUOTA_ERROR_KEY}` || xApiKey === QUOTA_ERROR_KEY) {
           res.writeHead(429, { 'content-type': 'application/json' })
@@ -4911,6 +4968,244 @@ async function main() {
     await apiCall('POST', '/api/model-routes/purge', { alias: qcAlias })
     await apiCall('DELETE', `/api/keys/${qcKey.body.apiKey.id}`)
     await apiCall('DELETE', `/api/channels/${qcId}`)
+
+    /*
+     * ⑥ 上游明确给出「何时恢复」（reset_at）+ 整池冻结快速 429
+     *
+     * 线上真实返回：OpenDesign 的 402 里额度信号是
+     *   code=insufficient_balance + details.reset_at
+     * 旧关键词表一个都不命中 → 只做 1h 通用冷却 → 到期又打同一个已用尽账户
+     * （24h 内 29 次同类 402）。这一段把「识别 → 按 reset_at 冷冻 →
+     * 整池冻结时不再打上游」整条链路钉住。
+     */
+    const qrChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-qr-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: QUOTA_RESET_KEY,
+      models: [MOCK_MODEL],
+      priority: 903
+    })
+    const qrId = qrChannel.body.channel.id
+    const qrAlias = `smoke-qr-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: qrAlias,
+      targets: [{ channelId: qrId, upstreamModel: MOCK_MODEL }]
+    })
+    // 本段自己清理密钥，**不**进 createdKeyIds（否则收尾时重复删除会 404）
+    const qrKey = await apiCall('POST', '/api/keys', { name: `smoke-qr-key-${RUN}` })
+    const qrHit = async () => {
+      const res = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${qrKey.body.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: qrAlias, messages: [{ role: 'user', content: 'hi' }] })
+      })
+      return {
+        status: res.status,
+        retryAfter: res.headers.get('retry-after'),
+        text: await res.text()
+      }
+    }
+
+    const qrHits0 = quotaResetUpstreamHits
+    const qrFirst = await qrHit()
+    check('真实 402 coding plan：客户端收到上游原文（402），不是网关自造错误', () => {
+      assert.equal(qrFirst.status, 402, `实际 ${qrFirst.status}`)
+      assert.match(qrFirst.text, /insufficient_balance/)
+    })
+
+    const qrAcc1 = (await apiCall('GET', `/api/channels/${qrId}/accounts`)).body.accounts[0]
+    check('真实 402 被识别：level=1，冷冻到 reset_at（约 30m）而不是阶梯 5m', () => {
+      assert.equal(qrAcc1.quotaCooldownLevel, 1)
+      assert.ok(qrAcc1.quotaCooldownUntil, 'quotaCooldownUntil 为空')
+      const secs = (new Date(qrAcc1.quotaCooldownUntil).getTime() - Date.now()) / 1000
+      assert.ok(
+        secs > 1500 && secs <= QUOTA_RESET_AHEAD_SEC + 5,
+        `应约 ${QUOTA_RESET_AHEAD_SEC}s（reset_at），实际 ${Math.round(secs)}s`
+      )
+      // 额度冷冻不写通用冷却（两套计时互不覆盖）
+      assert.equal(qrAcc1.cooldownUntil, null)
+    })
+
+    const qrHitsAfterFirst = quotaResetUpstreamHits
+    check('首个 402 确实打了一次上游', () => assert.equal(qrHitsAfterFirst, qrHits0 + 1))
+
+    const qrSecond = await qrHit()
+    check('整池额度冻结（单账户）：第二次请求快速 429 upstream_quota_exhausted', () => {
+      assert.equal(qrSecond.status, 429, `实际 ${qrSecond.status}`)
+      const body = JSON.parse(qrSecond.text)
+      assert.equal(body.error.code, 'upstream_quota_exhausted')
+      assert.match(body.error.message, /额度均已用尽/)
+      assert.match(body.error.message, /恢复/)
+    })
+    check('整池额度冻结：Retry-After = 剩余冷冻秒数（body.retryAfter 一致）', () => {
+      const retryAfter = Number(qrSecond.retryAfter)
+      assert.ok(
+        Number.isFinite(retryAfter) && retryAfter > 1500 && retryAfter <= QUOTA_RESET_AHEAD_SEC,
+        `Retry-After 异常：${qrSecond.retryAfter}`
+      )
+      assert.equal(JSON.parse(qrSecond.text).error.retryAfter, retryAfter)
+    })
+    check('整池额度冻结：上游没有被再次调用（计数未增长）', () =>
+      assert.equal(quotaResetUpstreamHits, qrHitsAfterFirst)
+    )
+
+    const qrAcc2 = (await apiCall('GET', `/api/channels/${qrId}/accounts`)).body.accounts[0]
+    check('整池额度冻结期间：账户状态保持原样（level/到期时间都不变）', () => {
+      assert.equal(qrAcc2.quotaCooldownLevel, 1)
+      assert.equal(qrAcc2.quotaCooldownUntil, qrAcc1.quotaCooldownUntil)
+    })
+
+    await sleep(300)
+    const qrLogs = await apiCall('GET', `/api/logs?limit=20&channelId=${qrId}`)
+    const qrBlockedLog = qrLogs.body.logs.find((l) => l.statusCode === 429)
+    check('快速 429 写了请求日志（status 429，便于按渠道统计）', () => {
+      assert.ok(qrBlockedLog, '没有 429 日志')
+      assert.match(qrBlockedLog.error, /upstream_quota_exhausted/)
+      assert.equal(qrBlockedLog.channelId, qrId)
+    })
+
+    // reset_at 在 10 天后 → 必须被 3d 截断，不能真的冻十天
+    const qrfChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-qrf-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: QUOTA_RESET_FAR_KEY,
+      models: [MOCK_MODEL],
+      priority: 902
+    })
+    const qrfId = qrfChannel.body.channel.id
+    const qrfAlias = `smoke-qrf-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: qrfAlias,
+      targets: [{ channelId: qrfId, upstreamModel: MOCK_MODEL }]
+    })
+    const qrfKey = await apiCall('POST', '/api/keys', { name: `smoke-qrf-key-${RUN}` })
+    const qrfRes = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${qrfKey.body.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ model: qrfAlias, messages: [{ role: 'user', content: 'hi' }] })
+    })
+    const qrfText = await qrfRes.text()
+    const qrfAcc = (await apiCall('GET', `/api/channels/${qrfId}/accounts`)).body.accounts[0]
+    check('reset_at 太远（10 天）：冷冻被截断到 3d', () => {
+      assert.equal(qrfRes.status, 402, `实际 ${qrfRes.status}：${qrfText.slice(0, 120)}`)
+      const secs = (new Date(qrfAcc.quotaCooldownUntil).getTime() - Date.now()) / 1000
+      assert.ok(
+        secs > 3 * 24 * 3600 - 120 && secs <= 3 * 24 * 3600,
+        `应约 259200s（3d 截断），实际 ${Math.round(secs)}s`
+      )
+    })
+
+    // 普通 429 rate limit：不是额度用尽，不能进阶梯冷冻
+    const qrlChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-qrl-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: RATE_LIMIT_KEY,
+      models: [MOCK_MODEL],
+      priority: 901
+    })
+    const qrlId = qrlChannel.body.channel.id
+    const qrlAlias = `smoke-qrl-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: qrlAlias,
+      targets: [{ channelId: qrlId, upstreamModel: MOCK_MODEL }]
+    })
+    const qrlKey = await apiCall('POST', '/api/keys', { name: `smoke-qrl-key-${RUN}` })
+    const qrlRes = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${qrlKey.body.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ model: qrlAlias, messages: [{ role: 'user', content: 'hi' }] })
+    })
+    await qrlRes.text()
+    const qrlAcc = (await apiCall('GET', `/api/channels/${qrlId}/accounts`)).body.accounts[0]
+    check('普通 429 rate limit 不触发额度冷冻（仍走通用冷却）', () => {
+      assert.equal(qrlRes.status, 429, `实际 ${qrlRes.status}`)
+      assert.equal(qrlAcc.quotaCooldownLevel, 0)
+      assert.equal(qrlAcc.quotaCooldownUntil, null)
+      assert.ok(qrlAcc.cooldownUntil, '通用冷却未写入')
+    })
+
+    /*
+     * 同账户第二次命中仍在冷冻期内 —— 幂等。
+     *
+     * 这里刻意让渠道里同时存在一个通用冷却账户（坏密钥）：
+     * 池子不是"全部额度冻结"，所以 **不会** 触发快速 429，
+     * 第二次请求仍会真的打到那个已冻结账户，从而验证
+     * markQuotaExhaustedResponse 的条件更新（level 不涨、reset_at 不延长）。
+     */
+    const qrxChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-qrx-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: QUOTA_RESET_KEY,
+      models: [MOCK_MODEL],
+      priority: 900
+    })
+    const qrxId = qrxChannel.body.channel.id
+    const qrxDefault = (await apiCall('GET', `/api/channels/${qrxId}/accounts`)).body.accounts[0]
+    await apiCall('PATCH', `/api/channels/${qrxId}/accounts/${qrxDefault.id}`, {
+      name: '重置账户',
+      priority: 20
+    })
+    await apiCall('POST', `/api/channels/${qrxId}/accounts`, {
+      name: '坏密钥账户',
+      apiKey: 'sk-this-key-is-rejected',
+      priority: 10,
+      weight: 1
+    })
+    const qrxAlias = `smoke-qrx-model-${RUN}`
+    await apiCall('POST', '/api/model-routes', {
+      alias: qrxAlias,
+      targets: [{ channelId: qrxId, upstreamModel: MOCK_MODEL }]
+    })
+    const qrxKey = await apiCall('POST', '/api/keys', { name: `smoke-qrx-key-${RUN}` })
+    const qrxHit = async () => {
+      const res = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${qrxKey.body.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: qrxAlias, messages: [{ role: 'user', content: 'hi' }] })
+      })
+      return { status: res.status, text: await res.text() }
+    }
+
+    const qrxFirst = await qrxHit()
+    const qrxUntil1 = (
+      await apiCall('GET', `/api/channels/${qrxId}/accounts`)
+    ).body.accounts.find((a) => a.name === '重置账户').quotaCooldownUntil
+    const qrxHitsAfter1 = quotaResetUpstreamHits
+    const qrxSecond = await qrxHit()
+    const qrxAcc2 = (await apiCall('GET', `/api/channels/${qrxId}/accounts`)).body.accounts.find(
+      (a) => a.name === '重置账户'
+    )
+    check('同账户第二次命中仍在冷冻期内：真打到上游，但 level 不递增、reset_at 不延长', () => {
+      assert.equal(qrxFirst.status, 402, `首跳实际 ${qrxFirst.status}`)
+      assert.equal(qrxSecond.status, 402, `二跳实际 ${qrxSecond.status}`)
+      assert.equal(quotaResetUpstreamHits, qrxHitsAfter1 + 1, '第二次没有真的打到上游')
+      assert.ok(qrxUntil1, '首次没有写入 quotaCooldownUntil')
+      assert.equal(qrxAcc2.quotaCooldownLevel, 1, 'level 被重复递增')
+      assert.equal(qrxAcc2.quotaCooldownUntil, qrxUntil1, 'reset_at 把冷冻期延长了')
+    })
+
+    for (const [alias, channelId, keyId] of [
+      [qrAlias, qrId, qrKey.body.apiKey.id],
+      [qrfAlias, qrfId, qrfKey.body.apiKey.id],
+      [qrlAlias, qrlId, qrlKey.body.apiKey.id],
+      [qrxAlias, qrxId, qrxKey.body.apiKey.id]
+    ]) {
+      await apiCall('POST', '/api/model-routes/purge', { alias })
+      await apiCall('DELETE', `/api/keys/${keyId}`)
+      await apiCall('DELETE', `/api/channels/${channelId}`)
+    }
 
     // 本段自建的映射自己清掉：残留会让下一轮的 replace 类用例撞 409
     await apiCall('POST', '/api/model-routes/purge', { alias: coolAlias })

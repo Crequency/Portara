@@ -13,14 +13,20 @@
  */
 import { query } from '../db.js'
 import { pickWeighted } from './routing.js'
-import { classifyAccountState, orderByDegradation, type AccountState } from './accountState.js'
+import {
+  classifyAccountState,
+  orderByDegradation,
+  summarizeQuotaFrozenPool,
+  type AccountState,
+  type QuotaFrozenPool
+} from './accountState.js'
 import {
   decideAffinityPin,
   pinAgeMs,
   promotePinned,
   type AffinityDropReason
 } from './affinityPure.js'
-import { QUOTA_COOLDOWN_LADDER_SEC } from './quotaSignal.js'
+import { QUOTA_COOLDOWN_LADDER_SEC, quotaCooldownWithReset } from './quotaSignal.js'
 import type { ChannelAccountRow } from '../types.js'
 
 export type AccountRow = ChannelAccountRow
@@ -85,6 +91,11 @@ export interface PickAccountsResult {
   affinityDropped: boolean
   /** 丢弃原因；仅 affinityDropped=true 时存在 */
   affinityDropReason?: AffinityDropReason
+  /**
+   * 整个候选池的额度冻结摘要。
+   * allFrozen=true 且能取到 retryAtMs 时，/v1 会直接 429 而不是再打上游。
+   */
+  quotaPool: QuotaFrozenPool
 }
 
 export async function pickAccounts(
@@ -129,8 +140,11 @@ export async function pickAccounts(
   for (const account of pool) {
     states.set(account.id, classifyAccountState(account, now, skipWindows))
   }
+  // 摘要按**完整候选池**算，而不是按退化后只剩下的那一级：
+  // 「所有账户都被额度冻结」需要看全池，不能只看第一个非空梯队。
+  const quotaPool = summarizeQuotaFrozenPool(pool, states, now)
   const usable = orderByDegradation(pool, states, (a) => a.id)
-  if (usable.length === 0) return { accounts: [], affinityDropped: false }
+  if (usable.length === 0) return { accounts: [], affinityDropped: false, quotaPool }
 
   const tiers = [...new Set(usable.map((a) => a.priority))].sort((a, b) => a - b)
   let ordered: AccountRow[] = []
@@ -186,7 +200,12 @@ export async function pickAccounts(
   }
 
   const limit = Math.max(1, opts.limit ?? ordered.length)
-  return { accounts: ordered.slice(0, limit), affinityDropped, affinityDropReason }
+  return {
+    accounts: ordered.slice(0, limit),
+    affinityDropped,
+    affinityDropReason,
+    quotaPool
+  }
 }
 
 /**
@@ -261,11 +280,20 @@ export interface QuotaCooldownResult {
  *
  * 阶梯数组作为参数传入，SQL 只负责按下标取值（level 封顶在最后一项），
  * 避免把阶梯数字硬编码进 SQL。
+ *
+ * 传了 `resetAtMs`（上游明确给出恢复时间）时，数组里每一项都已经过
+ * `quotaCooldownWithReset` 的 max/3d 截断 —— 纯函数是唯一口径来源，
+ * SQL 只按当前 level 取对应项，**递增与幂等的原子性完全不变**。
  */
 export async function markQuotaExhaustedResponse(
   accountId: string,
-  errorText: string
+  errorText: string,
+  resetAtMs?: number | null
 ): Promise<QuotaCooldownResult | null> {
+  const now = Date.now()
+  const secsByLevel = QUOTA_COOLDOWN_LADDER_SEC.map((_, index) =>
+    quotaCooldownWithReset(index + 1, resetAtMs ?? null, now)
+  )
   const updated = await query<{ level: number; secs: number }>(
     `update channel_accounts
         set quota_cooldown_level = quota_cooldown_level + 1,
@@ -281,7 +309,7 @@ export async function markQuotaExhaustedResponse(
                 extract(epoch from (quota_cooldown_until - now()))::int as secs`,
     [
       accountId,
-      [...QUOTA_COOLDOWN_LADDER_SEC],
+      secsByLevel,
       QUOTA_COOLDOWN_LADDER_SEC.length,
       errorText.slice(0, 500)
     ]

@@ -23,7 +23,8 @@ import {
 } from '../services/accounts.js'
 import {
   formatQuotaCooldown,
-  isQuotaExhaustionResponse
+  isQuotaExhaustionResponse,
+  parseQuotaResetAt
 } from '../services/quotaSignal.js'
 import { tryDecryptKey } from '../services/channels.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
@@ -469,8 +470,16 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
 
   const channelLimit = Math.min(env.maxChannelAttempts, pick.targets.length)
+  /**
+   * 已经确认「整池额度冻结」的候选渠道里最早的重置时间。
+   *
+   * 非最后一个候选渠道时**只记录并跳过**（不打上游，也不立刻 429）：
+   * 别的渠道可能还有健康账户，直接返回 429 会破坏既有的跨渠道故障转移。
+   * 只有走到最后一个候选渠道、且它同样整池冻结时才快速失败。
+   */
+  let frozenRetryAtMs: number | null = null
 
-  for (const target of pick.targets.slice(0, channelLimit)) {
+  for (const [targetIndex, target] of pick.targets.slice(0, channelLimit).entries()) {
     channel = target.channel
     upstreamModel = target.upstreamModel
 
@@ -536,6 +545,49 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       continue
     }
 
+    /*
+     * 整池额度冻结 → 快速失败，不再打上游。
+     *
+     * 为什么值得单独一条短路：额度用尽不是瞬时故障，上游已经明确说了
+     * 「什么时候恢复」（reset_at）。继续按"退化到最差账户"打过去，
+     * 只会把同一个 402 再换一次，并把上游错误透传给客户端 —— 用户看到
+     * 的就是「请求额度已用尽」反复出现。
+     *
+     * 触发条件很窄，三条同时成立：
+     *   ① 池子里没有任何 ok 账户，全部是 usageLimited / quotaCooling；
+     *   ② 能取到最早的重置时间（usageLimited 但不知道何时恢复的不算）；
+     *   ③ 已经走到最后一个候选渠道（否则先让别的渠道试试）。
+     * 其余情况一律维持既有退化语义，不自己造 503。
+     */
+    if (picked.quotaPool.allFrozen && picked.quotaPool.retryAtMs !== null) {
+      const retryAtMs = picked.quotaPool.retryAtMs
+      frozenRetryAtMs =
+        frozenRetryAtMs === null ? retryAtMs : Math.min(frozenRetryAtMs, retryAtMs)
+      if (targetIndex < channelLimit - 1) {
+        lastFailure = `渠道「${channel.name}」所有上游账户额度均已用尽`
+        continue
+      }
+      // Retry-After 上限 86400：超过一天的值对客户端没有意义，也会溢出某些 SDK
+      const retryAfterSec = Math.max(
+        1,
+        Math.min(86400, Math.ceil((frozenRetryAtMs - Date.now()) / 1000))
+      )
+      const resetAtIso = new Date(frozenRetryAtMs).toISOString()
+      c.header('retry-after', String(retryAfterSec))
+      // 日志里带上渠道，便于按渠道统计「额度耗尽」次数（baseLog 默认是 null）
+      baseLog.channelId = channel.id
+      baseLog.channelName = channel.name
+      baseLog.upstreamModel = upstreamModel
+      return rejectEarly({
+        status: 429,
+        logError: `上游账户额度均已用尽（upstream_quota_exhausted），最早 ${resetAtIso} 恢复`,
+        message: `该渠道所有上游账户额度均已用尽，预计 ${resetAtIso} 恢复`,
+        type: 'rate_limit_error',
+        code: 'upstream_quota_exhausted',
+        extra: { retryAfter: retryAfterSec, resetAt: resetAtIso }
+      })
+    }
+
     const attemptLimit = Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length)
     for (const candidate of candidates.slice(0, attemptLimit)) {
       const upstreamKey = tryDecryptKey(candidate.key_cipher)
@@ -588,6 +640,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
         const retryAfter = Number(attempt.headers.get('retry-after'))
         /*
+         * 上游已明确给出「何时恢复」（details.reset_at / reset_at 或 Retry-After）
+         * 时，额度冷冻不能还按阶梯的 5m 起步 —— 那等于明知要等一天还每小时去撞一次。
+         */
+        const quotaResetAt = parseQuotaResetAt(text, attempt.headers.get('retry-after'))
+        /*
          * 冷却时长：**设置项说了算**，只有两处例外比它更长
          *   ① 401/403（凭据坏了）—— 至少要 COOLDOWN.auth
          *   ② 上游明确给了 Retry-After，且比设置值更大 —— 尊重上游
@@ -603,7 +660,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
            *
            * 幂等：同一冷冻期内重复命中不会递增/延长（SQL 条件更新保证）。
            */
-          const quota = await markQuotaExhaustedResponse(candidate.id, lastFailure)
+          const quota = await markQuotaExhaustedResponse(
+            candidate.id,
+            lastFailure,
+            quotaResetAt
+          )
           if (quota) {
             console.warn(
               `[portara] 账户「${candidate.name}」额度用尽，第 ${quota.level} 次冷冻 ` +
@@ -646,7 +707,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
     if (res) break
     // 这个渠道整层失败 → 换下一个候选渠道（若有）
-    if (pick.targets.indexOf(target) < channelLimit - 1) affinityDrifted = true
+    if (targetIndex < channelLimit - 1) affinityDrifted = true
   }
 
   /*
