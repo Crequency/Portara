@@ -780,3 +780,86 @@ export interface BillingHealth {
   /** 近 24h 解析到全 0 费率且计费为 0 的请求数 */
   missingRateRequests24h: number
 }
+
+// ------------------------------------------------------------------ 负载均衡实况
+
+/**
+ * 账户在实况窗口里的状态。
+ *
+ * - `ok`：可正常分配
+ * - `quotaCooling`：上游明确返回额度用尽，按阶梯冷冻
+ * - `genericCooling`：普通失败冷却
+ * - `usageLimited`：用量 / 限额已打满
+ */
+export type LbLiveAccountState = 'ok' | 'quotaCooling' | 'genericCooling' | 'usageLimited'
+
+/** 别名的一个（渠道 + 上游模型）目标 */
+export interface LbLiveTarget {
+  channelId: string
+  channelName: string
+  upstreamModel: string
+  priority: number
+  weight: number
+}
+
+/** 别名下的一个上游账户在窗口内的分配与状态 */
+export interface LbLiveAccount {
+  channelId: string
+  channelName: string
+  accountId: string
+  accountName: string
+  priority: number
+  weight: number
+  state: LbLiveAccountState
+  coolingUntil: string | null
+  quotaCooldownLevel: number
+  windowExhausted: boolean
+  quotaExhausted: boolean
+  requests: number
+  errors: number
+  /** 该账户占所属别名窗口请求数的比例（0–1） */
+  share: number
+  avgLatencyMs: number
+}
+
+export interface LbLiveAlias {
+  alias: string
+  targets: LbLiveTarget[]
+  accounts: LbLiveAccount[]
+}
+
+/** 故障转移记录的结果分类 */
+export type LbLiveEventOutcome = 'attempt_failed' | 'failover_success' | 'quota_cooldown'
+
+export interface LbLiveEvent {
+  ts: string
+  alias: string
+  channelName: string
+  accountName: string
+  /** 本次尝试之前失败的那个账户；空串 = 没有上一个 */
+  prevAccountName: string
+  /** 这是该次请求的第几次尝试 */
+  attempt: number
+  outcome: LbLiveEventOutcome
+  statusCode: number
+  reason: string
+  latencyMs: number
+}
+
+export interface LbLiveTotals {
+  requests: number
+  errors: number
+  failovers: number
+  quotaCooldowns: number
+  coolingAccounts: number
+  activeAccounts: number
+}
+
+/** GET /api/lb/live?minutes=15&alias= */
+export interface LbLiveSnapshot {
+  windowMinutes: number
+  generatedAt: string
+  totals: LbLiveTotals
+  aliases: LbLiveAlias[]
+  events: LbLiveEvent[]
+}

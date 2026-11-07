@@ -1084,6 +1084,75 @@ export const en = {
     windowExhaustedTag: 'window full',
     quotaCoolingTag: 'quota cooldown'
   },
+  lbLive: {
+    entry: 'Live view',
+    title: 'Load balancing live',
+    sub: 'Request distribution, account state and failover events per alias in the window',
+    windowOption: '{n} min',
+    autoRefresh: 'Auto refresh',
+    pause: 'Pause',
+    resume: 'Resume',
+    refresh: 'Refresh',
+    generatedAt: 'Generated {time}',
+    autoRefreshHint: 'Refreshes every 5 s; skipped while the page is hidden',
+    pausedHint: 'Auto refresh paused',
+    loadFailed: 'Failed to load live data',
+    retry: 'Retry',
+    noData: 'No load-balancing data in this window',
+    totalsTitle: 'Window metrics',
+    totals: {
+      requests: 'Window requests',
+      errors: 'Errors',
+      failovers: 'Failovers',
+      quotaCooldowns: 'Quota cooldowns',
+      coolingAccounts: 'Cooling accounts',
+      activeAccounts: 'Active accounts',
+      errorRate: 'Error rate {value}',
+      ofAccounts: '{active} / {total} accounts'
+    },
+    distribution: 'Distribution',
+    aliasCount: '{n} aliases',
+    accountCount: '{n} accounts',
+    noAccounts: 'No account data for this alias',
+    noTargets: 'No targets',
+    sortedByRequests: 'Sorted by window requests',
+    state: {
+      ok: 'OK',
+      quotaCooling: 'Quota cooldown',
+      genericCooling: 'Cooling',
+      usageLimited: 'Usage limited'
+    },
+    meta: {
+      priority: 'Priority',
+      weight: 'Weight',
+      requests: 'Window requests',
+      errors: 'Errors',
+      avgLatency: 'Avg latency',
+      coolingUntil: 'Cooling until',
+      share: 'Request share'
+    },
+    events: {
+      title: 'Failover events',
+      count: '{n} entries',
+      empty: 'No failover events in this window',
+      time: 'Time',
+      alias: 'Alias',
+      channel: 'Channel',
+      account: 'Account',
+      attempt: 'Attempt',
+      attemptN: 'Attempt {n}',
+      outcome: 'Outcome',
+      statusCode: 'Status',
+      reason: 'Reason',
+      latency: 'Latency',
+      from: 'from {name}',
+      outcomes: {
+        attempt_failed: 'Attempt failed',
+        failover_success: 'Failover succeeded',
+        quota_cooldown: 'Quota cooldown'
+      }
+    }
+  },
   mapping: {
     title: 'Model mapping',
     sub: 'Gateway-facing model id → upstream channel model id; one id can load-balance across channels and models',

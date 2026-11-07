@@ -298,6 +298,11 @@ async function submit(): Promise<void> {
   }
 }
 
+/** 跳转到实况页：只改 hash，沿用控制台现有的极简路由 */
+function goLive(): void {
+  location.hash = '#/lb-live'
+}
+
 async function purge(alias: string, n: number): Promise<void> {
   if (!confirm(t('mapping.purgeConfirm', { alias, n }))) return
   try {
@@ -333,6 +338,7 @@ defineExpose({ load })
           <button class="btn btn-sm" @click="expandAll">{{ t('balance.expandAll') }}</button>
           <button class="btn btn-sm" @click="collapseAll">{{ t('balance.collapseAll') }}</button>
           <button class="btn btn-sm" @click="load">{{ t('common.refresh') }}</button>
+          <button class="btn btn-sm" @click="goLive">{{ t('lbLive.entry') }}</button>
           <button v-if="isAdmin" class="btn btn-primary btn-sm" @click="openCreate">
             ＋ {{ t('balance.newAlias') }}
           </button>

@@ -1083,6 +1083,75 @@ export const zh = {
     windowExhaustedTag: '窗口打满',
     quotaCoolingTag: '额度冷冻'
   },
+  lbLive: {
+    entry: '查看实况',
+    title: '负载均衡实况',
+    sub: '窗口内各别名的请求分配、账户状态与故障转移记录',
+    windowOption: '{n} 分钟',
+    autoRefresh: '自动刷新',
+    pause: '暂停',
+    resume: '继续',
+    refresh: '刷新',
+    generatedAt: '生成于 {time}',
+    autoRefreshHint: '每 5 秒刷新一次；页面隐藏时跳过',
+    pausedHint: '自动刷新已暂停',
+    loadFailed: '负载均衡实况加载失败',
+    retry: '重试',
+    noData: '当前窗口内没有负载均衡数据',
+    totalsTitle: '窗口指标',
+    totals: {
+      requests: '窗口总请求',
+      errors: '错误数',
+      failovers: '故障转移次数',
+      quotaCooldowns: '额度冷冻次数',
+      coolingAccounts: '冷却中账户',
+      activeAccounts: '活跃账户',
+      errorRate: '错误率 {value}',
+      ofAccounts: '{active} / {total} 个账户'
+    },
+    distribution: '分配情况',
+    aliasCount: '{n} 个别名',
+    accountCount: '{n} 个账户',
+    noAccounts: '该别名暂无账户数据',
+    noTargets: '没有目标',
+    sortedByRequests: '按窗口请求数降序',
+    state: {
+      ok: '正常',
+      quotaCooling: '额度冷冻',
+      genericCooling: '冷却',
+      usageLimited: '用量限额'
+    },
+    meta: {
+      priority: '优先级',
+      weight: '权重',
+      requests: '窗口请求',
+      errors: '错误',
+      avgLatency: '平均延迟',
+      coolingUntil: '冷却到期',
+      share: '请求占比'
+    },
+    events: {
+      title: '故障转移记录',
+      count: '{n} 条',
+      empty: '当前窗口内没有故障转移记录',
+      time: '时间',
+      alias: '别名',
+      channel: '渠道',
+      account: '账户',
+      attempt: '尝试次数',
+      attemptN: '第 {n} 次',
+      outcome: '结果',
+      statusCode: '状态码',
+      reason: '原因',
+      latency: '耗时',
+      from: '来自 {name}',
+      outcomes: {
+        attempt_failed: '尝试失败',
+        failover_success: '转移成功',
+        quota_cooldown: '额度冷冻'
+      }
+    }
+  },
   mapping: {
     title: '模型映射',
     sub: '网关受理的模型 id → 上游渠道的模型 id；一个 id 可负载均衡到多个渠道的多个模型',

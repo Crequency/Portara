@@ -23,6 +23,7 @@ import ChatView from './views/ChatView.vue'
 import KeysView from './views/KeysView.vue'
 import LogoMark from './components/LogoMark.vue'
 import AboutPage from './components/AboutPage.vue'
+import LbLiveView from './views/LbLiveView.vue'
 import LoginView from './views/LoginView.vue'
 import LogsView from './views/LogsView.vue'
 import OverviewView from './views/OverviewView.vue'
@@ -120,6 +121,9 @@ const currentView = computed(() => {
       return BillingView
     case 'proxies':
       return ProxiesView
+    // 负载均衡实况：入口在负载均衡页里，不占侧栏位置
+    case 'lb-live':
+      return LbLiveView
     case 'settings':
       return SettingsView
     // 个人资料不在侧栏 NAV 里，入口是顶栏用户卡片
@@ -136,11 +140,14 @@ const pageTitle = computed(() => {
   }
   // 公开注册页不属于 NAV，标题单独取；未登录时不会渲染顶栏，但浏览器标签要用
   if (route.value.name === 'register') return t('register.title')
+  // 实况页是隐藏路由（入口在负载均衡页），没有 nav.* 文案
+  if (route.value.name === 'lb-live') return t('lbLive.title')
   return isChannelDetail.value ? t('channelDetail.title') : t('nav.' + route.value.name)
 })
 const pageSub = computed(() => {
   if (isChannelForm.value) return t('channels.formSub')
   if (route.value.name === 'register') return t('register.subtitle')
+  if (route.value.name === 'lb-live') return t('lbLive.sub')
   return isChannelDetail.value ? t('channelDetail.sub') : t(route.value.name + '.sub')
 })
 
@@ -151,7 +158,16 @@ const pageSub = computed(() => {
  * 管理专属页面必须在这里拦住，否则是「看不见但进得去」，
  * 既误导用户（页面显示着默认值），也让人以为权限控制只管导航。
  */
+/**
+ * 不在侧栏 NAV 里的隐藏管理员路由。
+ *
+ * 这些页面只能从别的页面里的入口按钮进入（负载均衡 → 查看实况），
+ * 但仍要参与权限判定：仅靠「不在 NAV 里」会让手动改 hash 的操作员直接进来。
+ */
+const HIDDEN_ADMIN_ROUTES = new Set(['lb-live'])
+
 const routeAllowed = computed(() => {
+  if (HIDDEN_ADMIN_ROUTES.has(route.value.name)) return user.value?.role === 'admin'
   const item = NAV.find((i) => i.id === route.value.name)
   if (!item) return true
   return !item.adminOnly || user.value?.role === 'admin'

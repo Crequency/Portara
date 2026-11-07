@@ -26,7 +26,7 @@ import {
  * 命名空间白名单，与 web/src/i18n/zh.ts 的顶层键同步。
  * 新增命名空间时要补进来，否则新页面的键泄漏扫不到。
  */
-const LEAK = /\b(common|nav|theme|login|overview|channels|keys|chat|users|logs|channelDetail|settings|proxies|usage|billing|toast|balance|mapping)\.[A-Za-z][\w.]*/g
+const LEAK = /\b(common|nav|theme|login|overview|channels|keys|chat|users|logs|channelDetail|settings|proxies|usage|billing|toast|balance|mapping|lbLive)\.[A-Za-z][\w.]*/g
 
 const PAGES = {
   zh: [
@@ -115,6 +115,25 @@ async function openTab(locale, tab) {
   await page.waitForTimeout(1300)
 }
 
+/**
+ * 负载均衡实况页依赖 /api/lb/live。
+ *
+ * 后端未就绪时不能硬闯这个 hash：页面会因 404 打出一条 console error，
+ * 把「文案键泄漏」的检查误判成失败。先探接口，200 才扫，否则只 skip。
+ */
+async function scanLbLive(locale, label) {
+  // 用 playwright 的 APIRequestContext 探活：它不经过页面 JS，
+  // 因此后端 404 不会在页面控制台里留下一条 "Failed to load resource"。
+  const response = await page.request.get(BASE_URL + '/api/lb/live?minutes=15')
+  const status = response.status()
+  if (status !== 200) {
+    check.skip(`${label}：/api/lb/live 未就绪（HTTP ${status}），跳过`)
+    return
+  }
+  await gotoHash(page, 'lb-live', 1500)
+  await scan(label)
+}
+
 /** 新建页：选中余额适配器，让条件字段也渲染出来 */
 async function scanFormWithAdapter(locale, label) {
   await gotoHash(page, 'channels/new', 1800)
@@ -159,6 +178,8 @@ try {
 
     await openTab(locale, 'balance')
     await scan(`${locale} · 负载均衡页签`)
+
+    await scanLbLive(locale, `${locale} · 负载均衡实况页`)
 
     await scanBillingTabs(locale, `${locale} · 计费页签`)
 
