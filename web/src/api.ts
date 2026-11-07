@@ -757,3 +757,22 @@ export interface BillingUserRow {
   windows: BillingWindowUsage[]
   plan: BillingPlan | null
 }
+
+/** GET /api/billing/health（管理员）—— 计费健康度 */
+export interface BillingHealth {
+  /** 没有有效套餐的用户（口径与 bind-default 一致） */
+  unboundUsers: {
+    id: string
+    username: string
+    displayName: string
+    role: string
+  }[]
+  /** api_keys 无属主，或属主已删除 / 已禁用 */
+  orphanKeys: number
+  /** 没有任何渠道级生效费率的渠道（会回退全局默认） */
+  channelsWithoutRate: { id: string; name: string }[]
+  /** 已停用的套餐数 */
+  disabledPlans: number
+  /** 近 24h 解析到全 0 费率且计费为 0 的请求数 */
+  missingRateRequests24h: number
+}

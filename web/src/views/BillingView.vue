@@ -15,6 +15,7 @@ import {
   api,
   type AliasRate,
   type BalanceLedgerEntry,
+  type BillingHealth,
   type BillingPlan,
   type BillingUnit,
   type BillingUserRow,
@@ -37,14 +38,15 @@ const props = defineProps<{ user?: User }>()
 
 const { t } = useI18n()
 
-type Tab = 'plans' | 'rates' | 'templates' | 'users'
+type Tab = 'plans' | 'rates' | 'templates' | 'users' | 'health'
 const tab = ref<Tab>('plans')
 
 const tabOptions = computed<{ value: Tab; label: string }[]>(() => [
   { value: 'plans', label: t('billing.tabs.plans') },
   { value: 'rates', label: t('billing.tabs.rates') },
   { value: 'templates', label: t('billing.tabs.templates') },
-  { value: 'users', label: t('billing.tabs.users') }
+  { value: 'users', label: t('billing.tabs.users') },
+  { value: 'health', label: t('billing.tabs.health') }
 ])
 
 function selectTab(next: Tab): void {
@@ -52,6 +54,7 @@ function selectTab(next: Tab): void {
   if (next === 'plans') void loadPlans()
   else if (next === 'rates') void loadRatesTab()
   else if (next === 'templates') void loadTemplates()
+  else if (next === 'health') void loadHealth()
   else void loadBillingUsers()
 }
 
@@ -697,6 +700,63 @@ function signedNumber(n: number): string {
   return (n > 0 ? '+' : '') + formatNumber(n)
 }
 
+/* ---------------------------------------------------------------- 健康度 */
+
+/*
+ * 计费健康度：所有「会导致静默免费 / 用户被 402」的状态汇总。
+ * 数据来自 GET /api/billing/health（管理员）；一键补绑复用批次 1 的
+ * /api/billing/users/bind-default，口径与后端完全一致。
+ */
+const health = ref<BillingHealth>({
+  unboundUsers: [],
+  orphanKeys: 0,
+  channelsWithoutRate: [],
+  disabledPlans: 0,
+  missingRateRequests24h: 0
+})
+const healthLoading = ref(false)
+const healthBinding = ref(false)
+
+async function loadHealth(): Promise<void> {
+  healthLoading.value = true
+  try {
+    health.value = await api.get<BillingHealth>('/api/billing/health')
+  } catch (err) {
+    toastError(err, t('billing.health.loadFailed'))
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function bindHealthFree(): Promise<void> {
+  const n = health.value.unboundUsers.length
+  if (n === 0) {
+    toast.success(t('billing.user.bindDefaultNone'))
+    return
+  }
+  if (!confirm(t('billing.user.bindDefaultConfirm', { n }))) return
+
+  healthBinding.value = true
+  try {
+    const res = await api.post<{ planName: string; bound: string[] }>(
+      '/api/billing/users/bind-default'
+    )
+    toast.success(
+      t('billing.user.bindDefaultDone', { n: res.bound.length, name: res.planName })
+    )
+    await loadHealth()
+  } catch (err) {
+    toastError(err, t('billing.user.bindDefaultFailed'))
+  } finally {
+    healthBinding.value = false
+  }
+}
+
+/** orphanKeys 只能去用户管理里处理（删除 / 重新签发），这里只做跳转 */
+function goUsers(): void {
+  location.hash = '#/users'
+}
+
 onMounted(() => {
   if (props.user?.role === 'admin') void loadPlans()
 })
@@ -1104,6 +1164,122 @@ onMounted(() => {
         </table>
       </div>
     </div>
+
+    <!-- 计费健康度 -->
+    <div v-show="tab === 'health'" class="card fill-view view-panel">
+      <div class="card-head panel-head">
+        <div>
+          <div class="card-title">{{ t('billing.tabs.health') }}</div>
+          <div class="dim" style="font-size: 12px">{{ t('billing.health.sub') }}</div>
+        </div>
+        <div class="row">
+          <button class="btn btn-sm" :disabled="healthLoading" @click="loadHealth">
+            {{ t('common.refresh') }}
+          </button>
+          <button
+            class="btn btn-primary btn-sm"
+            :disabled="healthBinding || health.unboundUsers.length === 0"
+            @click="bindHealthFree"
+          >
+            {{ healthBinding ? t('common.saving') : t('billing.health.bindAll') }}
+            <span v-if="health.unboundUsers.length > 0" class="tag">
+              {{ health.unboundUsers.length }}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="healthLoading" class="loading">{{ t('common.loading') }}</div>
+      <div v-else class="health-body">
+        <div class="health-stats">
+          <div class="health-stat">
+            <div class="health-stat-label">{{ t('billing.health.orphanKeys') }}</div>
+            <div class="health-stat-value" :class="{ 'health-bad': health.orphanKeys > 0 }">
+              {{ health.orphanKeys }}
+            </div>
+            <div class="health-stat-hint">{{ t('billing.health.orphanKeysHint') }}</div>
+            <button class="btn btn-sm" @click="goUsers">{{ t('billing.health.goUsers') }}</button>
+          </div>
+          <div class="health-stat">
+            <div class="health-stat-label">{{ t('billing.health.disabledPlans') }}</div>
+            <div class="health-stat-value" :class="{ 'health-warn': health.disabledPlans > 0 }">
+              {{ health.disabledPlans }}
+            </div>
+            <div class="health-stat-hint">{{ t('billing.health.disabledPlansHint') }}</div>
+          </div>
+          <div class="health-stat">
+            <div class="health-stat-label">{{ t('billing.health.missingRate24h') }}</div>
+            <div
+              class="health-stat-value"
+              :class="{ 'health-warn': health.missingRateRequests24h > 0 }"
+            >
+              {{ formatNumber(health.missingRateRequests24h) }}
+            </div>
+            <div class="health-stat-hint">{{ t('billing.health.missingRate24hHint') }}</div>
+          </div>
+        </div>
+
+        <section class="health-section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">{{ t('billing.health.unbound') }}</div>
+              <div class="section-sub">{{ t('billing.health.unboundHint') }}</div>
+            </div>
+          </div>
+          <div v-if="health.unboundUsers.length === 0" class="empty">
+            {{ t('billing.health.unboundEmpty') }}
+          </div>
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{{ t('billing.user.username') }}</th>
+                  <th>{{ t('billing.user.displayName') }}</th>
+                  <th>{{ t('billing.health.role') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="u in health.unboundUsers" :key="u.id">
+                  <td class="mono">{{ u.username }}</td>
+                  <td>{{ u.displayName || '—' }}</td>
+                  <td>
+                    <span class="badge" :class="u.role === 'admin' ? 'badge-info' : 'badge-off'">
+                      {{ roleLabel(u.role) }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="health-section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">{{ t('billing.health.channelsWithoutRate') }}</div>
+              <div class="section-sub">{{ t('billing.health.channelsWithoutRateHint') }}</div>
+            </div>
+          </div>
+          <div v-if="health.channelsWithoutRate.length === 0" class="empty">
+            {{ t('billing.health.channelsWithoutRateEmpty') }}
+          </div>
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{{ t('billing.health.channel') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="ch in health.channelsWithoutRate" :key="ch.id">
+                  <td>{{ ch.name }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
   </div>
 
   <!-- 套餐弹窗 -->
@@ -1442,6 +1618,80 @@ onMounted(() => {
 .rate-section > .table-wrap {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* 健康度页签：顶部 3 个指标卡 + 两个列表分区 */
+.health-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.health-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.health-stat {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--bg-elev-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.health-stat-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.health-stat-value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.health-stat-value.health-warn {
+  color: #d97706;
+}
+
+.health-stat-value.health-bad {
+  color: var(--danger);
+}
+
+.health-stat-hint {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.health-stat .btn {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.health-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.health-section > .table-wrap {
+  max-height: 280px;
+  overflow: auto;
+}
+
+@media (max-width: 900px) {
+  .health-stats {
+    grid-template-columns: 1fr;
+  }
 }
 
 .rate-section > .empty,

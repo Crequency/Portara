@@ -1047,6 +1047,96 @@ billingRoutes.patch('/users/:id', requireAdmin, async (c) => {
   })
 })
 
+// ------------------------------------------------------------ 健康度
+
+/**
+ * 计费健康度（管理员）：把「会导致静默免费 / 无法计费」的状态一次列出来。
+ *
+ * 口径说明：
+ *   - unboundUsers：没有 user_billing 行、plan_id 为空、套餐已删除或已停用 ——
+ *     与 bind-default 完全同口径，保证「这里能看到」等于「一键补绑能解决」。
+ *   - orphanKeys：api_keys.user_id 为空，或属主已删除 / 已禁用。这些 Key 在
+ *     apiKeyAuth 里都会被拒（403/401），列表用于提示管理员清理或重新签发。
+ *   - channelsWithoutRate：没有任何**渠道级**生效费率的渠道（不含全局默认）。
+ *     它们会回退到全局默认；如果全局默认也是 0，就会按 0 计费。
+ *   - missingRateRequests24h：近 24h 结算后 billed_amount = 0、且命中费率行不存在
+ *     或三项全 0 的成功请求数 —— 即「没解析到任何真实费率、最终计费为 0」的口径。
+ *     真正命中全 0 费率时也会命中服务端告警（见 services/billing.ts 的 warnZeroRateOnce）。
+ */
+billingRoutes.get('/health', requireAdmin, async (c) => {
+  const unbound = await query<{
+    id: string
+    username: string
+    display_name: string
+    role: string
+  }>(
+    `select u.id, u.username, u.display_name, u.role
+       from users u
+       left join user_billing ub on ub.user_id = u.id
+       left join billing_plans p on p.id = ub.plan_id
+      where ub.plan_id is null or p.id is null or p.status <> 'active'
+      order by u.created_at asc
+      limit 500`
+  )
+
+  const orphan = await one<{ count: string }>(
+    `select count(*)::text as count
+       from api_keys k
+       left join users u on u.id = k.user_id
+      where k.user_id is null or u.id is null or u.status <> 'active'`
+  )
+
+  const channelsWithoutRate = await query<{ id: string; name: string }>(
+    `select ch.id, ch.name
+       from channels ch
+      where ch.status = 'active'
+        and not exists (
+          select 1 from channel_rates r
+           where r.channel_id = ch.id and r.status = 'active'
+        )
+      order by ch.name asc`
+  )
+
+  const disabledPlans = await one<{ count: string }>(
+    `select count(*)::text as count from billing_plans where status <> 'active'`
+  )
+
+  /*
+   * 零费率请求：结算后 billed_amount = 0，且命中的费率行不存在或三项全 0。
+   *
+   * 不能只判 rate_id is null：迁移 022 预置了一条全 0 的全局默认费率，
+   * 没配费率的渠道命中的正是这一行（rate_id 非空但金额全 0）。因此要 join
+   * channel_rates 看实际费率值；行已被删除（r.id is null）时也计入 —— 那同样
+   * 说明这笔请求没有可追溯的费率。
+   */
+  const missingRate = await one<{ count: string }>(
+    `select count(*)::text as count
+       from request_logs l
+       left join channel_rates r on r.id = l.rate_id
+      where l.billing_charged_at >= now() - interval '24 hours'
+        and l.billed_amount = 0
+        and l.total_tokens > 0
+        and (
+          l.rate_id is null
+          or r.id is null
+          or (r.input_per_mtok = 0 and r.output_per_mtok = 0 and r.per_request = 0)
+        )`
+  )
+
+  return c.json({
+    unboundUsers: unbound.map((u) => ({
+      id: u.id,
+      username: u.username,
+      displayName: u.display_name,
+      role: u.role
+    })),
+    orphanKeys: Number(orphan?.count ?? 0),
+    channelsWithoutRate,
+    disabledPlans: Number(disabledPlans?.count ?? 0),
+    missingRateRequests24h: Number(missingRate?.count ?? 0)
+  })
+})
+
 // ------------------------------------------------------------ 自助 / 流水
 
 billingRoutes.get('/me', async (c) => {

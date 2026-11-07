@@ -412,6 +412,7 @@ export const zh = {
     rpmHint: '0 表示不限。',
     quotaTokens: 'Token 配额',
     quotaHint: '0 表示不限。',
+    limitsAdminOnly: '速率限制与 Token 配额由管理员统一设置；当前值在列表里只读显示。',
     expiresAt: '过期时间（可选）',
     createdAt: '创建于',
     loadFailed: '加载密钥失败',
@@ -805,7 +806,8 @@ export const zh = {
       plans: '套餐',
       rates: '费率',
       templates: '限额模板',
-      users: '用户余额'
+      users: '用户余额',
+      health: '健康度'
     },
     sectionAliasRates: '别名售价',
     sectionAliasRatesSub: '决定用户扣费；未配置时回退渠道成本价',
@@ -955,6 +957,29 @@ export const zh = {
       applyNoSelection: '请至少选择一个用户',
       applied: '已套用到 {n} 个用户',
       applyFailed: '套用模板失败'
+    },
+    health: {
+      sub: '未绑套餐、无主密钥、缺少费率的渠道与近 24 小时零计费请求',
+      loadFailed: '加载计费健康度失败',
+      unbound: '未绑套餐用户',
+      unboundHint: '这些用户请求 /v1 会因「未绑定计费套餐」被 402 拒绝。',
+      unboundEmpty: '所有用户都已绑定有效套餐',
+      bindAll: '为全部未绑用户绑定 Free',
+      orphanKeys: '无主 / 失效密钥',
+      orphanKeysHint:
+        'api_keys 没有归属用户，或属主已删除 / 禁用。这些 Key 已无法再调用 /v1，请在用户管理中清理。',
+      goUsers: '去用户管理',
+      disabledPlans: '已停用套餐',
+      disabledPlansHint: '绑定停用套餐的用户同样会被视为「未绑套餐」。',
+      missingRate24h: '近 24h 零费率请求',
+      missingRate24hHint:
+        '最近 24 小时解析到全 0 费率、且计费金额为 0 的请求数；持续增长说明费率没配全。',
+      channelsWithoutRate: '未配置费率的渠道',
+      channelsWithoutRateHint:
+        '这些渠道没有任何生效的渠道级费率，计费会回退到全局默认（可能为全 0）。',
+      channelsWithoutRateEmpty: '所有渠道都配置了自己的费率',
+      channel: '渠道',
+      role: '角色'
     },
     user: {
       sub: '搜索用户，调整套餐或余额，并查看余额流水',

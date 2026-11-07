@@ -5,7 +5,7 @@ import {
   SseUsageScanner,
   withStreamUsage
 } from '../src/services/proxy.js'
-import { currentWindow, quotaExceeded, rateLimitKey } from '../src/services/limits.js'
+import { bucketKey, quotaExceeded } from '../src/services/limits.js'
 import {
   pickChannel,
   pickRoute,
@@ -169,12 +169,11 @@ test('quotaExceeded 达到或超过配额即判超限', () => {
   assert.equal(quotaExceeded(90, 100, 20), true)
 })
 
-test('限流窗口按分钟切分，key 稳定', () => {
-  // 取一个正好落在分钟边界上的时间戳，避免边界假设错误
-  const t = 1_700_000_000_000 - (1_700_000_000_000 % 60_000)
-  assert.equal(currentWindow(t), currentWindow(t + 59_999))
-  assert.notEqual(currentWindow(t), currentWindow(t + 60_000))
-  assert.equal(rateLimitKey('abc', 42), 'portara:rl:abc:42')
+test('令牌桶按 Key 维度共用一个桶（不再有分钟窗口后缀）', () => {
+  assert.equal(bucketKey('abc'), 'portara:rl:abc')
+  // 同一个 Key 在不同时刻必须是同一个桶，否则跨窗口会重新放行
+  assert.equal(bucketKey('abc'), bucketKey('abc'))
+  assert.notEqual(bucketKey('abc'), bucketKey('abcd'))
 })
 
 // ------------------------------------------------------------------ 模型映射选路

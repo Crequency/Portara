@@ -5786,6 +5786,193 @@ async function main() {
     await apiCall('DELETE', `/api/billing/plans/${tokensPlanId}`)
     await apiCall('DELETE', `/api/channels/${billingChannelId}`)
 
+    // ---------------------------------------------------------- 批次 3：限额收紧 / 健康度 / 令牌桶
+    section('㊲c 密钥限额收紧、计费健康度与令牌桶限流')
+
+    const defaultSettingsRes = await apiCall('GET', '/api/settings')
+    const defaultKeyRpm = defaultSettingsRes.body.settings.defaultKeyRpmLimit
+
+    const opLimitKey = await apiCall(
+      'POST',
+      '/api/keys',
+      {
+        name: `smoke-op-limit-${RUN}`,
+        channelId,
+        rpmLimit: 999999,
+        quotaTokens: 123456
+      },
+      { cookie: operatorCookie }
+    )
+    createdKeyIds.push(opLimitKey.body?.apiKey?.id)
+    check('限额收紧：操作员创建密钥时传入的 rpm/quota 被忽略，使用系统默认值', () => {
+      assert.equal(opLimitKey.status, 201)
+      assert.equal(opLimitKey.body.apiKey.rpmLimit, defaultKeyRpm)
+      assert.equal(opLimitKey.body.apiKey.quotaTokens, 0)
+    })
+
+    const opPatchRpm = await apiCall(
+      'PATCH',
+      `/api/keys/${opLimitKey.body.apiKey.id}`,
+      { rpmLimit: 1 },
+      { cookie: operatorCookie }
+    )
+    check('限额收紧：操作员 PATCH 密钥带 rpmLimit 返回 400', () => {
+      assert.equal(opPatchRpm.status, 400)
+      assert.match(String(opPatchRpm.body?.error?.message ?? ''), /管理员/)
+    })
+
+    const opPatchQuota = await apiCall(
+      'PATCH',
+      `/api/keys/${opLimitKey.body.apiKey.id}`,
+      { quotaTokens: 1 },
+      { cookie: operatorCookie }
+    )
+    check('限额收紧：操作员 PATCH 密钥带 quotaTokens 返回 400', () =>
+      assert.equal(opPatchQuota.status, 400)
+    )
+
+    /* ---------------------------------------------------------- 计费健康度 */
+
+    const healthRes = await apiCall('GET', '/api/billing/health')
+    check('计费健康度：返回未绑用户 / 无主密钥 / 无费率渠道等结构', () => {
+      assert.equal(healthRes.status, 200)
+      assert.ok(Array.isArray(healthRes.body.unboundUsers))
+      assert.equal(typeof healthRes.body.orphanKeys, 'number')
+      assert.ok(Array.isArray(healthRes.body.channelsWithoutRate))
+      assert.equal(typeof healthRes.body.disabledPlans, 'number')
+      assert.equal(typeof healthRes.body.missingRateRequests24h, 'number')
+    })
+
+    const healthAsOperator = await apiCall('GET', '/api/billing/health', undefined, {
+      cookie: operatorCookie
+    })
+    check('计费健康度：操作员访问返回 403', () => assert.equal(healthAsOperator.status, 403))
+
+    const healthUser = await mkBillingUser('health')
+    const healthBeforeBind = await apiCall('GET', '/api/billing/health')
+    check('计费健康度：未绑套餐用户出现在 unboundUsers', () => {
+      assert.ok(
+        healthBeforeBind.body.unboundUsers.some((u) => u.id === healthUser.id),
+        '未绑用户没有被列出'
+      )
+    })
+
+    const healthBind = await apiCall('POST', '/api/billing/users/bind-default')
+    const healthAfterBind = await apiCall('GET', '/api/billing/health')
+    check('计费健康度：一键绑定 Free 后该用户从未绑列表消失', () => {
+      assert.equal(healthBind.status, 200)
+      assert.ok(healthBind.body.bound.includes(healthUser.id))
+      assert.ok(!healthAfterBind.body.unboundUsers.some((u) => u.id === healthUser.id))
+    })
+    await apiCall('DELETE', `/api/users/${healthUser.id}`)
+
+    const healthChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-health-ch-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: ['smoke-health-only'],
+      priority: 999
+    })
+    const healthChannelId = healthChannel.body?.channel?.id
+    const healthWithChannel = await apiCall('GET', '/api/billing/health')
+    check('计费健康度：没有渠道级费率的渠道出现在 channelsWithoutRate', () => {
+      assert.equal(healthChannel.status, 201)
+      assert.ok(
+        healthWithChannel.body.channelsWithoutRate.some((c) => c.id === healthChannelId),
+        '新渠道没有被列出'
+      )
+    })
+
+    const healthOrphanUser = await mkBillingUser('health-orphan')
+    await mkKeyFor(healthOrphanUser.id, 'health-orphan')
+    await apiCall('DELETE', `/api/users/${healthOrphanUser.id}`)
+    const healthAfterOrphan = await apiCall('GET', '/api/billing/health')
+    check('计费健康度：删除属主后 orphanKeys 计数增加', () => {
+      assert.ok(healthAfterOrphan.body.orphanKeys >= 1)
+    })
+
+    /* ---------------------------------------------------------- 令牌桶 */
+
+    const bucketKeyRes = await apiCall('POST', '/api/keys', {
+      name: `smoke-bucket-${RUN}`,
+      channelId,
+      rpmLimit: 3,
+      quotaTokens: 0
+    })
+    createdKeyIds.push(bucketKeyRes.body.apiKey.id)
+    const bucketToken = bucketKeyRes.body.key
+
+    const bucketHits = []
+    for (let i = 0; i < 3; i++) {
+      bucketHits.push(
+        await proxyCall(
+          '/v1/chat/completions',
+          { model: MOCK_MODEL, messages: [{ role: 'user', content: `bucket-${i}` }] },
+          bucketToken
+        )
+      )
+    }
+    /*
+     * 只断言状态序列：/v1 的 x-ratelimit-* 头在成功路径上由旧代码统一设置，
+     * 本次不改响应头逻辑；令牌剩余值由 ratelimit.test.ts 的纯函数单测覆盖。
+     */
+    check('令牌桶：rpm=3 时前 3 次放行', () => {
+      const statuses = bucketHits.map((r) => r.status)
+      assert.ok(
+        JSON.stringify(statuses) === JSON.stringify([200, 200, 200]),
+        'statuses=' + JSON.stringify(statuses)
+      )
+    })
+
+    const bucketFourth = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: 'bucket-3' }] },
+      bucketToken
+    )
+    const bucketRetryAfter = Number(bucketFourth.headers.get('retry-after'))
+    check('令牌桶：第 4 次立即 429 并返回合理的 retry-after（边界不再 2× 放行）', () => {
+      assert.equal(bucketFourth.status, 429)
+      assert.equal(bucketFourth.body?.error?.code, 'rate_limit_exceeded')
+      assert.equal(bucketFourth.headers.get('x-ratelimit-remaining-requests'), '0')
+      assert.ok(
+        Number.isFinite(bucketRetryAfter) && bucketRetryAfter >= 1 && bucketRetryAfter <= 20,
+        `retry-after=${bucketRetryAfter}`
+      )
+    })
+
+    // 桶按 rpm/60 秒补令牌：rpm=3 时 20 秒恢复 1 个。只等 retry-after 给出的时长，
+    // 不空转一分钟；+250ms 抵消请求往返与 Redis 时钟的毫秒级误差。
+    await sleep(bucketRetryAfter * 1000 + 250)
+    const bucketRecovered = await proxyCall(
+      '/v1/chat/completions',
+      { model: MOCK_MODEL, messages: [{ role: 'user', content: 'bucket-recovered' }] },
+      bucketToken
+    )
+    check('令牌桶：按 retry-after 等待后补充令牌并恢复放行', () =>
+      assert.equal(bucketRecovered.status, 200)
+    )
+
+    const adminLimitPatch = await apiCall('PATCH', `/api/keys/${bucketKeyRes.body.apiKey.id}`, {
+      rpmLimit: 123,
+      quotaTokens: 456
+    })
+    check('限额收紧：管理员仍可设置 rpmLimit / quotaTokens', () => {
+      assert.equal(adminLimitPatch.status, 200)
+      assert.equal(adminLimitPatch.body.apiKey.rpmLimit, 123)
+      assert.equal(adminLimitPatch.body.apiKey.quotaTokens, 456)
+    })
+
+    const missingRateHealth = await waitFor(async () => {
+      const res = await apiCall('GET', '/api/billing/health')
+      return res.body.missingRateRequests24h >= 1 ? res.body : null
+    }, 5000)
+    check('计费健康度：近 24h 零费率请求可被统计到', () => {
+      assert.ok(missingRateHealth, '没有统计到零费率请求')
+      assert.ok(missingRateHealth.missingRateRequests24h >= 1)
+    })
+
+    await apiCall('DELETE', `/api/channels/${healthChannelId}`)
+
     // ---------------------------------------------------------- 清理
     section('㊳ 清理测试数据')
 

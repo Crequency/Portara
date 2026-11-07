@@ -7,6 +7,7 @@ import { decryptSecret, encryptSecret, generateApiKey } from '../lib/crypto.js'
 import { ApiError, badRequest, forbidden, notFound, parseJson } from '../lib/http.js'
 import { requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
+import { getSetting } from '../services/settings.js'
 import { toApiKeyDto, type ApiKeyRow } from '../types.js'
 
 export const keyRoutes = new Hono()
@@ -99,13 +100,24 @@ keyRoutes.get('/', async (c) => {
 keyRoutes.post('/', async (c) => {
   const body = await parseJson(c, createSchema)
   const actor = c.get('user')
+  const isAdmin = actor.role === 'admin'
   // 非管理员强制归属自己 —— 不允许替别人签发
-  const ownerId = actor.role === 'admin' ? body.userId || actor.id : actor.id
+  const ownerId = isAdmin ? body.userId || actor.id : actor.id
   /*
    * 渠道绑定属于管理面配置：非管理员即便传入 channelId 也**忽略**（不报错，
    * 保持旧客户端兼容），落库为未绑定；管理员不受影响。
    */
-  const channelId = actor.role === 'admin' ? body.channelId || null : null
+  const channelId = isAdmin ? body.channelId || null : null
+  /*
+   * 速率限制 / Token 配额是管理员下发的资源额度：非管理员创建时**静默使用默认值**
+   * （defaultKeyRpmLimit 设置 + quotaTokens=0），而不是 400。
+   *
+   * 选静默的原因：创建表单里字段有默认值，旧客户端也会带着它一起提交；如果这里
+   * 因为「带了字段」就 400，升级后旧前端会突然无法签发密钥。忽略字段的语义明确
+   * 且可预期 —— 与上面 channelId 的处理方式一致。更新接口则相反，见 PATCH。
+   */
+  const rpmLimit = isAdmin ? body.rpmLimit : await getSetting('defaultKeyRpmLimit')
+  const quotaTokens = isAdmin ? body.quotaTokens : 0
   await assertRefs(ownerId, channelId)
 
   const { key, prefix, hash } = generateApiKey()
@@ -124,8 +136,8 @@ keyRoutes.post('/', async (c) => {
       ownerId,
       channelId,
       body.modelAllow,
-      body.rpmLimit,
-      body.quotaTokens,
+      rpmLimit,
+      quotaTokens,
       body.expiresAt ? new Date(body.expiresAt) : null,
       body.usageAllow,
       body.usageChannels,
@@ -146,6 +158,17 @@ keyRoutes.post('/', async (c) => {
 keyRoutes.patch('/:id', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const body = await parseJson(c, updateSchema)
+  const isAdmin = c.get('user').role === 'admin'
+
+  /*
+   * 更新时非管理员**不能**接受 rpmLimit / quotaTokens：显式带字段直接 400。
+   *
+   * 与创建不同，更新没有「默认值」可回落 —— 静默丢弃会让调用方以为改成功了，
+   * 而实际仍是旧值；显式报错才能让前端/脚本立刻发现越权。
+   */
+  if (!isAdmin && (body.rpmLimit !== undefined || body.quotaTokens !== undefined)) {
+    throw badRequest('速率限制与 Token 配额只能由管理员设置')
+  }
 
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
   if (!current) throw notFound('密钥不存在')
@@ -155,7 +178,7 @@ keyRoutes.patch('/:id', async (c) => {
    * 管理员沿用原语义：undefined = 不改，null/'' = 解绑。
    */
   const channelId =
-    c.get('user').role === 'admin'
+    isAdmin
       ? body.channelId === undefined
         ? current.channel_id
         : body.channelId || null

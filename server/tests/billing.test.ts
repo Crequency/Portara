@@ -7,6 +7,7 @@ import {
   estimateBilledAmount,
   estimateTokens,
   isNearLimit,
+  isZeroRate,
   lowBalanceThreshold,
   mergeRuleThresholds,
   pickBestRate,
@@ -313,6 +314,12 @@ test('isNearLimit：任一窗口 used/limit >= 0.9', () => {
   assert.equal(isNearLimit([{ used: 8.99, limit: 10 }]), false)
   assert.equal(isNearLimit([{ used: 0.009, limit: 0.01 }]), true)
   assert.equal(isNearLimit([{ used: 100, limit: 0 }]), false)
+})
+
+test('isZeroRate：三项全 0 才算全 0 费率', () => {
+  assert.equal(isZeroRate({ inputPerMtok: 0, outputPerMtok: 0, perRequest: 0 }), true)
+  assert.equal(isZeroRate({ inputPerMtok: 0, outputPerMtok: 0, perRequest: 0.000001 }), false)
+  assert.equal(isZeroRate({ inputPerMtok: 1, outputPerMtok: 0, perRequest: 0 }), false)
 })
 
 test('lowBalanceThreshold：金额直用，credits 按兑换率换算', () => {

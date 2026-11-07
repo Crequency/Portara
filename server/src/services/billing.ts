@@ -3,6 +3,7 @@ import { redis } from '../redis.js'
 import {
   computeMoneyCost,
   estimateBilledAmount,
+  isZeroRate,
   LIMIT_WINDOWS,
   mergeRuleThresholds,
   pickBestRate,
@@ -46,6 +47,39 @@ const PRECHECK_TTL_SECONDS = 15
  */
 const RESERVED_KEY_PREFIX = 'portara:billing:reserved:'
 const RESERVED_TTL_SECONDS = 300
+
+/**
+ * 「解析到全 0 费率」告警去重。
+ *
+ * 粒度：渠道 + 上游模型（全局默认单独用 'global'）。通常全 0 是「渠道没配费率」
+ * 或「全局默认仍是迁移里的 0」，同一组合会反复命中；如果每条请求都打日志，
+ * 一次流量高峰就能把日志刷满，所以按组合去重，默认 1 小时内只 warn 一次。
+ *
+ * 去重表放在进程内 Map：热路径上不额外往返 Redis（告警本身只是可观测性，
+ * 多实例部署时每个实例各打一次可以接受），并且 Redis 挂掉时告警仍然有效。
+ * 表有上限，超限先清过期项、仍超限则整体清空 —— 宁可多一条日志，也不无限增长。
+ */
+const ZERO_RATE_WARN_TTL_MS = 60 * 60 * 1000
+const ZERO_RATE_WARN_MAP_LIMIT = 1000
+const zeroRateWarnedAt = new Map<string, number>()
+
+function warnZeroRateOnce(scope: string, payload: Record<string, unknown>): void {
+  const now = Date.now()
+  const last = zeroRateWarnedAt.get(scope)
+  if (last !== undefined && now - last < ZERO_RATE_WARN_TTL_MS) return
+
+  if (zeroRateWarnedAt.size >= ZERO_RATE_WARN_MAP_LIMIT) {
+    for (const [key, at] of zeroRateWarnedAt) {
+      if (now - at >= ZERO_RATE_WARN_TTL_MS) zeroRateWarnedAt.delete(key)
+    }
+    if (zeroRateWarnedAt.size >= ZERO_RATE_WARN_MAP_LIMIT) zeroRateWarnedAt.clear()
+  }
+
+  zeroRateWarnedAt.set(scope, now)
+  console.warn(
+    '[portara][billing] 解析到全 0 费率（本次按 0 计费）：' + JSON.stringify(payload)
+  )
+}
 
 /**
  * 原子预留脚本。
@@ -361,7 +395,18 @@ export async function resolveRate(
 
   try {
     const cached = await redis.get(cacheKey)
-    if (cached) return JSON.parse(cached) as RateLike
+    if (cached) {
+      const rate = JSON.parse(cached) as RateLike
+      if (isZeroRate(rate)) {
+        warnZeroRateOnce(`rate:${channelId}:${upstreamModel}`, {
+          channelId,
+          upstreamModel,
+          rateId: rate.id,
+          source: 'cache'
+        })
+      }
+      return rate
+    }
   } catch {
     /* 缓存失败不阻塞计费 */
   }
@@ -387,6 +432,15 @@ export async function resolveRate(
       outputPerMtok: 0,
       perRequest: 0
     }
+
+  if (isZeroRate(rate)) {
+    warnZeroRateOnce(`rate:${channelId}:${upstreamModel}`, {
+      channelId,
+      upstreamModel,
+      rateId: rate.id,
+      source: best ? 'db' : 'missing'
+    })
+  }
 
   try {
     await redis.set(cacheKey, JSON.stringify(rate), 'EX', RATE_TTL_SECONDS)
@@ -414,7 +468,18 @@ export async function resolveGlobalRate(): Promise<RateLike> {
 
   try {
     const cached = await redis.get(cacheKey)
-    if (cached) return JSON.parse(cached) as RateLike
+    if (cached) {
+      const rate = JSON.parse(cached) as RateLike
+      if (isZeroRate(rate)) {
+        warnZeroRateOnce('global', {
+          channelId: null,
+          upstreamModel: '',
+          rateId: rate.id,
+          source: 'cache'
+        })
+      }
+      return rate
+    }
   } catch {
     /* 缓存失败不阻塞计费 */
   }
@@ -436,6 +501,15 @@ export async function resolveGlobalRate(): Promise<RateLike> {
         outputPerMtok: 0,
         perRequest: 0
       }
+
+  if (isZeroRate(rate)) {
+    warnZeroRateOnce('global', {
+      channelId: null,
+      upstreamModel: '',
+      rateId: rate.id,
+      source: row ? 'db' : 'missing'
+    })
+  }
 
   try {
     await redis.set(cacheKey, JSON.stringify(rate), 'EX', RATE_TTL_SECONDS)

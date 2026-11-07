@@ -412,6 +412,7 @@ export const en = {
     rpmHint: '0 means unlimited.',
     quotaTokens: 'Token quota',
     quotaHint: '0 means unlimited.',
+    limitsAdminOnly: 'Rate limit and token quota are managed by administrators; current values are read-only in the list.',
     expiresAt: 'Expires at (optional)',
     createdAt: 'Created',
     loadFailed: 'Failed to load keys',
@@ -805,7 +806,8 @@ export const en = {
       plans: 'Plans',
       rates: 'Rates',
       templates: 'Limit templates',
-      users: 'User balances'
+      users: 'User balances',
+      health: 'Health'
     },
     sectionAliasRates: 'Alias sell rates',
     sectionAliasRatesSub: 'Determines what users are charged; falls back to the channel cost when unset',
@@ -955,6 +957,29 @@ export const en = {
       applyNoSelection: 'Select at least one user',
       applied: 'Applied to {n} user(s)',
       applyFailed: 'Failed to apply the template'
+    },
+    health: {
+      sub: 'Users without a plan, orphan keys, channels without rates and recent zero-charge requests',
+      loadFailed: 'Failed to load billing health',
+      unbound: 'Users without a plan',
+      unboundHint: 'Requests from these users are rejected with 402 (no billing plan).',
+      unboundEmpty: 'Every user has an active plan',
+      bindAll: 'Bind Free to all unbound users',
+      orphanKeys: 'Orphan / invalid keys',
+      orphanKeysHint:
+        'api_keys with no owner, or whose owner was deleted / disabled. These keys can no longer call /v1; clean them up in user management.',
+      goUsers: 'Open user management',
+      disabledPlans: 'Disabled plans',
+      disabledPlansHint: 'Users on a disabled plan are treated as unbound too.',
+      missingRate24h: 'Zero-rate requests (24h)',
+      missingRate24hHint:
+        'Successful requests in the last 24 hours that resolved to an all-zero rate and were billed 0; a rising number means rates are incomplete.',
+      channelsWithoutRate: 'Channels without rates',
+      channelsWithoutRateHint:
+        'These channels have no active channel-specific rate and fall back to the global default (which may be all-zero).',
+      channelsWithoutRateEmpty: 'Every channel has its own rate',
+      channel: 'Channel',
+      role: 'Role'
     },
     user: {
       sub: 'Search users, change plans or balances, and inspect the ledger',

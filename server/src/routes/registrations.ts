@@ -6,7 +6,7 @@
  *
  * 安全约定：
  *   - 口令在提交时就做 scrypt 哈希，申请记录里没有任何明文凭据；
- *   - 公开端点按 IP 限流（每 IP 每分钟 10 次），复用 Redis 固定窗口计数；
+ *   - 公开端点按 IP 限流（每 IP 每分钟 10 次），复用 Redis 令牌桶计数；
  *   - 列表 / 审批 / 拒绝全部要求管理员，且响应绝不带 password_hash。
  */
 import { Hono } from 'hono'
@@ -29,7 +29,7 @@ export const registrationRoutes = new Hono()
 /**
  * 公开申请限流：每 IP 每分钟 10 次。
  *
- * 与 API Key 的 rpm 限流共用 checkRateLimit（Redis INCR 的固定窗口），
+ * 与 API Key 的 rpm 限流共用 checkRateLimit（Redis 令牌桶，容量 10、每秒补 1/6 个），
  * 只是 key 前缀不同（register:<ip>），两者互不占用配额。
  * 10 次足以覆盖「填错 → 重提」的正常使用，又能挡住脚本刷库。
  */

@@ -73,6 +73,19 @@ export function pickBestRate(
   return best
 }
 
+/**
+ * 是否是「全 0 费率」：输入 / 输出 / 每请求费都为 0。
+ *
+ * 迁移 022 会插入一条全 0 的全局默认费率，所以「查不到费率」在当前 schema 下
+ * 通常表现为「解析到全 0」，而不是 resolveRate 返回 null。健康度与告警都以
+ * 这个判定为准，避免只看 id 为 null 而漏报。
+ */
+export function isZeroRate(
+  rate: Pick<RateLike, 'inputPerMtok' | 'outputPerMtok' | 'perRequest'>
+): boolean {
+  return !(rate.inputPerMtok > 0) && !(rate.outputPerMtok > 0) && !(rate.perRequest > 0)
+}
+
 /** 保留 6 位（余额 / 扣费 / 限额单位） */
 export function round6(n: number): number {
   if (!Number.isFinite(n)) return 0

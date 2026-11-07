@@ -154,7 +154,14 @@ function openEdit(k: ApiKey): void {
 async function submit(): Promise<void> {
   saving.value = true
   try {
-    const body = {
+    /*
+     * 速率限制 / Token 配额是管理员下发的资源额度：非管理员**不提交**这两个字段。
+     *
+     * 创建时后端会静默使用系统默认值（defaultKeyRpmLimit / quotaTokens=0）；
+     * 更新时后端对这两个字段直接 400。以前这里无条件带上，导致普通用户
+     * 能把自己的密钥改成 999999 rpm / 无限配额。
+     */
+    const body: Record<string, unknown> = {
       name: form.name.trim(),
       userId: isAdmin() ? form.userId || null : null,
       // 渠道绑定是管理面配置：操作员不传（后端也会忽略）
@@ -163,9 +170,11 @@ async function submit(): Promise<void> {
       usageAllow: form.usageAllow,
       usageRefresh: form.usageRefresh,
       usageChannels: form.usageChannels,
-      rpmLimit: Number(form.rpmLimit),
-      quotaTokens: Number(form.quotaTokens),
       expiresAt: form.expiresAt || null
+    }
+    if (isAdmin()) {
+      body.rpmLimit = Number(form.rpmLimit)
+      body.quotaTokens = Number(form.quotaTokens)
     }
 
     if (editingKeyId.value) {
@@ -532,7 +541,12 @@ onMounted(() => {
           <span class="hint">{{ t('usage.visibleChannelsHint') }}</span>
         </div>
 
-        <div class="form-row">
+        <!--
+          限速 / 配额是管理员统一下发的资源额度：普通用户不显示输入框，
+          否则界面上能改、提交却被后端拒绝（或更糟：静默忽略）。
+          表格里仍会显示当前值，只是只读。
+        -->
+        <div v-if="isAdmin()" class="form-row">
           <div class="field">
             <label>{{ t('keys.rpm') }}</label>
             <input v-model.number="form.rpmLimit" type="number" min="0" />
@@ -543,6 +557,9 @@ onMounted(() => {
             <input v-model.number="form.quotaTokens" type="number" min="0" />
             <span class="hint">{{ t('keys.quotaHint') }}</span>
           </div>
+        </div>
+        <div v-else class="field">
+          <span class="hint">{{ t('keys.limitsAdminOnly') }}</span>
         </div>
 
         <div class="field">

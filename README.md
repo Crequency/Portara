@@ -22,6 +22,7 @@ plane, the admin API and the web console on the same port.
 - **OpenAI-compatible streaming** — chat, completions, embeddings, responses and model listing; SSE bytes are forwarded as-is instead of being re-serialized on the proxy path.
 - **Channel × account routing with session affinity** — an alias maps one gateway model to one or more channel/model pairs, each channel holds multiple accounts ranked by priority and weight, and a client-supplied `prompt_cache_key` pins a conversation to the same `(channel, account)`.
 - **Balance & quota adapters** — vendor balance and usage windows are read by small fetch/parse pairs, so exhausted or cooling targets are skipped before they are used.
+- **Token-bucket rate limiting** — a per-key RPM is enforced as a Redis-backed token bucket inside one Lua script, so bursts are bounded without the fixed-window 2× boundary leak.
 - **OpenAI ⇄ Anthropic translation** — the channel decides which protocol the upstream speaks; clients only ever speak OpenAI.
 - **Encrypted key storage with audit** — upstream keys are sealed with AES-256-GCM, and sensitive reads and writes are recorded and fail closed.
 - **Bilingual, hand-written UI** — English and Chinese copy through i18n, custom CSS and hand-built controls, with no UI framework.
@@ -123,6 +124,7 @@ retryable status codes move a request to the next target.
 | `POST /v1/chat/completions` | Chat completions, including `stream: true` over SSE |
 | `GET /v1/models` | Models declared by every enabled channel |
 | `GET /v1/usage` | Balance and usage snapshots for the calling key |
+| `GET /api/billing/health` | Admin-only billing health: users without a plan, orphan keys, channels without a channel-level rate, disabled plans and zero-rate requests in the last 24 h |
 | `GET /healthz` | Liveness of the process |
 | `GET /readyz` | Readiness, including PostgreSQL and Redis |
 | `/api/*` | Control plane used by the console; management endpoints are admin-only, operator accounts can only read their own keys, logs and statistics |
@@ -133,6 +135,7 @@ Other `/v1/*` paths pass through the same authentication, rate limiting and acco
 
 - **Envelope encryption** — channel and account credentials are sealed with AES-256-GCM under a master key supplied through `PORTARA_MASTER_KEY`.
 - **Hashed and encrypted client keys** — authentication uses a SHA-256 hash, while a separate sealed copy lets an administrator reveal a key on demand; every reveal is audited.
+- **Admin-owned key limits** — operators may issue their own keys, but RPM and token quota stay admin-controlled: creation silently uses the system default, while an update carrying either field is rejected with 400.
 - **Tenant isolation** — operator accounts see only requests produced by their own keys; cost, sell price, client IP, session hashes, channels, users and model mappings stay admin-only.
 - **Fail-closed audit** — an operation that cannot be written to the audit log fails instead of proceeding silently.
 - **Short-lived tokens** — access tokens are stateless JWTs measured in minutes; long sessions ride revocable, rotating refresh tokens.
