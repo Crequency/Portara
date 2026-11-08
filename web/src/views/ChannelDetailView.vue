@@ -6,7 +6,7 @@
  * 数据全部走既有接口，仅统计与映射按 channelId 过滤。
  */
 import { errorText, toastError } from '../error'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   api,
   type Channel,
@@ -338,6 +338,36 @@ async function revealAccountKey(a: ChannelAccount): Promise<void> {
   }
 }
 
+/**
+ * 账户区按钮的**事件委托**。
+ *
+ * 为什么不用 @click：线上出现过"点击确实命中 button、但处理函数没执行、也没有报错"
+ * 的情况（DIAG 记录 click→button，350ms 后没有弹窗、无 Vue 异常）。这类现象通常来自
+ * 元素被克隆/替换后丢失监听（浏览器翻译、扩展、或某些渲染时序），按钮级监听就失效了。
+ * 委托到 document：只要事件到达文档（哪怕节点被换过），就能按 data-acct-act 找回语义。
+ *
+ * 代价：DOM 里多几个 data 属性；收益是这条路径不再依赖"这个具体节点还活着"。
+ */
+function onAcctDelegatedClick(event: MouseEvent): void {
+  const target = event.target as HTMLElement | null
+  const el = target?.closest?.('[data-acct-act]') as HTMLElement | null
+  if (!el) return
+  const act = el.dataset.acctAct ?? ''
+  setDiagLine('delegated → ' + act)
+  if (act === 'add') {
+    openAccountForm()
+    return
+  }
+  const account = channel.value?.accounts.find((x) => x.id === el.dataset.acctId)
+  if (!account) {
+    setDiagDetail('委托命中但找不到账户：' + (el.dataset.acctId ?? ''))
+    return
+  }
+  if (act === 'edit') openAccountForm(account)
+  else if (act === 'reveal') void revealAccountKey(account)
+  else setDiagDetail('未知动作：' + act)
+}
+
 async function resetAccountHealth(a: ChannelAccount): Promise<void> {
   const ch = channel.value
   if (!ch) return
@@ -557,7 +587,11 @@ watch(preset, () => {
   saveRangePreference(RANGE_KEY, preset.value)
   void loadStats()
 })
-onMounted(loadChannel)
+onMounted(() => {
+  void loadChannel()
+  document.addEventListener('click', onAcctDelegatedClick)
+})
+onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick))
 </script>
 
 <template>
@@ -773,7 +807,7 @@ onMounted(loadChannel)
           {{ t('channels.accounts') }}
           <span class="tag">{{ channel.accounts.length }}</span>
         </div>
-        <button type="button" class="btn btn-sm" @click="openAccountForm()">
+        <button type="button" class="btn btn-sm" data-acct-act="add">
           ＋ {{ t('channels.addAccount') }}
         </button>
       </div>
@@ -804,13 +838,21 @@ onMounted(loadChannel)
           <button
             type="button"
             class="btn btn-sm"
+            data-acct-act="reveal"
+            :data-acct-id="a.id"
             :disabled="!a.hasKey || revealingId === a.id"
             :title="a.hasKey ? '' : t('channels.accountNoKey')"
-            @click="revealAccountKey(a)"
           >
             {{ revealingId === a.id ? t('common.loading') : t('channels.revealKey') }}
           </button>
-          <button type="button" class="btn btn-sm" @click="openAccountForm(a)">{{ t('common.edit') }}</button>
+          <button
+            type="button"
+            class="btn btn-sm"
+            data-acct-act="edit"
+            :data-acct-id="a.id"
+          >
+            {{ t('common.edit') }}
+          </button>
           <button
             v-if="cooldownLeft(a) > 0 || quotaCooldownLeft(a) > 0"
             class="btn btn-sm"
