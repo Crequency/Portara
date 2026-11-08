@@ -48,6 +48,8 @@ const form = reactive({
   priority: 100,
   weight: 1,
   timeoutMs: 120000,
+  /** 最大并发：该渠道同时在途的上游请求上限，0 = 不限制 */
+  maxConcurrency: 0,
   /** 选用的 HTTP 代理；null = 直连 */
   proxyId: null as string | null,
   /** 余额/用量适配器 id；'' = 不提供余额 */
@@ -161,6 +163,8 @@ function fill(ch: Channel): void {
     priority: ch.priority,
     weight: ch.weight,
     timeoutMs: ch.timeoutMs,
+    // 后端尚未提供该字段时按「不限制」回填，而不是把表单留成 NaN / undefined
+    maxConcurrency: ch.maxConcurrency ?? 0,
     status: ch.status,
     note: ch.note
   })
@@ -295,6 +299,12 @@ async function save(): Promise<void> {
     return
   }
 
+  const maxConcurrency = Number(form.maxConcurrency ?? 0)
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 0) {
+    toast.error(t('channels.maxConcurrencyInvalid'))
+    return
+  }
+
   const parsedHeaders = parseHeaderLines(form.headersText)
   if (parsedHeaders.errors.length > 0) {
     toast.error(t('channels.headerFormatError', { msg: parsedHeaders.errors[0]! }))
@@ -320,6 +330,7 @@ async function save(): Promise<void> {
       priority: Number(form.priority),
       weight: Number(form.weight),
       timeoutMs: Number(form.timeoutMs),
+      maxConcurrency,
       proxyId: form.proxyId || null,
       usageAdapter: form.usageAdapter || '',
       usageUrl: form.usageUrl.trim(),
@@ -655,6 +666,21 @@ onMounted(async () => {
                 <input v-model.number="form.weight" type="number" min="1" />
                 <span class="hint">{{ t('channels.weightHint') }}</span>
               </div>
+            </div>
+
+            <div class="field">
+              <label class="row" style="gap: 5px; display: inline-flex">
+                {{ t('channels.maxConcurrency') }}
+                <PInfo :text="t('channels.maxConcurrencyHint')" />
+              </label>
+              <input
+                v-model.number="form.maxConcurrency"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+              />
+              <span class="hint">{{ t('channels.maxConcurrencyHint') }}</span>
             </div>
 
             <div v-if="isEdit" class="alert alert-info" style="margin-bottom: 0">

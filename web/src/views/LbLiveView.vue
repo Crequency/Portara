@@ -16,6 +16,7 @@ import {
   type LbLiveAlias,
   type LbLiveEventOutcome,
   type LbLiveSnapshot,
+  type LbLiveTarget,
   type User
 } from '../api'
 import PCheckbox from '../components/PCheckbox.vue'
@@ -167,6 +168,55 @@ function outcomeBadge(outcome: LbLiveEventOutcome): string {
 function shareWidth(share: number): string {
   const ratio = Number.isFinite(share) ? Math.min(1, Math.max(0, share)) : 0
   return (ratio * 100).toFixed(2) + '%'
+}
+
+// ---------------------------------------------------------------- 目标在途并发
+
+/**
+ * 目标当前在途的上游请求数。
+ *
+ * 后端尚未返回 `inFlight` 时按 0 兜底 —— 老版本后端配合新前端不能让实况页报错，
+ * 只是这一行永远显示 0。
+ */
+function targetInFlight(tg: LbLiveTarget): number {
+  const n = Number(tg.inFlight ?? 0)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** 目标的最大并发；0 = 不限制 */
+function targetMaxConcurrency(tg: LbLiveTarget): number {
+  const n = Number(tg.maxConcurrency ?? 0)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** 上限文案：0 表示不限制，用 ∞ 表达 */
+function targetLimitText(tg: LbLiveTarget): string {
+  const max = targetMaxConcurrency(tg)
+  return max > 0 ? formatNumber(max) : '∞'
+}
+
+/** `inFlight / max`；max=0 时显示 `inFlight / ∞` */
+function targetConcurrencyText(tg: LbLiveTarget): string {
+  return targetInFlight(tg) + ' / ' + targetLimitText(tg)
+}
+
+/**
+ * 饱和度（0–1）。max=0（不限）时恒为 0 —— 不限并发的渠道不该有任何告警色。
+ */
+function targetLoad(tg: LbLiveTarget): number {
+  const max = targetMaxConcurrency(tg)
+  if (max <= 0) return 0
+  return Math.min(1, targetInFlight(tg) / max)
+}
+
+/** ≥100% 满载 danger，≥80% 接近上限 warn，其余保持常规配色 */
+function targetLoadClass(tg: LbLiveTarget): string {
+  const max = targetMaxConcurrency(tg)
+  if (max <= 0) return ''
+  const load = targetLoad(tg)
+  if (load >= 1) return 'lb-concurrency-danger'
+  if (load >= 0.8) return 'lb-concurrency-warn'
+  return ''
 }
 
 /** 账户行：窗口请求数降序，同数按名称稳定排序 */
@@ -379,9 +429,19 @@ onBeforeUnmount(() => {
               <span
                 v-for="(tg, i) in a.targets"
                 :key="tg.channelId + ':' + tg.upstreamModel + ':' + i"
-                class="tag"
+                class="tag lb-target"
               >
                 {{ tg.channelName || tg.channelId }} · {{ tg.upstreamModel }}
+                <!-- 在途 / 上限：接近或达到上限时变色，不限并发时显示 ∞ -->
+                <span
+                  class="lb-target-concurrency"
+                  :class="targetLoadClass(tg)"
+                  :title="t('lbLive.inFlightHint')"
+                  :aria-label="t('lbLive.inFlight') + ' ' + targetConcurrencyText(tg)"
+                  :data-load="targetLoad(tg)"
+                >
+                  {{ targetConcurrencyText(tg) }}
+                </span>
               </span>
               <span v-if="a.targets.length === 0" class="tag">{{ t('lbLive.noTargets') }}</span>
               <span class="spacer" />
@@ -506,6 +566,31 @@ onBeforeUnmount(() => {
 .lb-alias {
   font-size: 14px;
   font-weight: 620;
+}
+
+.lb-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 在途 / 上限：数字等宽，常规淡色，接近上限转 warn、满载转 danger */
+.lb-target-concurrency {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  padding-left: 6px;
+  border-left: 1px solid var(--border-strong);
+}
+
+.lb-target-concurrency.lb-concurrency-warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.lb-target-concurrency.lb-concurrency-danger {
+  color: var(--danger);
+  font-weight: 650;
 }
 
 .lb-account {

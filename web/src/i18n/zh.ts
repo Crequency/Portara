@@ -314,6 +314,10 @@ export const zh = {
     priority: '优先级',
     weight: '权重',
     timeout: '超时（毫秒）',
+    maxConcurrency: '最大并发',
+    maxConcurrencyHint:
+      '0 = 不限制；填 N 时该渠道同时在途的上游请求最多 N 个，超出会切换到其它渠道，全部满载则排队。',
+    maxConcurrencyInvalid: '最大并发必须是不小于 0 的整数',
     notePlaceholder: '可选',
     latency: '延迟',
     untested: '未测试',
@@ -596,6 +600,8 @@ export const zh = {
     modelsPath: '模型列表 API 路径',
     timeout: '超时',
     priorityWeight: '优先级 / 权重',
+    maxConcurrency: '最大并发',
+    maxConcurrencyUnlimited: '不限制',
     status: '状态',
     note: '备注',
     createdAt: '创建时间',
@@ -1115,6 +1121,9 @@ export const zh = {
     noAccounts: '该别名暂无账户数据',
     noTargets: '没有目标',
     sortedByRequests: '按窗口请求数降序',
+    inFlight: '在途并发',
+    inFlightHint:
+      '在途请求数 / 最大并发；达到上限的 80% 转为警告色，满载转为危险色。∞ 表示该渠道不限并发。',
     state: {
       ok: '正常',
       quotaCooling: '额度冷冻',

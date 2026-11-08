@@ -677,6 +677,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
           <div>{{ channel.priority }} / {{ channel.weight }}</div>
         </div>
         <div class="field">
+          <label>{{ t('channelDetail.maxConcurrency') }}</label>
+          <div>
+            <template v-if="(channel.maxConcurrency ?? 0) > 0">
+              {{ channel.maxConcurrency }}
+            </template>
+            <span v-else class="dim">{{ t('channelDetail.maxConcurrencyUnlimited') }}</span>
+          </div>
+        </div>
+        <div class="field">
           <label>{{ t('channelDetail.upstreamKey') }}</label>
           <div class="mono dim">{{ channel.apiKeyMasked || '—' }}</div>
         </div>

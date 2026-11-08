@@ -370,6 +370,8 @@ export interface Channel {
   priority: number
   weight: number
   timeoutMs: number
+  /** 该渠道同时在途的上游请求上限；0 = 不限制 */
+  maxConcurrency: number
   status: 'active' | 'disabled'
   note: string
   lastLatencyMs: number | null
@@ -800,6 +802,10 @@ export interface LbLiveTarget {
   upstreamModel: string
   priority: number
   weight: number
+  /** 当前在途的上游请求数（后端未提供时按 0 处理） */
+  inFlight?: number
+  /** 该渠道的最大并发；0 = 不限制（后端未提供时按 0 处理） */
+  maxConcurrency?: number
 }
 
 /** 别名下的一个上游账户在窗口内的分配与状态 */

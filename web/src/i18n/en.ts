@@ -314,6 +314,10 @@ export const en = {
     priority: 'Priority',
     weight: 'Weight',
     timeout: 'Timeout (ms)',
+    maxConcurrency: 'Max concurrency',
+    maxConcurrencyHint:
+      '0 = unlimited. With N, at most N upstream requests of this channel are in flight at once; excess requests switch to other channels, and when every channel is saturated they queue.',
+    maxConcurrencyInvalid: 'Max concurrency must be an integer no less than 0',
     notePlaceholder: 'optional',
     latency: 'Latency',
     untested: 'Not tested',
@@ -596,6 +600,8 @@ export const en = {
     modelsPath: 'Model list API path',
     timeout: 'Timeout',
     priorityWeight: 'Priority / Weight',
+    maxConcurrency: 'Max concurrency',
+    maxConcurrencyUnlimited: 'Unlimited',
     status: 'Status',
     note: 'Note',
     createdAt: 'Created',
@@ -1116,6 +1122,9 @@ export const en = {
     noAccounts: 'No account data for this alias',
     noTargets: 'No targets',
     sortedByRequests: 'Sorted by window requests',
+    inFlight: 'In flight',
+    inFlightHint:
+      'In-flight requests / max concurrency; 80% of the limit turns warning-colored and a full load turns danger-colored. ∞ means the channel is unlimited.',
     state: {
       ok: 'OK',
       quotaCooling: 'Quota cooldown',
