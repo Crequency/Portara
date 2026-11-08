@@ -43,6 +43,7 @@ import {
 import { useI18n } from '../i18n'
 import { loadRangePreference, saveRangePreference } from '../rangePreference'
 import { CLIENT_TZ, tzQueryParam } from '../time'
+import { setDiagDetail, setDiagLine } from '../diag'
 import { toast } from '../toast'
 
 const props = defineProps<{ user?: User; channelId: string }>()
@@ -259,6 +260,9 @@ function cooldownText(secs: number): string {
 }
 
 function openAccountForm(account?: ChannelAccount): void {
+  // 诊断钩子：只在 ?diag=1 时有输出（见 diag.ts），用来区分"处理函数没跑"与"跑了但没渲染"
+  setDiagLine('handler openAccountForm → ' + (account ? 'edit ' + account.name : 'new'))
+  setTimeout(() => setDiagDetail('accountForm=' + (accountForm.value ? 'set' : 'null')), 60)
   accountForm.value = account
     ? {
         id: account.id,
@@ -320,6 +324,7 @@ async function removeAccount(a: ChannelAccount): Promise<void> {
 const revealingId = ref('')
 
 async function revealAccountKey(a: ChannelAccount): Promise<void> {
+  setDiagLine('handler revealAccountKey → ' + a.name)
   const ch = channel.value
   if (!ch || revealingId.value) return
   revealingId.value = a.id
