@@ -218,6 +218,17 @@ const QUOTA_400_KEY = 'sk-quota-400-account'
  */
 const CONCURRENCY_KEY = 'sk-concurrency-limit-account'
 /**
+ * 前 N 次返回 500、之后成功 —— 验证「整轮重试」：
+ * 上游只是抖了一下，网关不该把这次会话判死。
+ */
+const FLAKY_KEY = 'sk-flaky-account'
+/** 连接层抖动：直接销毁 socket（模拟 fetch failed），第二次起成功 */
+const RESET_ONCE_KEY = 'sk-reset-once-account'
+/** FLAKY_KEY 的计数：前 1 次 500，之后成功 */
+const flakyHits = { count: 0 }
+/** RESET_ONCE_KEY 的计数：前 1 次断连，之后成功 */
+const resetOnceHits = { count: 0 }
+/**
  * 稳定返回 500 的伪上游密钥。
  *
  * 用于验证「可重试的上游失败 → 换号 → 最终成功」会写 attempt_failed +
@@ -367,6 +378,8 @@ function startMockUpstream() {
         authedKey(QUOTA_ERROR_KEY) ||
         authedKey(QUOTA_400_KEY) ||
         authedKey(CONCURRENCY_KEY) ||
+        authedKey(FLAKY_KEY) ||
+        authedKey(RESET_ONCE_KEY) ||
         authedKey(QUOTA_RESET_KEY) ||
         authedKey(QUOTA_RESET_FAR_KEY) ||
         authedKey(RATE_LIMIT_KEY) ||
@@ -570,6 +583,32 @@ function startMockUpstream() {
           body = JSON.parse(raw)
         } catch {
           /* 忽略 */
+        }
+
+        /*
+         * 连接层抖动：直接销毁 socket —— 网关侧表现为 fetch failed（网络错误）。
+         * 第一次断连、之后正常，用来验证「同一账户原地重试」。
+         */
+        if (authedKey(RESET_ONCE_KEY)) {
+          resetOnceHits.count++
+          if (resetOnceHits.count === 1) {
+            req.socket.destroy()
+            return
+          }
+        }
+
+        /*
+         * 抖动型 5xx：第一次 500、之后成功 —— 用来验证「整轮重试」。
+         */
+        if (authedKey(FLAKY_KEY)) {
+          flakyHits.count++
+          if (flakyHits.count === 1) {
+            res.writeHead(500, { 'content-type': 'application/json' })
+            res.end(
+              JSON.stringify({ error: { message: 'transient mock 500', type: 'server_error' } })
+            )
+            return
+          }
         }
 
         // 稳定 500：用于验证故障转移事件（attempt_failed → failover_success）
@@ -7286,6 +7325,107 @@ async function main() {
       await apiCall('POST', '/api/model-routes/purge', { alias })
     }
     for (const id of [unlimited.channelId, limited.channelId, chA.channelId, chBId]) {
+      await apiCall('DELETE', `/api/channels/${id}`)
+    }
+
+    // ------------------------------- 会话连续性：原地重试 / 全渠道遍历 / 整轮重试
+    section('㊵ 负载均衡连续性：抖动不中断会话')
+
+    /** 建一个单目标别名（一个渠道一个账户），返回 { channelId, alias } */
+    async function newSingleAliasChannel(tag, apiKey, priority) {
+      const ch = await apiCall('POST', '/api/channels', {
+        name: `smoke-cont-${tag}-${RUN}`,
+        baseUrl: `${MOCK}/v1`,
+        apiKey,
+        models: [MOCK_MODEL],
+        priority
+      })
+      assert.equal(ch.status, 201, `建渠道失败：${JSON.stringify(ch.body).slice(0, 160)}`)
+      const channelId = ch.body.channel.id
+      await apiCall('POST', `/api/channels/${channelId}/accounts`, {
+        name: `连续性账户-${tag}-${RUN}`,
+        apiKey,
+        priority: 1,
+        weight: 1
+      })
+      const alias = `smoke-cont-${tag}-${RUN}/model`
+      await apiCall('POST', '/api/model-routes', {
+        alias,
+        targets: [{ channelId, upstreamModel: MOCK_MODEL }]
+      })
+      return { channelId, alias }
+    }
+
+    // ① 连接层抖动（socket 被销毁）→ 网关原地重试一次就成功
+    const resetOnce = await newSingleAliasChannel('reset', RESET_ONCE_KEY, 980)
+    const resetHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: resetOnce.alias, messages: [{ role: 'user', content: 'reset once' }] },
+      lbSecret
+    )
+    check('网络抖动：同一账户原地重试后成功（不把 5xx/断连直接交给客户端）', () => {
+      assert.equal(resetHit.status, 200, `实际 ${resetHit.status}`)
+      assert.ok(resetOnceHits.count >= 2, `上游只被打了 ${resetOnceHits.count} 次，没重试`)
+    })
+
+    // ② 抖动型 500 → 整轮重试后成功
+    const flaky = await newSingleAliasChannel('flaky', FLAKY_KEY, 981)
+    const flakyHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: flaky.alias, messages: [{ role: 'user', content: 'flaky' }] },
+      lbSecret
+    )
+    check('瞬时 5xx：整轮重试后成功（不是立刻把 500 交给客户端）', () => {
+      assert.equal(flakyHit.status, 200, `实际 ${flakyHit.status}`)
+    })
+
+    // ③ 三个渠道：前两个稳定 500、第三个正常 → 必须走到第三个（旧实现只试 2 个）
+    const bad1 = await newSingleAliasChannel('bad1', FAIL_UPSTREAM_KEY, 982)
+    const bad2 = await newSingleAliasChannel('bad2', FAIL_UPSTREAM_KEY, 983)
+    const good3 = await newSingleAliasChannel('good3', UPSTREAM_KEY, 984)
+    const threeAlias = `smoke-cont-three-${RUN}/model`
+    await apiCall('POST', '/api/model-routes', {
+      alias: threeAlias,
+      targets: [
+        { channelId: bad1.channelId, upstreamModel: MOCK_MODEL },
+        { channelId: bad2.channelId, upstreamModel: MOCK_MODEL },
+        { channelId: good3.channelId, upstreamModel: MOCK_MODEL }
+      ]
+    })
+    const threeHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: threeAlias, messages: [{ role: 'user', content: 'three' }] },
+      lbSecret
+    )
+    check('全渠道遍历：前两个渠道都坏时仍能走到第三个并成功', () => {
+      assert.equal(threeHit.status, 200, `实际 ${threeHit.status}`)
+      assert.equal(threeHit.headers.get('x-portara-channel'), `smoke-cont-good3-${RUN}`)
+    })
+
+    // ④ 所有渠道都坏 → 才返回失败（且不是 200）
+    const allBadAlias = `smoke-cont-allbad-${RUN}/model`
+    await apiCall('POST', '/api/model-routes', {
+      alias: allBadAlias,
+      targets: [
+        { channelId: bad1.channelId, upstreamModel: MOCK_MODEL },
+        { channelId: bad2.channelId, upstreamModel: MOCK_MODEL }
+      ]
+    })
+    const allBadHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: allBadAlias, messages: [{ role: 'user', content: 'all bad' }] },
+      lbSecret
+    )
+    check('所有候选都失败：才返回失败（透传上游最后一次错误）', () => {
+      assert.notEqual(allBadHit.status, 200, '全部上游失败时不该返回 200')
+      assert.ok(allBadHit.status >= 400, `实际 ${allBadHit.status}`)
+    })
+
+    // 清理
+    for (const a of [resetOnce.alias, flaky.alias, threeAlias, allBadAlias]) {
+      await apiCall('POST', '/api/model-routes/purge', { alias: a })
+    }
+    for (const id of [resetOnce.channelId, flaky.channelId, bad1.channelId, bad2.channelId, good3.channelId]) {
       await apiCall('DELETE', `/api/channels/${id}`)
     }
 

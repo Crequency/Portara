@@ -204,6 +204,46 @@ function wrapStreamWithRelease(body: ReadableStream, release: () => void): Reada
   )
 }
 
+/**
+ * 打上游 + **原地重试**。
+ *
+ * 用户要的语义：一次网络抖动不该把整个会话打断。同一账户上重试一次，
+ * 比立刻换号便宜得多 —— 不丢上游前缀缓存，也不会给别的号加压力。
+ *
+ * 只有在"换号也没用"的错误上才不重试（由调用方判断），这里只负责
+ * 连接层的抖动：fetch 抛错 / 连接被重置 / 读响应头前断开。
+ *
+ * `signal` 同时代表客户端断开与整体超时；一旦 abort 立即停止重试。
+ */
+async function fetchWithRetries(args: {
+  url: string
+  init: RequestInit
+  proxy: Parameters<typeof upstreamFetch>[2]
+  signal: AbortSignal
+  attempts: number
+  onAttempt?: (attemptIndex: number) => void
+}): Promise<Response> {
+  const total = Math.max(1, args.attempts)
+  let lastErr: unknown = null
+  for (let i = 0; i < total; i++) {
+    args.onAttempt?.(i)
+    try {
+      return await upstreamFetch(args.url, { ...args.init, signal: args.signal }, args.proxy)
+    } catch (err) {
+      lastErr = err
+      if (args.signal.aborted) throw err
+      if (i >= total - 1) throw err
+      const backoff = 120 + Math.floor(Math.random() * 180)
+      console.warn(
+        `[portara] 上游连接失败（${err instanceof Error ? err.message : String(err)}），` +
+          `${backoff}ms 后原地重试（第 ${i + 2}/${total} 次）`
+      )
+      await sleepUnlessAborted(backoff, args.signal)
+    }
+  }
+  throw lastErr ?? new Error('上游请求失败')
+}
+
 async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   const key = c.get('apiKey') as ApiKeyRow
   const ip = clientIp(c)
@@ -539,7 +579,15 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     }
   }
 
-  const channelLimit = Math.min(env.maxChannelAttempts, pick.targets.length)
+  /*
+   * 候选渠道上限：0 = **全部候选**（默认）。
+   * 用户选负载均衡就是为了"不因为一个渠道抖动/限额就中断"，
+   * 所以默认把映射里的每个目标都试一遍，用总时间预算而不是次数兜底。
+   */
+  const channelLimit =
+    env.maxChannelAttempts > 0
+      ? Math.min(env.maxChannelAttempts, pick.targets.length)
+      : pick.targets.length
   /**
    * 已经确认「整池额度冻结」的候选渠道里最早的重置时间。
    *
@@ -604,13 +652,37 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
 
   /*
+   * 故障转移的**总时间预算**与会话连续性语义：
+   *
+   *   ① 同一（渠道, 账户）先原地重试（网络抖动），见 fetchWithRetries；
+   *   ② 不行就换号、换渠道，**把全部候选走一遍**（不再默认只试 2 个）；
+   *   ③ 全走完仍失败 → 抖动退避后**整轮再来**，最多 maxFailoverPasses 轮；
+   *   ④ 只有预算用完 / 轮次用尽，才把失败交给客户端。
+   *
+   * 也就是说：只要还有一个可能恢复的上游，就不把会话打断。
+   */
+  const failoverDeadline = startedAt + env.failoverBudgetMs
+  let passNo = 0
+  /**
+   * 本轮是否出现过**值得重试**的失败（网络抖动 / 5xx / 并发撞线 / 非额度 429）。
+   *
+   * 只有这类失败才值得整轮重来。额度用尽、400 参数错误、模型不存在这些
+   * "再试一次结果也一样"的失败，重试只会白打上游、把额度/限流更快耗光。
+   */
+  let sawTransientFailure = false
+
+  /*
    * 用 while + 可变顺序而不是 for-of：某个候选渠道并发已满时，
    * 可能等来的是**另一个**候选渠道先空出来，那时把它挪到当前位置继续，
    * 而不是傻等原顺序里那个满的渠道。
    */
-  const candidateOrder = pick.targets.slice(0, channelLimit)
-  let orderIndex = 0
-  while (orderIndex < candidateOrder.length) {
+  while (true) {
+    passNo++
+    /** 本轮开始时的尝试计数：用于判断"这一轮到底有没有真的打过上游" */
+    const attemptsAtPassStart = attemptNo
+    const candidateOrder = pick.targets.slice(0, channelLimit)
+    let orderIndex = 0
+    while (orderIndex < candidateOrder.length) {
     const target = candidateOrder[orderIndex]
     const targetIndex = orderIndex
     orderIndex++
@@ -622,15 +694,25 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     if (payload && upstreamModel && upstreamModel !== model) {
       outPayload = { ...payload, model: upstreamModel }
     }
-    plan = planUpstreamRequest({
-      channel: channel as unknown as Parameters<typeof planUpstreamRequest>[0]['channel'],
-      upstreamModel,
-      restPath,
-      payload: outPayload,
-      rawBody: raw,
-      injectStreamUsage: opts.scanUsage,
-      payloadRewritten: upstreamModel !== model
-    })
+    /*
+     * plan 也可能抛（例如协议不支持该端点、混杂模式没配覆盖）。
+     * 这类错误具有**渠道局部性** —— 换一个渠道可能就正常了，
+     * 所以不能让它把整个请求打断，只记录并跳过。
+     */
+    try {
+      plan = planUpstreamRequest({
+        channel: channel as unknown as Parameters<typeof planUpstreamRequest>[0]['channel'],
+        upstreamModel,
+        restPath,
+        payload: outPayload,
+        rawBody: raw,
+        injectStreamUsage: opts.scanUsage,
+        payloadRewritten: upstreamModel !== model
+      })
+    } catch (err) {
+      lastFailure = `渠道「${channel.name}」请求计划生成失败：${err instanceof Error ? err.message : String(err)}`
+      continue
+    }
     if (plan.warnings.length > 0) {
       console.warn(
         `[portara] 协议翻译提示（${channel.name}）：${plan.warnings.join('；')}`
@@ -694,32 +776,18 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
      * 其余情况一律维持既有退化语义，不自己造 503。
      */
     if (picked.quotaPool.allFrozen && picked.quotaPool.retryAtMs !== null) {
+      /*
+       * 整池冻结：**只记录、不在这里返回**。
+       *
+       * 旧实现在"最后一个候选渠道"上直接 429 —— 但那时可能还有别的渠道
+       * 只是瞬时抖动，下一轮就会恢复。把"最终失败"的判断推迟到
+       * 全部重试轮次都走完之后（见循环末尾），才符合"能救就救"的语义。
+       */
       const retryAtMs = picked.quotaPool.retryAtMs
       frozenRetryAtMs =
         frozenRetryAtMs === null ? retryAtMs : Math.min(frozenRetryAtMs, retryAtMs)
-      if (targetIndex < channelLimit - 1) {
-        lastFailure = `渠道「${channel.name}」所有上游账户额度均已用尽`
-        continue
-      }
-      // Retry-After 上限 86400：超过一天的值对客户端没有意义，也会溢出某些 SDK
-      const retryAfterSec = Math.max(
-        1,
-        Math.min(86400, Math.ceil((frozenRetryAtMs - Date.now()) / 1000))
-      )
-      const resetAtIso = new Date(frozenRetryAtMs).toISOString()
-      c.header('retry-after', String(retryAfterSec))
-      // 日志里带上渠道，便于按渠道统计「额度耗尽」次数（baseLog 默认是 null）
-      baseLog.channelId = channel.id
-      baseLog.channelName = channel.name
-      baseLog.upstreamModel = upstreamModel
-      return rejectEarly({
-        status: 429,
-        logError: `上游账户额度均已用尽（upstream_quota_exhausted），最早 ${resetAtIso} 恢复`,
-        message: `该渠道所有上游账户额度均已用尽，预计 ${resetAtIso} 恢复`,
-        type: 'rate_limit_error',
-        code: 'upstream_quota_exhausted',
-        extra: { retryAfter: retryAfterSec, resetAt: resetAtIso }
-      })
+      lastFailure = `渠道「${channel.name}」所有上游账户额度均已用尽`
+      continue
     }
 
     /*
@@ -758,8 +826,21 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       }
     }
 
-    const attemptLimit = Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length)
+    /*
+     * 账户上限：0 = 该渠道所有可用账户（默认）。
+     * 早期默认 3 会让"第 4 个之后的号"永远轮不到，等于渠道可用性被前 3 个号绑架。
+     */
+    const attemptLimit =
+      MAX_ACCOUNT_ATTEMPTS > 0 ? Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length) : candidates.length
     for (const candidate of candidates.slice(0, attemptLimit)) {
+      /*
+       * 总尝试次数闸门：时间是主预算，这个防"所有上游都秒失败时一分钟打出上百次"。
+       * 正常故障转移远远用不到 24 次。
+       */
+      if (attemptNo >= env.maxTotalAttempts) {
+        lastFailure = `本请求的上游尝试次数已达上限（${env.maxTotalAttempts}）`
+        break
+      }
       const upstreamKey = tryDecryptKey(candidate.key_cipher)
       if (upstreamKey === null) {
         lastFailure = `账户「${candidate.name}」的密钥无法解密`
@@ -785,15 +866,23 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         }
       )
 
-      // 每次真正打上游算一次尝试 —— 跨渠道累计（见 attemptNo 的注释）
-      attemptNo++
       const attemptStartedAt = Date.now()
       try {
-        const attempt = await upstreamFetch(
+        /*
+         * 每次真正打上游算一次尝试 —— 跨渠道累计（见 attemptNo 的注释）。
+         * 同一账户的网络抖动由 fetchWithRetries 原地重试（每次真实请求都计数，
+         * 面板上的 attempt 才是真实的上游请求次数）。
+         */
+        const attempt = await fetchWithRetries({
           url,
-          { method: c.req.method, headers: headers.headers, body: plan.bodyText, signal },
-          target.proxy
-        )
+          init: { method: c.req.method, headers: headers.headers, body: plan.bodyText },
+          proxy: target.proxy,
+          signal,
+          attempts: env.attemptsPerCandidate,
+          onAttempt: () => {
+            attemptNo++
+          }
+        })
         account = candidate
         upstreamHeaders = headers
 
@@ -885,6 +974,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
            */
           const fromHeader = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0
           const coolSec = Math.min(300, Math.max(env.concurrencyCooldownSec, fromHeader))
+          sawTransientFailure = true
           await markAccountFailure(candidate.id, lastFailure, coolSec)
           console.warn(
             `[portara] 账户「${candidate.name}」触发上游并发上限，短冷却 ${coolSec}s（可换号继续）`
@@ -911,15 +1001,42 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
                 `${formatQuotaCooldown(quota.secs)}${quota.applied ? '' : '（冷冻期内，保持原样）'}`
             )
           }
-        } else {
-          const base = cooldownFor(
-            attempt.status,
-            Number.isFinite(retryAfter) ? retryAfter : null
-          )
+        } else if (attempt.status === 401 || attempt.status === 403) {
+          /*
+           * 凭据坏了：这类问题"换号也没用但要尽快别再用它"，
+           * 所以保留设置项的下限（默认 1 小时），避免反复用坏 key 打上游。
+           */
           await markAccountFailure(
             candidate.id,
             lastFailure,
-            Math.max(base, routing.accountFailureCooldownSec)
+            Math.max(COOLDOWN.auth, routing.accountFailureCooldownSec)
+          )
+        } else if (attempt.status === 429) {
+          /*
+           * 限流：优先尊重上游 Retry-After，但**不超过设置项上限**。
+           * 旧逻辑的 Math.max(base, 3600) 会把一次 429 变成一小时禁足，
+           * 而 429 往往几秒~几分钟就恢复 —— 那正是"一丁点波动就中断"的来源。
+           */
+          const base = cooldownFor(attempt.status, Number.isFinite(retryAfter) ? retryAfter : null)
+          sawTransientFailure = true
+          await markAccountFailure(
+            candidate.id,
+            lastFailure,
+            Math.min(routing.accountFailureCooldownSec, Math.max(COOLDOWN.rateLimit, base))
+          )
+        } else {
+          /*
+           * 5xx / 其它可重试错误：按网络失败的短阶梯退避。
+           * 上游 500 常常是瞬时过载，退避 30s 比禁足 1 小时合理得多。
+           */
+          sawTransientFailure = true
+          await markAccountFailure(
+            candidate.id,
+            lastFailure,
+            networkFailureCooldownSec(
+              candidate.consecutive_failures,
+              routing.accountFailureCooldownSec
+            )
           )
         }
 
@@ -977,6 +1094,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           : timedOut
             ? `上游响应超时（${channel.timeout_ms}ms）`
             : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
+        if (!clientGone) sawTransientFailure = true
 
         /*
          * 连接失败 / 超时：**不要**用设置项里的通用冷却（默认 1 小时）。
@@ -1034,6 +1152,64 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     // 这个渠道整层失败：立刻归还名额，再换下一个候选渠道（若有）
     releaseSlotNow()
     if (targetIndex < channelLimit - 1) affinityDrifted = true
+    } // while (orderIndex ...)
+
+    if (res) break
+
+    /*
+     * 整轮都失败了。能不能再来一轮？
+     *
+     * 判断顺序即优先级：
+     *   ① 客户端已经走了 → 立刻停（再重试都是白费）；
+     *   ② 轮次用完 → 停；
+     *   ③ 时间预算不够再撑一轮 → 停；
+     *   ④ 否则抖动退避后重来 —— 上游可能只是抖了一下，
+     *      也可能某个号的短冷却（网络错误 30s 起）马上就要过期。
+     */
+    /*
+     * 整池额度冻结（**一个上游都没能打**）+ 已知恢复时间 → 这才是真正的
+     * "所有上游都不可能继续"。此时给 429 + Retry-After，比让客户端等满
+     * 60s 预算再收到一个 504 有用得多。
+     */
+    if (!res && attemptNo === attemptsAtPassStart && frozenRetryAtMs !== null) {
+      const retryAfterSec = Math.max(
+        1,
+        Math.min(86400, Math.ceil((frozenRetryAtMs - Date.now()) / 1000))
+      )
+      const resetAtIso = new Date(frozenRetryAtMs).toISOString()
+      c.header('retry-after', String(retryAfterSec))
+      baseLog.channelId = channel?.id ?? null
+      baseLog.channelName = channel?.name ?? ''
+      baseLog.upstreamModel = upstreamModel
+      releaseSlotNow()
+      return rejectEarly({
+        status: 429,
+        logError: `上游账户额度均已用尽（upstream_quota_exhausted），最早 ${resetAtIso} 恢复`,
+        message: `所有候选渠道的上游账户额度均已用尽，预计 ${resetAtIso} 恢复`,
+        type: 'rate_limit_error',
+        code: 'upstream_quota_exhausted',
+        extra: { retryAfter: retryAfterSec, resetAt: resetAtIso }
+      })
+    }
+
+    if (c.req.raw.signal.aborted) break
+    if (attemptNo >= env.maxTotalAttempts) break
+    if (passNo >= env.maxFailoverPasses) break
+    /*
+     * 只有瞬时类失败（网络 / 5xx / 并发撞线 / 非额度 429）才值得重来一轮。
+     * 额度用尽、401、400/404 这些"再试一次结果一样"的失败，重试只是
+     * 白打上游、把限流与额度耗得更快，所以直接进入最终失败处理。
+     */
+    if (!sawTransientFailure) break
+    const passBackoffMs = 250 + Math.floor(Math.random() * 350) + (passNo - 1) * 750
+    if (Date.now() + passBackoffMs >= failoverDeadline) break
+    console.warn(
+      `[portara] 第 ${passNo} 轮全部候选失败（${lastFailure || '未知原因'}），` +
+        `${passBackoffMs}ms 后整轮重试`
+    )
+    // 退避期间把并发名额放掉，别占着导致别的请求排队
+    releaseSlotNow()
+    await sleepUnlessAborted(passBackoffMs, c.req.raw.signal)
   }
 
   /*
@@ -1074,7 +1250,13 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     upstreamModel
   }
 
-  // 全部尝试都没拿到 2xx/不可重试响应：优先把上游最后一次的拒绝交给客户端
+  /*
+   * 全部尝试都没拿到 2xx：把**上游最后一次的拒绝**原样交给客户端。
+   *
+   * 这里刻意不改成自造错误：上游的 402/429 正文带着它自己的 code 与 reset 语义
+   * （例如 `insufficient_balance` + `details.reset_at`），透传比网关另编一个
+   * 更有信息量；客户端 SDK 也按上游格式解析。这一点有冒烟用例钉住。
+   */
   res ??= lastUpstreamError
   if (!res) {
     const clientGone = c.req.raw.signal.aborted
