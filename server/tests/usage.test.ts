@@ -678,3 +678,65 @@ test('OpenDesign followUps：裸数组也能取到；完全没有则返回空', 
   assert.match(a.followUps!({ workspaces: [{ id: 'ws_arr' }] })[0].url, /ws_arr/)
   assert.equal(a.followUps!({ workspaces: { userId: 'u1' } }).length, 0)
 })
+/*
+ * 窗口 key 归一化（2026-11-09 用户真实响应）。
+ *
+ * OpenDesign 的窗口对象没有 kind，只有 durationSeconds：
+ *   18000 → 5h（fiveHour）；604800 → 7d（weekly）
+ * 不归一化面板只能显示 window-1 / window-2，用户看不出是哪个限额。
+ */
+test('OpenDesign：durationSeconds 18000/604800 → fiveHour/weekly', () => {
+  const adapter = getUsageAdapter('opendesign')!
+  const parsed = adapter.parse({
+    me: {
+      me: { plan: 'go', balanceUsd: '-0.0194' },
+      codingPlanUsage: {
+        eligible: true,
+        tier: 'go',
+        windows: [
+          {
+            policyId: 'model_limit_policy_ixbr9h',
+            durationSeconds: 18000,
+            resetMode: 'anchored_recurring',
+            usedCredits: 39496,
+            limitCredits: 100000,
+            remainingCredits: 60504,
+            windowStart: '2026-11-08T16:52:18.115Z',
+            resetsAt: '2026-11-08T21:52:18.115Z'
+          },
+          {
+            policyId: 'model_limit_policy_c89t0x',
+            durationSeconds: 604800,
+            resetMode: 'anchored_recurring',
+            usedCredits: 165313,
+            limitCredits: 300000,
+            remainingCredits: 134687,
+            windowStart: '2026-11-07T10:52:18.115Z',
+            resetsAt: '2026-11-14T10:52:18.115Z'
+          }
+        ]
+      }
+    }
+  })
+  assert.deepEqual(parsed.windows?.map((w) => w.key), ['fiveHour', 'weekly'])
+  assert.equal(parsed.windows?.[0].used, 39496, 'used 应取上游 usedCredits')
+  assert.equal(parsed.windows?.[1].total, 300000)
+  assert.equal(parsed.windows?.[1].remaining, 134687)
+  assert.ok(!(parsed.warnings ?? []).some((w) => w.includes('没有返回限额窗口')))
+})
+
+test('OpenDesign：未知时长退回 window-N，有 kind 时优先 kind', () => {
+  const adapter = getUsageAdapter('opendesign')!
+  const parsed = adapter.parse({
+    me: {
+      me: { plan: 'go', balanceUsd: '0' },
+      codingPlanUsage: {
+        windows: [
+          { durationSeconds: 3600, limitCredits: 10, remainingCredits: 5, usedCredits: 5 },
+          { kind: 'monthly', durationSeconds: 2592000, limitCredits: 20, remainingCredits: 20 }
+        ]
+      }
+    }
+  })
+  assert.deepEqual(parsed.windows?.map((w) => w.key), ['1h', 'monthly'])
+})

@@ -829,15 +829,42 @@ const opendesign: UsageAdapter = {
       : Array.isArray(me.designPlanWindows)
         ? me.designPlanWindows
         : []
+
+    /**
+     * 窗口 key 归一化。
+     *
+     * OpenDesign 的窗口对象**没有 kind 字段**，只有 `durationSeconds`：
+     *   18000  → 5 小时窗口
+     *   604800 → 7 天窗口（Go 套餐只有这两个，没有月度）
+     * 不归一化的话面板只能显示 "window-1 / window-2"，看不出是哪个限额。
+     */
+    const windowKeyOf = (item: Record<string, unknown>, index: number): string => {
+      const kind = typeof item.kind === 'string' && item.kind ? item.kind : ''
+      if (kind) return kind
+      const sec = toNum(item.durationSeconds)
+      if (sec !== null && sec > 0) {
+        if (sec === 5 * 3600) return 'fiveHour'
+        if (sec === 7 * 86400) return 'weekly'
+        if (sec === 86400) return '1d'
+        if (sec === 30 * 86400) return '30d'
+        if (sec % 86400 === 0) return `${sec / 86400}d`
+        if (sec % 3600 === 0) return `${sec / 3600}h`
+      }
+      return `window-${index + 1}`
+    }
     for (const item of rawWindows) {
       if (!isRecord(item)) continue
       const limit = toNum(item.limitCredits)
       const remaining = toNum(item.remainingCredits)
       if (limit === null || remaining === null) continue
-      const kind = typeof item.kind === 'string' && item.kind ? item.kind : ''
+      /*
+       * used 优先用上游给的 usedCredits（比 limit-remaining 更准：
+       * 有的套餐 limit 会随窗口滚动调整），缺了再回退到差值。
+       */
+      const usedFromUpstream = toNum(item.usedCredits)
       windows.push({
-        key: kind || `window-${windows.length + 1}`,
-        used: Math.max(0, limit - remaining),
+        key: windowKeyOf(item, windows.length),
+        used: usedFromUpstream ?? Math.max(0, limit - remaining),
         total: limit,
         remaining,
         resetAt: toIso(item.resetsAt) ?? undefined,
