@@ -118,8 +118,22 @@ const billingLowBalanceUsd = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 1
 })()
 
+/**
+ * 上游「瞬时并发限制」（如 membership concurrency limit exceeded）的短冷却秒数。
+ *
+ * 这类错误不是"号没钱了"，而是同一时刻在跑的请求数超过会员档位上限。
+ * 上游给的重置时间通常是"并发窗口滑出"的时刻（几分钟到一小时），按它冷冻会让
+ * 一个只是撞线的号长时间不可用；正确做法是**短冷却后重试**。
+ * 默认 20s：足以让并发滑出，又不会把可用号踢太久。
+ */
+const concurrencyCooldownSec = Math.max(
+  1,
+  Number(process.env.PORTARA_CONCURRENCY_COOLDOWN_SEC ?? 20)
+)
+
 export const env = {
   port: num(process.env.PORTARA_PORT, 52740),
+  concurrencyCooldownSec,
   affinityTtlSeconds,
   affinityMaxAgeSeconds,
   maxChannelAttempts,

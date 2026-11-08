@@ -202,6 +202,12 @@ const QUOTA_ERROR_KEY = 'sk-quota-error-account'
  */
 const QUOTA_400_KEY = 'sk-quota-400-account'
 /**
+ * 400 + tier_limit_exceeded（membership concurrency limit exceeded）——
+ * 上游瞬时并发上限。它既不是额度用尽，也不该走通用 1 小时冷却：
+ * 期望行为是「短冷却 + 换号继续」，且**不**产生 quota_cooldown 事件。
+ */
+const CONCURRENCY_KEY = 'sk-concurrency-limit-account'
+/**
  * 稳定返回 500 的伪上游密钥。
  *
  * 用于验证「可重试的上游失败 → 换号 → 最终成功」会写 attempt_failed +
@@ -350,6 +356,7 @@ function startMockUpstream() {
         authedKey(UPSTREAM_KEY) ||
         authedKey(QUOTA_ERROR_KEY) ||
         authedKey(QUOTA_400_KEY) ||
+        authedKey(CONCURRENCY_KEY) ||
         authedKey(QUOTA_RESET_KEY) ||
         authedKey(QUOTA_RESET_FAR_KEY) ||
         authedKey(RATE_LIMIT_KEY) ||
@@ -571,6 +578,23 @@ function startMockUpstream() {
           )
           return
         }
+        /* 真实场景（OpenDesign 会员档）：并发超限 —— 400 + tier_limit_exceeded */
+        if (authedKey(CONCURRENCY_KEY)) {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'tier_limit_exceeded',
+                message:
+                  '[code=tier_limit_exceeded] membership concurrency limit exceeded: 11/10 resets ' +
+                  new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+                type: 'tier_limit_exceeded'
+              }
+            })
+          )
+          return
+        }
+
         /*
          * 真实场景（CommandCode）：余额不足返回 **400**，而不是 402/429。
          * 这条分支专门验证"400 命中额度关键词也要换号 + 冻结账户"。
@@ -6733,6 +6757,58 @@ async function main() {
       assert.ok(bad400Account.quotaCooldownLevel >= 1, '没有进入阶梯冷冻')
       assert.ok(bad400Account.quotaCooldownUntil, '缺少 quotaCooldownUntil')
     })
+    // 清理本次新增的映射与渠道（否则 replace 模式的 JSON 导入会看到残留映射）
+    await apiCall('POST', '/api/model-routes/purge', { alias: bad400Alias })
+    await apiCall('DELETE', `/api/channels/${bad400ChannelId}`)
+
+    // ---- 场景四：并发撞线（tier_limit_exceeded）→ 短冷却 + 换号，不冻结额度 ----
+    const concChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-lb-conc-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 963
+    })
+    check('并发场景：创建测试渠道', () => assert.equal(concChannel.status, 201))
+    const concChannelId = concChannel.body.channel.id
+    await apiCall('POST', `/api/channels/${concChannelId}/accounts`, {
+      name: `并发账户-${RUN}`,
+      apiKey: CONCURRENCY_KEY,
+      priority: 1,
+      weight: 1
+    })
+    await apiCall('POST', `/api/channels/${concChannelId}/accounts`, {
+      name: `并发备用-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 100,
+      weight: 1
+    })
+    const concAlias = `smoke-lb-conc-${RUN}/model`
+    await apiCall('POST', '/api/model-routes', {
+      alias: concAlias,
+      targets: [{ channelId: concChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    const concHit = await proxyCall(
+      '/v1/chat/completions',
+      { model: concAlias, messages: [{ role: 'user', content: 'concurrency' }] },
+      lbSecret
+    )
+    check('并发场景：tier_limit_exceeded 后换号成功（不透传给客户端）', () => {
+      assert.equal(concHit.status, 200)
+      assert.equal(concHit.body?.error ?? null, null)
+    })
+    const concAccounts = await apiCall('GET', `/api/channels/${concChannelId}/accounts`)
+    const concAcc = concAccounts.body.accounts.find((a) => a.name === `并发账户-${RUN}`)
+    check('并发场景：只进短冷却（不写 quota_cooldown、冷却远小于 1 小时）', () => {
+      assert.ok(concAcc, '找不到并发账户')
+      assert.equal(concAcc.quotaCooldownLevel, 0, '并发撞线不应进入额度阶梯')
+      assert.ok(concAcc.cooldownUntil, '缺少通用冷却时间')
+      const leftSec = (Date.parse(concAcc.cooldownUntil) - Date.now()) / 1000
+      assert.ok(leftSec > 0 && leftSec <= 300, `冷却 ${leftSec}s 不在 (0,300] 区间`)
+    })
+    // 同上：清掉映射与渠道，避免影响后续「替换模式」用例
+    await apiCall('POST', '/api/model-routes/purge', { alias: concAlias })
+    await apiCall('DELETE', `/api/channels/${concChannelId}`)
 
     // ---- 权限与过滤 ----
     const lbOpLogin = await apiCall(

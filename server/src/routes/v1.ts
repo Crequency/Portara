@@ -26,6 +26,7 @@ import {
 import {
   formatQuotaCooldown,
   isQuotaExhaustionResponse,
+  isTransientConcurrencyLimit,
   parseQuotaResetAt
 } from '../services/quotaSignal.js'
 import { tryDecryptKey } from '../services/channels.js'
@@ -684,8 +685,20 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
          * 所以额度用尽的判定必须先于「不可重试」的短路。
          */
         const text = await attempt.text()
+        /*
+         * 「上游瞬时并发限制」必须先于额度判定。
+         *
+         * 形态（OpenDesign / CommandCode 会员档）：
+         *   code=tier_limit_exceeded, "membership concurrency limit exceeded: 11/10"
+         * 它不带任何额度关键词，但带了 reset_at 形状的时间（并发窗口滑出时刻）。
+         * 若落到通用失败冷却（设置项默认 1 小时）或额度阶梯，一个只是瞬时撞线的号
+         * 会被踢很久；而网关并发一旦超过会员上限，**每个号会轮流被踢**，最后全池
+         * 冷却 → 全站 400 request。
+         * 正确处理：短冷却（默认 20s）+ 换号重试，让并发的另一路请求去打别的号。
+         */
+        const concurrencyHit = isTransientConcurrencyLimit(attempt.status, text)
         const quotaHit = isQuotaExhaustionResponse(attempt.status, text)
-        if (!quotaHit && !isRetriableStatus(attempt.status)) {
+        if (!concurrencyHit && !quotaHit && !isRetriableStatus(attempt.status)) {
           // 换号也没用：把上游原文原样交给后续处理（body 已读走，重建响应）
           res = new Response(text, {
             status: attempt.status,
@@ -713,7 +726,19 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
          *   ② 上游明确给了 Retry-After，且比设置值更大 —— 尊重上游
          * 这样"最近一次失败的上游默认 1 小时不路由"就是可预期的默认行为。
          */
-        if (quotaHit) {
+        if (concurrencyHit) {
+          /*
+           * 并发撞线：只做**短冷却**，不进额度阶梯、不写 quota_cooldown 事件。
+           * 冷却时长取 env.concurrencyCooldownSec（默认 20s），并尊重上游给的
+           * Retry-After —— 但上限压到 5 分钟，避免把瞬时问题当成长时间不可用。
+           */
+          const fromHeader = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0
+          const coolSec = Math.min(300, Math.max(env.concurrencyCooldownSec, fromHeader))
+          await markAccountFailure(candidate.id, lastFailure, coolSec)
+          console.warn(
+            `[portara] 账户「${candidate.name}」触发上游并发上限，短冷却 ${coolSec}s（可换号继续）`
+          )
+        } else if (quotaHit) {
           /*
            * 上游明确说「额度用尽」→ 阶梯冷冻，而**不是**通用失败冷却。
            *

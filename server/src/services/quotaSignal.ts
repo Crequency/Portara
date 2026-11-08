@@ -21,6 +21,40 @@
  */
 
 /**
+ * 「瞬时并发/容量限制」关键词 —— 与"额度用尽"必须分开处理。
+ *
+ * 典型形态（OpenDesign/CommandCode 会员档）：
+ *   {"code":"tier_limit_exceeded","message":"[code=tier_limit_exceeded]
+ *    membership concurrency limit exceeded: 11/10 resets 2026-11-08T16:20:00Z"}
+ *
+ * 它不是"这个号没钱了"，而是"同一时刻在跑的上游请求超过会员并发上限"。
+ * 若按额度冷冻（5m 起步，且尊重 reset_at 可能一小时）处置，会造成：
+ *   ① 一个只是瞬时撞线的号被踢出选路很久；
+ *   ② 网关自身并发 > 上游会员并发上限时，**每个号轮流被踢**，最后全池冷却 → 全站 400。
+ * 正确响应是**短冷却 + 退避后重试**（并发很快会释放），所以单独判一类。
+ */
+export const TRANSIENT_CONCURRENCY_KEYWORDS: readonly string[] = [
+  'tier_limit_exceeded',
+  'concurrency limit',
+  'membership concurrency',
+  'too many concurrent',
+  'simultaneous requests',
+  '并发超限',
+  '并发限制'
+]
+
+/** 并发/容量限制只可能出现在这些状态码上 */
+const TRANSIENT_STATUSES = new Set([400, 402, 429])
+
+/** 是否「上游瞬时并发/容量限制」 */
+export function isTransientConcurrencyLimit(status: number, bodyText: string): boolean {
+  if (!TRANSIENT_STATUSES.has(status)) return false
+  const text = String(bodyText ?? '').slice(0, MAX_SCAN_CHARS).toLowerCase()
+  if (!text) return false
+  return TRANSIENT_CONCURRENCY_KEYWORDS.some((kw) => text.includes(kw.toLowerCase()))
+}
+
+/**
  * 可能表示「钱/额度用完了」的状态码。
  *
  * 402/429 是主流（OpenAI 系、Anthropic 系）。

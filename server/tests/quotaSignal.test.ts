@@ -7,6 +7,7 @@ import {
   decideQuotaCooldown,
   formatQuotaCooldown,
   isQuotaExhaustionResponse,
+  isTransientConcurrencyLimit,
   parseQuotaResetAt,
   quotaCooldownSecForLevel,
   quotaCooldownWithReset
@@ -112,6 +113,21 @@ test('识别：常见英文与中文关键词', () => {
   ] as const) {
     assert.equal(isQuotaExhaustionResponse(status, text), true, `${status} ${text}`)
   }
+})
+
+test('识别：tier_limit_exceeded 属于「瞬时并发」，不属于「额度用尽」', () => {
+  const body =
+    '{"error":{"code":"tier_limit_exceeded","message":"[code=tier_limit_exceeded] membership concurrency limit exceeded: 11/10 resets 2026-11-08T16:20:00Z","type":"tier_limit_exceeded"}}'
+  assert.equal(isTransientConcurrencyLimit(400, body), true)
+  assert.equal(isTransientConcurrencyLimit(429, body), true)
+  // 关键：不能被额度判定吃走，否则会进 5m→3d 的阶梯冷冻
+  assert.equal(isQuotaExhaustionResponse(400, body), false)
+})
+
+test('误判防护：普通 400 / 429 不算并发限制', () => {
+  assert.equal(isTransientConcurrencyLimit(400, '{"error":{"message":"bad model"}}'), false)
+  assert.equal(isTransientConcurrencyLimit(429, '{"error":{"message":"rate limit exceeded"}}'), false)
+  assert.equal(isTransientConcurrencyLimit(500, 'concurrency limit'), false)
 })
 
 test('识别：400 + insufficient credits（CommandCode 的真实形态）', () => {
