@@ -5,4 +5,4 @@
  * 建 pg 连接池与 Redis 客户端，测试如果为了读一个常量去 import 它，
  * 进程会卡在重连上退不出来（本轮就踩了：单测从 0.3 秒变成挂死）。
  */
-export const VERSION = '0.6.1'
+export const VERSION = '0.6.2'
