@@ -569,3 +569,25 @@ export async function listUsageChannelIds(): Promise<string[]> {
   )
   return rows.map((r) => r.id)
 }
+
+/**
+ * 已配置余额适配器的渠道清单（id + 名称 + 适配器）。
+ *
+ * 给「余额用量」页做**逐项骨架**用：面板要先把卡片壳子画出来（每个渠道一张），
+ * 再各自去取数据 —— 这样快的一回来就能显示，不必等最慢的那个。
+ * 只查本地表，不碰上游，毫秒级。
+ */
+export async function listUsageChannels(): Promise<
+  Array<{ channelId: string; channelName: string; adapter: string }>
+> {
+  const rows = await query<{ id: string; name: string; usage_adapter: string }>(
+    `select id, name, usage_adapter from channels
+      where usage_adapter <> ''
+      order by name asc`
+  )
+  return rows.map((r) => ({
+    channelId: r.id,
+    channelName: r.name,
+    adapter: r.usage_adapter
+  }))
+}

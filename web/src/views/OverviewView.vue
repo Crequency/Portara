@@ -249,6 +249,21 @@ const usageFailedCount = computed(
   () => usageSnapshots.value.length - usageOk.value.length
 )
 
+/*
+ * 概览卡的两种形态：
+ *   - 有额度窗口的渠道 → 各占一张卡（进度条需要横向空间）
+ *   - **只有金额余额**的渠道 → 合并成一张卡里的多行
+ *
+ * 后者通常有好几个（DeepSeek / Kimi / MiniMax 这类），
+ * 一行一张卡会把整屏占满、还都是"一个数字"，合起来读反而更清楚。
+ */
+const usageWindowed = computed(() =>
+  usageOk.value.filter((s) => windowsFor(s).length > 0)
+)
+const usageBalanceOnly = computed(() =>
+  usageOk.value.filter((s) => windowsFor(s).length === 0 && balancesFor(s).length > 0)
+)
+
 const isAdmin = computed(() => props.user?.role === 'admin')
 
 /**
@@ -874,7 +889,8 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
       </div>
 
       <div v-else class="usage-grid">
-        <div v-for="s in usageOk" :key="s.channelId" class="usage-cell">
+        <!-- 有额度窗口的渠道：各占一张卡 -->
+        <div v-for="s in usageWindowed" :key="s.channelId" class="usage-cell">
           <div class="row" style="gap: 7px; min-width: 0">
             <span class="usage-cell-name">{{ s.channelName }}</span>
             <span class="tag">{{ s.adapter }}</span>
@@ -932,6 +948,36 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
                   }"
                 />
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!--
+          只有金额余额的渠道：**合并成一张卡里的多行**。
+          这类渠道通常有好几个、每张卡只有一个数字，一行一张会把整屏占满。
+        -->
+        <div v-if="usageBalanceOnly.length" class="usage-cell">
+          <div class="row" style="gap: 7px; min-width: 0">
+            <span class="usage-cell-name">{{ t('overview.usageBalanceOnly') }}</span>
+          </div>
+          <div class="usage-balance-list">
+            <div
+              v-for="s in usageBalanceOnly"
+              :key="s.channelId"
+              class="usage-balance-row"
+            >
+              <span class="row" style="gap: 6px; min-width: 0">
+                <span class="usage-cell-name">{{ s.channelName }}</span>
+                <span class="tag">{{ s.adapter }}</span>
+              </span>
+              <span class="mono usage-balance-amount">
+                {{
+                  balancesFor(s)[0]!.remaining.toLocaleString('en-US', {
+                    maximumFractionDigits: 4
+                  })
+                }}
+                <span class="dim">{{ balancesFor(s)[0]!.currency }}</span>
+              </span>
             </div>
           </div>
         </div>

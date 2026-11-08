@@ -198,6 +198,7 @@ export const zh = {
     usageNone: '还没有渠道配置余额适配器',
     usageNoneHint: '到「上游渠道」给渠道选一个适配器即可。',
     usageFailed: '另有 {n} 个渠道获取失败',
+    usageBalanceOnly: '仅余额',
     usageAllFailed: '余额暂时获取失败',
     perDay: '按天',
     requests: '请求数',

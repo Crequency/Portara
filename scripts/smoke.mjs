@@ -3808,6 +3808,28 @@ async function main() {
 
     const usAll = await apiCall('GET', '/api/usage')
     const usSnap = (adapter) => usAll.body.providers.find((p) => p.adapter === adapter)
+
+    /*
+     * 余额页的「逐项骨架」依赖这个清单接口：先拿渠道列表把卡片壳子铺出来，
+     * 再各自去取数据。它只读本地表，不能碰上游 —— 否则骨架也就失去意义了。
+     */
+    const usChannels = await apiCall('GET', '/api/usage/channels')
+    check('渠道清单：只读本地表，返回 id/名称/适配器三件套', () => {
+      assert.equal(usChannels.status, 200)
+      const list = usChannels.body.channels
+      assert.ok(Array.isArray(list) && list.length > 0, '清单为空')
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      for (const c of list) {
+        assert.match(c.channelId, UUID)
+        assert.ok(typeof c.channelName === 'string' && c.channelName.length > 0)
+        assert.ok(typeof c.adapter === 'string' && c.adapter.length > 0)
+      }
+    })
+    check('渠道清单与「全部快照」的渠道集合一致（同一口径）', () => {
+      const listIds = usChannels.body.channels.map((c) => c.channelId).sort()
+      const snapIds = (usAll.body.providers ?? []).map((p) => p.channelId).sort()
+      assert.deepEqual(listIds, snapIds)
+    })
     check('聚合接口返回本次四个渠道的快照', () => {
       assert.equal(usAll.status, 200)
       // 只校验本次创建的四个 —— 断言不能依赖全局数量，

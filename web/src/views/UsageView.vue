@@ -5,7 +5,7 @@
  * 上游的余额接口各说各话（金额 / 额度窗口 / 账期累计），
  * 服务端已归一化成统一快照，这里只负责呈现。
  */
-import { toastError } from '../error'
+import { errorText, toastError } from '../error'
 import { computed, onMounted, ref } from 'vue'
 import { api, type UsageSnapshot, type User } from '../api'
 import AccountUsage from '../components/AccountUsage.vue'
@@ -25,9 +25,43 @@ const props = defineProps<{ user?: User }>()
 
 const { t } = useI18n()
 
-const snapshots = ref<UsageSnapshot[]>([])
-const loading = ref(true)
+/**
+ * 逐项状态。
+ *
+ * 为什么不再是一个 `loading` 布尔：每个渠道的余额要去打各自的上游，
+ * 快的几毫秒、慢的可能几十秒（会话型还要解密重放）。整页骨架会让用户
+ * 为一个最慢的渠道等全部 —— 所以改成"每张卡各自加载"，谁先回来谁先显示。
+ */
+interface UsageItem {
+  channelId: string
+  channelName: string
+  adapter: string
+  /** 已取到的快照；null = 还没回来 */
+  snapshot: UsageSnapshot | null
+  /** 该卡片是否正在取数（首次加载 / 单卡刷新） */
+  loading: boolean
+  /** 请求本身失败（网络/权限）；上游失败在 snapshot.ok=false 里 */
+  error: string
+}
+
+const items = ref<UsageItem[]>([])
+/** 渠道清单还没回来（这一步只读本地表，很快） */
+const listLoading = ref(true)
 const refreshing = ref(false)
+
+/** 已取到数据的快照（概览汇总只用这些） */
+const snapshots = computed(() =>
+  items.value.map((i) => i.snapshot).filter((s): s is UsageSnapshot => s !== null)
+)
+/**
+ * 概览汇总是否还在等数据。
+ *
+ * 只要已经有一个渠道回来了就先显示它 —— 概览是"当前能看到的总量"，
+ * 随着其它渠道陆续回来会自然变大，不会闪"0"再跳。
+ */
+const summaryPending = computed(
+  () => snapshots.value.length === 0 && items.value.some((i) => i.loading)
+)
 
 const rawOpen = ref(false)
 const rawTarget = ref<UsageSnapshot | null>(null)
@@ -61,37 +95,68 @@ const summary = computed(() => {
   }
 })
 
-async function load(force = false): Promise<void> {
-  loading.value = true
+/** 取单个渠道的用量；force=1 跳过缓存 */
+async function loadItem(item: UsageItem, force = false): Promise<void> {
+  item.loading = true
+  item.error = ''
   try {
-    const u = await api.get<{ providers: UsageSnapshot[] }>(
-      '/api/usage' + (force ? '?refresh=1' : '')
+    item.snapshot = await api.get<UsageSnapshot>(
+      `/api/channels/${item.channelId}/usage` + (force ? '?refresh=1' : '')
     )
-    snapshots.value = u.providers
+  } catch (err) {
+    item.error = errorText(err, t('usage.error'))
+  } finally {
+    item.loading = false
+  }
+}
+
+/**
+ * 首屏：先取渠道清单（只读本地表，毫秒级）把卡片壳子铺出来，
+ * 再**并行**去取每个渠道的数据 —— 谁先回来谁先渲染。
+ */
+async function load(force = false): Promise<void> {
+  listLoading.value = true
+  try {
+    const res = await api.get<{
+      channels: Array<{ channelId: string; channelName: string; adapter: string }>
+    }>('/api/usage/channels')
+    items.value = res.channels.map((c) => ({
+      ...c,
+      snapshot: null,
+      loading: true,
+      error: ''
+    }))
   } catch (err) {
     toastError(err, t('usage.error'))
+    items.value = []
   } finally {
-    loading.value = false
+    listLoading.value = false
   }
+  // 不 await：让每张卡独立完成、独立渲染
+  await Promise.all(items.value.map((i) => loadItem(i, force)))
 }
 
 async function refreshAll(): Promise<void> {
   refreshing.value = true
   try {
-    await load(true)
+    await Promise.all(items.value.map((i) => loadItem(i, true)))
     toast.success(t('usage.refreshAll'))
   } finally {
     refreshing.value = false
   }
 }
 
-async function refreshOne(s: UsageSnapshot): Promise<void> {
+async function refreshOne(item: UsageItem): Promise<void> {
   try {
-    const next = await api.post<UsageSnapshot>('/api/usage/refresh', { channelId: s.channelId })
-    const i = snapshots.value.findIndex((x) => x.channelId === s.channelId)
-    if (i >= 0) snapshots.value[i] = next
+    item.loading = true
+    item.snapshot = await api.post<UsageSnapshot>('/api/usage/refresh', {
+      channelId: item.channelId
+    })
+    item.error = ''
   } catch (err) {
-    toastError(err, t('usage.error'))
+    item.error = errorText(err, t('usage.error'))
+  } finally {
+    item.loading = false
   }
 }
 
@@ -127,7 +192,7 @@ function windowLabel(key: string): string {
  */
 const apiBase = computed(() => `${location.origin}/v1/usage`)
 /** 拿一个已配适配器的渠道做「单个渠道」示例 */
-const sampleChannelId = computed(() => snapshots.value[0]?.channelId ?? '{渠道 id}')
+const sampleChannelId = computed(() => items.value[0]?.channelId ?? '{渠道 id}')
 
 const curlExample = computed(
   () =>
@@ -152,112 +217,7 @@ onMounted(() => void load())
 </script>
 
 <template>
-  <!--
-    加载中：整页骨架，与下面的真实结构一一对应（API 卡 / 汇总卡 / 渠道卡）。
-    容器带 role="status"，占位块全部 aria-hidden —— 读屏只念一次「加载中」。
-  -->
-  <div
-    v-if="loading"
-    class="stack sk-usage"
-    role="status"
-    :aria-label="t('common.loading')"
-  >
-    <!-- 视觉隐藏的状态文本：live region 要有文本才会播报，文本巡检也不会把「加载中」判成空页 -->
-    <span class="sk-usage-live">{{ t('common.loading') }}</span>
-
-    <!-- ① 网关自身的余额 API：卡片头 + 两行地址 + 一行按钮 -->
-    <div class="card" aria-hidden="true">
-      <div class="card-head sk-usage-head">
-        <div class="sk-usage-head-main">
-          <div class="sk-usage-title"><span class="sk sk-usage-title-bar"></span></div>
-          <div class="sk-usage-sub"><span class="sk sk-usage-sub-bar"></span></div>
-        </div>
-        <span class="sk sk-usage-head-hint"></span>
-      </div>
-      <div class="form-grid sk-usage-api-rows">
-        <div v-for="n in 2" :key="'api' + n" class="sk-usage-api-row">
-          <span class="sk sk-usage-api-tag"></span>
-          <span class="sk sk-usage-api-label"></span>
-          <span class="sk sk-usage-api-code"></span>
-          <span class="sk sk-usage-api-copy"></span>
-        </div>
-        <div class="sk-usage-api-row sk-usage-api-row-foot">
-          <span class="sk sk-usage-api-btn"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- ② 页内概览：卡片头 + 4 个等宽 stat -->
-    <div class="card" aria-hidden="true">
-      <div class="card-head sk-usage-head">
-        <div class="sk-usage-head-main">
-          <div class="sk-usage-title"><span class="sk sk-usage-title-bar"></span></div>
-          <div class="sk-usage-sub"><span class="sk sk-usage-sub-bar"></span></div>
-        </div>
-        <span class="sk sk-usage-head-btn"></span>
-      </div>
-      <div class="grid grid-4">
-        <div v-for="n in 4" :key="'sum' + n" class="stat sk-usage-stat">
-          <div class="sk-usage-stat-label"><span class="sk sk-usage-stat-label-bar"></span></div>
-          <div class="sk-usage-stat-value"><span class="sk sk-usage-stat-value-bar"></span></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ③ 渠道卡：卡片头 / 余额 / 窗口 / 账户区（固定 2 张） -->
-    <div
-      v-for="n in 2"
-      :key="'ch' + n"
-      class="card sk-usage-channel"
-      aria-hidden="true"
-    >
-      <div class="card-head sk-usage-head">
-        <div class="sk-usage-head-main">
-          <div class="sk-usage-chname">
-            <span class="sk sk-usage-name"></span>
-            <span class="sk sk-usage-tag"></span>
-          </div>
-          <div class="sk-usage-sub"><span class="sk sk-usage-sub-bar"></span></div>
-        </div>
-        <span class="sk sk-usage-head-btn"></span>
-      </div>
-
-      <!-- 金额余额 -->
-      <div class="grid grid-3 sk-usage-balances">
-        <div v-for="b in 2" :key="'bal' + b" class="stat sk-usage-stat">
-          <div class="sk-usage-stat-label"><span class="sk sk-usage-stat-label-bar"></span></div>
-          <div class="sk-usage-stat-value"><span class="sk sk-usage-stat-value-bar"></span></div>
-        </div>
-      </div>
-
-      <!-- 额度窗口 -->
-      <div class="sk-usage-windows">
-        <div class="sk-usage-section-label"><span class="sk sk-usage-section-label-bar"></span></div>
-        <div class="form-grid sk-usage-window-list">
-          <div v-for="w in 2" :key="'win' + w" class="sk-usage-window">
-            <div class="row-between sk-usage-window-head">
-              <span class="sk sk-usage-window-label"></span>
-              <span class="sk sk-usage-window-value"></span>
-            </div>
-            <div class="sk sk-usage-window-track"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 按账户：两行短条 -->
-      <div class="sk-usage-acct">
-        <div class="sk-usage-section-label"><span class="sk sk-usage-section-label-bar"></span></div>
-        <div class="sk-usage-acct-rows">
-          <span v-for="a in 2" :key="'acct' + a" class="sk sk-usage-acct-row"></span>
-        </div>
-      </div>
-
-      <!-- 查看原始数据 -->
-      <div class="sk-usage-foot"><span class="sk sk-usage-foot-btn"></span></div>
-    </div>
-  </div>
-
-  <div v-else class="stack">
+  <div class="stack">
     <!-- 网关自身的余额 API（供程序调用） -->
     <div class="card">
       <div class="card-head">
@@ -328,9 +288,13 @@ onMounted(() => void load())
       <div class="grid grid-4">
         <div class="stat">
           <div class="stat-label">{{ t('usage.adapters') }}</div>
-          <div class="stat-value">{{ summary.total }}</div>
+          <div v-if="summaryPending" class="stat-value"><span class="sk sk-stat-line" /></div>
+          <div v-else class="stat-value">{{ summary.total }}</div>
           <div class="stat-hint">
-            {{ summary.okCount }} ok · {{ summary.failCount }} {{ t('usage.error') }}
+            <template v-if="summaryPending">{{ t('common.loading') }}</template>
+            <template v-else>
+              {{ summary.okCount }} ok · {{ summary.failCount }} {{ t('usage.error') }}
+            </template>
           </div>
         </div>
         <div
@@ -348,44 +312,77 @@ onMounted(() => void load())
       </div>
     </div>
 
-    <!-- 未配置任何适配器 -->
-    <div v-if="snapshots.length === 0" class="card">
+    <!-- 没有配置任何适配器（清单已回来且确实为空） -->
+    <div v-if="!listLoading && items.length === 0" class="card">
       <div class="empty">{{ t('usage.notConfigured') }}</div>
       <div class="dim" style="text-align: center; font-size: 12px">
         {{ t('usage.notConfiguredHint') }}
       </div>
     </div>
 
-    <!-- 每个渠道一张卡 -->
-    <div v-for="s in snapshots" :key="s.channelId" class="card">
+    <!--
+      每个渠道一张卡：**各自加载、各自渲染**。
+      卡片壳子来自只读本地表的渠道清单（毫秒级），数据各自去取，
+      谁先回来谁先显示 —— 不再为一个慢渠道拖住整页。
+    -->
+    <div v-for="item in items" :key="item.channelId" class="card">
       <div class="card-head">
         <div>
           <div class="card-title row" style="gap: 8px">
-            {{ s.channelName }}
-            <span class="tag">{{ s.adapter }}</span>
-            <span v-if="s.cached" class="badge badge-off">{{ t('usage.cached') }}</span>
+            {{ item.channelName }}
+            <span class="tag">{{ item.snapshot?.adapter || item.adapter }}</span>
+            <span v-if="item.snapshot?.cached" class="badge badge-off">{{ t('usage.cached') }}</span>
           </div>
           <div class="dim" style="font-size: 11.5px">
-            {{ t('usage.fetchedAt') }} {{ formatTime(s.fetchedAt) }}
+            <template v-if="item.snapshot">
+              {{ t('usage.fetchedAt') }} {{ formatTime(item.snapshot.fetchedAt) }}
+            </template>
+            <template v-else>{{ t('common.loading') }}</template>
           </div>
         </div>
-        <button class="btn btn-sm" @click="refreshOne(s)">{{ t('common.refresh') }}</button>
+        <button class="btn btn-sm" :disabled="item.loading" @click="refreshOne(item)">
+          {{ item.loading ? t('common.loading') : t('common.refresh') }}
+        </button>
       </div>
 
-      <!-- 失败 -->
-      <div v-if="!s.ok" class="alert">
-        <b>{{ t('usage.error') }}：</b>{{ s.error }}
-        <div v-if="s.adapter" class="dim" style="font-size: 12px; margin-top: 4px">
-          <button class="btn btn-ghost btn-sm" @click="openRaw(s)">{{ t('usage.viewRaw') }}</button>
+      <!-- 该卡自己的骨架：数据回来就换成真内容，不等别的卡 -->
+      <div v-if="item.loading && !item.snapshot" aria-hidden="true">
+        <div class="grid grid-3" style="margin-bottom: 14px">
+          <div v-for="b in 2" :key="'bal' + b" class="stat">
+            <div class="stat-label"><span class="sk sk-stat-line" /></div>
+            <div class="stat-value"><span class="sk sk-stat-value" /></div>
+          </div>
+        </div>
+        <div class="form-grid" style="gap: 10px">
+          <div v-for="w in 2" :key="'win' + w">
+            <div class="row-between">
+              <span class="sk sk-stat-line" style="width: 80px" />
+              <span class="sk sk-stat-line" style="width: 120px" />
+            </div>
+            <div class="sk sk-window-track" style="margin-top: 6px" />
+          </div>
+        </div>
+      </div>
+
+      <!-- 请求本身失败（网络/权限） -->
+      <div v-else-if="item.error" class="alert">{{ item.error }}</div>
+
+      <!-- 上游取数失败（快照本身 ok=false） -->
+      <div v-else-if="item.snapshot && !item.snapshot.ok" class="alert">
+        <b>{{ t('usage.error') }}：</b>{{ item.snapshot.error }}
+        <div v-if="item.snapshot.adapter" class="dim" style="font-size: 12px; margin-top: 4px">
+          <button class="btn btn-ghost btn-sm" @click="openRaw(item.snapshot!)">
+            {{ t('usage.viewRaw') }}
+          </button>
         </div>
       </div>
 
       <template v-else>
-        <div v-if="s.stale" class="alert">{{ t('usage.stale') }}</div>
+        <div v-if="item.snapshot!.stale" class="alert">{{ t('usage.stale') }}</div>
 
         <!-- 金额余额 -->
-        <div v-if="s.balances.length > 0" class="grid grid-3" style="margin-bottom: 14px">
-          <div v-for="b in s.balances" :key="b.currency" class="stat">
+        <div v-if="item.snapshot!.balances.length > 0" class="grid grid-3" style="margin-bottom: 14px">
+          <div v-for="b in item.snapshot!.balances" :key="b.currency" class="stat">
             <div class="stat-label">{{ t('usage.balance') }} · {{ b.currency }}</div>
             <div class="stat-value">{{ money(b.remaining, b.unit, b.currency) }}</div>
             <div class="stat-hint">
@@ -400,10 +397,10 @@ onMounted(() => void load())
         </div>
 
         <!-- 额度窗口 -->
-        <div v-if="s.windows.length > 0" style="margin-bottom: 14px">
+        <div v-if="item.snapshot!.windows.length > 0" style="margin-bottom: 14px">
           <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
           <div class="form-grid" style="gap: 10px">
-            <div v-for="w in s.windows" :key="w.key">
+            <div v-for="w in item.snapshot!.windows" :key="w.key">
               <div class="row-between" style="font-size: 12.5px">
                 <span class="row" style="gap: 5px">
                   {{ windowLabel(w.key) }}
@@ -440,59 +437,59 @@ onMounted(() => void load())
           按账户：渠道有多把 Key 时，各自的钱包与限额是分开的。
           聚合值在上，逐账户在下 —— 两处用同一个组件渲染，不会出现"两处数字不一致"的疑心。
         -->
-        <div v-if="s.accounts.length > 1" class="usage-acct-section">
+        <div v-if="item.snapshot!.accounts.length > 1" class="usage-acct-section">
           <div class="dim" style="font-size: 12px; margin-bottom: 10px">
             {{ t('usage.byAccount') }}
           </div>
           <div class="acct-card-grid">
-            <div v-for="a in s.accounts" :key="a.accountId" class="acct-card">
+            <div v-for="a in item.snapshot!.accounts" :key="a.accountId" class="acct-card">
               <AccountUsage :account="a" show-name />
             </div>
           </div>
         </div>
 
         <!-- 账期累计 -->
-        <div v-if="s.period" class="grid grid-4">
+        <div v-if="item.snapshot!.period" class="grid grid-4">
           <div class="stat">
             <div class="stat-label">{{ t('usage.requests') }}</div>
-            <div class="stat-value">{{ formatNumber(s.period.requests) }}</div>
+            <div class="stat-value">{{ formatNumber(item.snapshot!.period.requests) }}</div>
             <div class="stat-hint">
               {{ t('usage.successRate') }}
-              {{ s.period.successRate === undefined ? '—' : s.period.successRate.toFixed(2) + '%' }}
+              {{ item.snapshot!.period.successRate === undefined ? '—' : item.snapshot!.period.successRate.toFixed(2) + '%' }}
             </div>
           </div>
           <div class="stat">
             <div class="stat-label">{{ t('usage.tokens') }}</div>
             <div class="stat-value">
-              {{ formatCompact(s.period.tokensIn) }} / {{ formatCompact(s.period.tokensOut) }}
+              {{ formatCompact(item.snapshot!.period.tokensIn) }} / {{ formatCompact(item.snapshot!.period.tokensOut) }}
             </div>
             <div class="stat-hint">in / out</div>
           </div>
           <div class="stat">
             <div class="stat-label">{{ t('usage.cost') }}</div>
-            <div class="stat-value">{{ formatNumber(s.period.cost) }}</div>
-            <div class="stat-hint">{{ s.period.costCurrency ?? '' }}</div>
+            <div class="stat-value">{{ formatNumber(item.snapshot!.period.cost) }}</div>
+            <div class="stat-hint">{{ item.snapshot!.period.costCurrency ?? '' }}</div>
           </div>
-          <div v-if="s.plan" class="stat">
+          <div v-if="item.snapshot!.plan" class="stat">
             <div class="stat-label">{{ t('usage.plan') }}</div>
             <div class="stat-value row" style="gap: 5px; font-size: 15px">
-              {{ s.plan.id }}
-              <PInfo v-if="s.plan.inferred" :text="t('usage.inferredHint')" />
+              {{ item.snapshot!.plan!.id }}
+              <PInfo v-if="item.snapshot!.plan!.inferred" :text="t('usage.inferredHint')" />
             </div>
             <div class="stat-hint">
-              {{ s.plan.status }} · {{ t('usage.renewAt') }} {{ formatTime(s.plan.renewAt ?? null) }}
+              {{ item.snapshot!.plan!.status }} · {{ t('usage.renewAt') }} {{ formatTime(item.snapshot!.plan!.renewAt ?? null) }}
             </div>
           </div>
         </div>
 
-        <div v-if="s.warnings.length > 0" style="margin-top: 12px">
-          <div v-for="(w, i) in s.warnings" :key="i" class="dim" style="font-size: 12px">
+        <div v-if="item.snapshot!.warnings.length > 0" style="margin-top: 12px">
+          <div v-for="(w, i) in item.snapshot!.warnings" :key="i" class="dim" style="font-size: 12px">
             · {{ w }}
           </div>
         </div>
 
         <div style="margin-top: 10px">
-          <button class="btn btn-ghost btn-sm" @click="openRaw(s)">{{ t('usage.viewRaw') }}</button>
+          <button class="btn btn-ghost btn-sm" @click="openRaw(item.snapshot!)">{{ t('usage.viewRaw') }}</button>
         </div>
       </template>
     </div>

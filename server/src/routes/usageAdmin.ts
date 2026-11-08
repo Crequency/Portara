@@ -8,7 +8,13 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { parseJson } from '../lib/http.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
-import { getUsageSnapshot, getUsageSnapshots, invalidateUsageCache, listUsageChannelIds } from '../services/usageFetch.js'
+import {
+  getUsageSnapshot,
+  getUsageSnapshots,
+  invalidateUsageCache,
+  listUsageChannelIds,
+  listUsageChannels
+} from '../services/usageFetch.js'
 import { USAGE_ADAPTERS } from '../services/usage.js'
 
 export const usageAdminRoutes = new Hono()
@@ -32,6 +38,16 @@ usageAdminRoutes.get('/usage/adapters', requireAdmin, async (c) => {
       sessionEndpoints: (a.sessionEndpoints ?? []).map((e) => e.url)
     }))
   })
+})
+
+/**
+ * 渠道清单（余额页的逐项骨架用）。
+ *
+ * 只读本地表，不碰上游 —— 面板先拿它把卡片壳子画出来，
+ * 再并行去取每个渠道的数据，谁先回来谁先显示。
+ */
+usageAdminRoutes.get('/usage/channels', requireAdmin, async (c) => {
+  return c.json({ channels: await listUsageChannels() })
 })
 
 /** 全部已配置适配器的渠道快照（余额页用） */

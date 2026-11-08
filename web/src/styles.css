@@ -478,6 +478,38 @@ a { color: var(--accent); text-decoration: none; }
   gap: 12px;
 }
 
+/*
+ * 「仅余额」合并卡：一个渠道一行。
+ *
+ * 这类渠道（DeepSeek / Kimi / MiniMax）每张卡只有一个金额，
+ * 一行一张会把概览占满，合并后一屏就能扫完全部余额。
+ */
+.usage-balance-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.usage-balance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.usage-balance-row:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.usage-balance-amount {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .usage-cell {
   display: flex;
   flex-direction: column;
@@ -588,6 +620,15 @@ a { color: var(--accent); text-decoration: none; }
 .sk-window-label { width: 56px; height: 10px; }
 .sk-window-value { width: 28px; height: 10px; }
 .sk-window-track { height: 5px; border-radius: 3px; margin-top: 4px; }
+
+/*
+ * 逐项骨架用的最小块（余额用量页每张卡各自加载时使用）。
+ *
+ * 为什么不用整页骨架：每个渠道的余额要去打各自的上游，快的几毫秒、
+ * 慢的几十秒；整页骨架会让用户为一个最慢的渠道等全部。
+ */
+.sk-stat-line { display: inline-block; width: 64px; height: 10px; vertical-align: middle; }
+.sk-stat-value { display: inline-block; width: 96px; height: 18px; }
 
 /*
  * 高度对齐：真实卡片里最高的一行由「多账户选择器 + 余额 + 3 条窗口」撑出来
