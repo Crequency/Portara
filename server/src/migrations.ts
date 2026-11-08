@@ -793,5 +793,20 @@ export const migrations: { id: string; sql: string }[] = [
         expires_at   timestamptz
       );
     `
+  },
+  {
+    id: '029_web_session_snapshot',
+    sql: `
+      -- 网页会话的「快照兜底」。
+      --
+      -- 为什么需要：网页会话 Cookie 常常是 HttpOnly（JS 读不到），即使拿到了，
+      -- 服务端重放也可能因为 Cloudflare / 设备指纹被判无效。
+      -- 所以加一条**必然可用**的路径：让用户在浏览器控制台里直接调用接口，
+      -- 把返回的 JSON 粘过来 —— 数据是真的，只是不能自动刷新（手动快照）。
+      alter table account_web_sessions
+        add column if not exists snapshot_cipher text not null default '';
+      alter table account_web_sessions
+        add column if not exists snapshot_at timestamptz;
+    `
   }
 ]

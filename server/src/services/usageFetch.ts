@@ -20,7 +20,7 @@ import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
-import { loadWebSession, markSessionResult } from './webSession.js'
+import { loadWebSession, loadWebSnapshot, markSessionResult } from './webSession.js'
 import {
   aggregateAccountSnapshots,
   endpointUrl,
@@ -257,8 +257,45 @@ async function fetchAccountSnapshot(
     if (endpoints.length === 0) return fail('适配器没有声明任何会话端点')
 
     const session = await loadWebSession(account.id)
+    const snapshot = await loadWebSnapshot(account.id)
+
+    /**
+     * 快照兜底：把浏览器里抓到的 `/api/v1/me` JSON 当成本次数据。
+     *
+     * 这条路径**必然可用** —— 它不依赖服务端能否重放会话 Cookie。
+     * 代价是数据是"采集那一刻"的，所以要在 warnings 里写清时间，
+     * 让面板显示"手动快照"而不是伪装成实时数据。
+     */
+    const parseSnapshot = (reason: string): UsageAccountSnapshot | null => {
+      if (!snapshot) return null
+      const key = adapter.sessionEndpoints?.[0]?.key ?? 'me'
+      try {
+        const parsed = adapter.parse({ [key]: snapshot.snapshot })
+        const at = snapshot.snapshotAt ?? null
+        return {
+          accountId: account.id,
+          accountName: account.name,
+          adapter: adapter.id,
+          ok: true,
+          warnings: [
+            ...(parsed.warnings ?? []),
+            `来自手动快照${at ? `（${at}）` : ''}：${reason}`
+          ],
+          balances: parsed.balances ?? [],
+          windows: parsed.windows ?? [],
+          period: parsed.period,
+          plan: parsed.plan,
+          raw: { snapshot: snapshot.snapshot }
+        }
+      } catch {
+        return null
+      }
+    }
+
     if (!session) {
-      return fail('该账户还没有网页会话，请在渠道详情页粘贴 Cookie')
+      const fromSnapshot = parseSnapshot('没有可用的网页会话')
+      if (fromSnapshot) return fromSnapshot
+      return fail('该账户还没有网页会话，请在渠道详情页粘贴 Cookie 或控制台脚本输出的快照')
     }
 
     /*
@@ -298,6 +335,8 @@ async function fetchAccountSnapshot(
     const expired = results.find((r) => r.status === 401 || r.status === 403)
     if (expired) {
       await markSessionResult(account.id, false, 'session_expired').catch(() => undefined)
+      const fromSnapshot = parseSnapshot(`会话已失效（HTTP ${expired.status}）`)
+      if (fromSnapshot) return fromSnapshot
       return fail(
         `网页会话已失效，请重新粘贴 Cookie（${expired.label} 返回 HTTP ${expired.status}）`,
         raws

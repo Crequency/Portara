@@ -5,6 +5,7 @@ import {
   cookieFromCurl,
   cookieNamesOf,
   normalizeCookieInput,
+  parseWebSessionInput,
   openWebSession,
   sealWebSession,
   validateCookieText
@@ -116,4 +117,60 @@ test('normalizeCookieInput：cURL 提取结果能过格式校验', () => {
   const cookie = normalizeCookieInput(curl)
   assert.equal(validateCookieText(cookie), null)
   assert.deepEqual(cookieNamesOf(cookie), ['session_token', 'cf_clearance'])
+})
+/*
+ * 快照包的解析。
+ *
+ * 这是"三条手动路径都失败"之后的兜底设计：让用户在浏览器里直接调接口，
+ * 把结果打成 JSON 包粘回来。这里钉住四种输入形态与优先级。
+ */
+test('parseWebSessionInput：控制台快照包 → cookie + me', () => {
+  const bundle = {
+    portara: 'opendesign-session',
+    v: 1,
+    capturedAt: '2026-11-09T03:20:00.000Z',
+    cookie: 'a=1; b=2',
+    me: { wallet: { balanceUsd: 12.5 }, designPlanWindows: [] }
+  }
+  const out = parseWebSessionInput(JSON.stringify(bundle))
+  assert.equal(out.cookie, 'a=1; b=2')
+  assert.deepEqual(out.snapshot, bundle.me)
+  assert.equal(out.snapshotAt, '2026-11-09T03:20:00.000Z')
+})
+
+test('parseWebSessionInput：HttpOnly 场景没有 cookie，只剩快照', () => {
+  const bundle = {
+    portara: 'opendesign-session',
+    capturedAt: '2026-11-09T03:20:00.000Z',
+    cookie: '',
+    me: { walletBreakdown: [] }
+  }
+  const out = parseWebSessionInput(JSON.stringify(bundle))
+  assert.equal(out.cookie, '')
+  assert.deepEqual(out.snapshot, bundle.me)
+})
+
+test('parseWebSessionInput：直接粘 /api/v1/me 响应 → 只有快照', () => {
+  const me = { wallet: { balanceUsd: 3 }, designPlanWindows: [{ kind: 'fiveHour' }] }
+  const out = parseWebSessionInput(JSON.stringify(me))
+  assert.equal(out.cookie, '')
+  assert.deepEqual(out.snapshot, me)
+})
+
+test('parseWebSessionInput：cURL → 提取 Cookie，无快照', () => {
+  const curl = "curl 'https://amr-api.open-design.ai/api/v1/me' -H 'cookie: a=1; b=2'"
+  const out = parseWebSessionInput(curl)
+  assert.equal(out.cookie, 'a=1; b=2')
+  assert.equal(out.snapshot, null)
+})
+
+test('parseWebSessionInput：裸 Cookie 原样归一', () => {
+  const out = parseWebSessionInput('Cookie:  a=1; b=2 ')
+  assert.equal(out.cookie, 'a=1; b=2')
+  assert.equal(out.snapshot, null)
+})
+
+test('parseWebSessionInput：非法 JSON 回落成 Cookie 处理，不抛', () => {
+  const out = parseWebSessionInput('{not json} a=1')
+  assert.equal(out.snapshot, null)
 })

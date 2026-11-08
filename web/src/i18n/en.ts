@@ -375,12 +375,13 @@ export const en = {
     webSession: 'Web session',
     webSessionTitle: 'Web session cookie',
     webSessionStep1: '1. Copy the script and run it in the signed-in browser',
-    webSessionStep2: '2. Paste the cookie printed by the script',
+    webSessionStep2: '2. Paste the whole JSON blob printed by the script',
     webSessionStep3: '3. Current session status',
     webSessionCopyScript: 'Copy script',
     webSessionCopied:
       'Copied. Open F12 → Console in the browser where you are signed in to open-design.ai and paste it there',
-    webSessionPaste: 'Paste the cookie string printed by the console',
+    webSessionPaste:
+      'Paste the whole JSON blob printed by the script (raw cookie or cURL also work). The script calls the API inside your browser, so HttpOnly cookies and Cloudflare stop being obstacles.',
     webSessionSave: 'Save and test',
     webSessionClear: 'Clear session',
     webSessionStatusNone: 'Not set',
@@ -389,7 +390,7 @@ export const en = {
     webSessionHint:
       'This adapter reads the signed-in web session: the API key returns 401 upstream, so only the browser cookie works. Cookies are stored encrypted, and the panel only returns their names, never values.',
     webSessionHttpOnlyHint:
-      'The key cookies are likely HttpOnly, which JavaScript cannot read. In that case use the manual path from the script: DevTools → Application → Cookies, join name=value pairs with "; " and paste them here.',
+      'A snapshot alone still shows usage (as of capture time); if the script also captured cookies, refreshes happen automatically. When a session expires the snapshot is used as a fallback instead of showing a blank panel.',
     webSessionCapturedAt: 'Captured',
     webSessionLastOk: 'Last success',
     webSessionCookieNames: 'Cookies included: ',

@@ -129,6 +129,75 @@ export function validateCookieText(cookieText: string): string | null {
   return null
 }
 
+/** 浏览器控制台脚本输出的快照包 */
+export interface WebSessionBundle {
+  /** 可自动刷新的 Cookie（可能为空：HttpOnly 时读不到） */
+  cookie: string
+  /** 浏览器里直接调用接口拿到的 JSON 快照（可能为空） */
+  snapshot: unknown | null
+  /** 快照采集时间（ISO），缺省 null */
+  snapshotAt: string | null
+}
+
+function looksLikeMeSnapshot(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const o = v as Record<string, unknown>
+  return 'wallet' in o || 'designPlanWindows' in o || 'walletBreakdown' in o
+}
+
+/**
+ * 把用户粘贴的内容解析成「Cookie + 快照」两件套。
+ *
+ * 支持四种形态（按优先级）：
+ *   ① 控制台脚本输出的快照包：`{portara:'opendesign-session', cookie, me, capturedAt}`
+ *   ② 直接粘的 `/api/v1/me` 响应 JSON → 只有快照
+ *   ③ 整条 cURL 命令 → 提取其中的 Cookie
+ *   ④ 裸 Cookie / `Cookie: ...` 行
+ *
+ * 为什么要快照这条路：会话 Cookie 大概率是 HttpOnly（JS 读不到），
+ * 而且服务端重放还可能被 Cloudflare / 设备指纹判无效。
+ * 让用户在**他自己的浏览器里**调接口，把结果粘过来，这条路必然可行。
+ */
+export function parseWebSessionInput(input: string): WebSessionBundle {
+  const text = String(input ?? '').trim()
+  if (text === '') return { cookie: '', snapshot: null, snapshotAt: null }
+
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const o = parsed as Record<string, unknown>
+        // ① 控制台脚本包
+        if (typeof o.portara === 'string' && o.portara.includes('opendesign')) {
+          const cookieRaw = typeof o.cookie === 'string' ? o.cookie : ''
+          const me = o.me ?? o.snapshot ?? null
+          return {
+            cookie: cookieRaw ? normalizeCookieInput(cookieRaw) : '',
+            snapshot: me,
+            snapshotAt: typeof o.capturedAt === 'string' ? o.capturedAt : null
+          }
+        }
+        // ② 直接是 /api/v1/me 的响应
+        if (looksLikeMeSnapshot(o)) {
+          return { cookie: '', snapshot: o, snapshotAt: null }
+        }
+        // ①-b 包了一层 me 字段
+        if (looksLikeMeSnapshot(o.me)) {
+          return {
+            cookie: '',
+            snapshot: o.me,
+            snapshotAt: typeof o.capturedAt === 'string' ? o.capturedAt : null
+          }
+        }
+      }
+    } catch {
+      // 不是合法 JSON：当作 Cookie 处理
+    }
+  }
+
+  return { cookie: normalizeCookieInput(text), snapshot: null, snapshotAt: null }
+}
+
 /** 加密 Cookie（纯函数，便于单测往返） */
 export function sealWebSession(cookieText: string, masterKey: Buffer): string {
   return encryptSecret(cookieText, masterKey)
@@ -164,13 +233,68 @@ export async function saveWebSession(
   return (await getWebSessionStatus(accountId))!
 }
 
+/**
+ * 保存快照（覆盖式）。
+ *
+ * 与 Cookie 分开存：两者可以只有一个 —— 只有快照时依然能看到用量，
+ * 只是需要用户手动刷新；只有 Cookie 时能自动刷新。
+ */
+export async function saveWebSnapshot(
+  accountId: string,
+  snapshot: unknown,
+  snapshotAt: string | null
+): Promise<void> {
+  const json = JSON.stringify(snapshot)
+  const cipher = encryptSecret(json, env.masterKey)
+  const at = snapshotAt && Number.isFinite(Date.parse(snapshotAt)) ? new Date(snapshotAt) : new Date()
+  await query(
+    `insert into account_web_sessions (account_id, cipher, cookie_names, captured_at, snapshot_cipher, snapshot_at)
+     values ($1, '', '', now(), $2, $3)
+     on conflict (account_id) do update
+        set snapshot_cipher = excluded.snapshot_cipher,
+            snapshot_at = excluded.snapshot_at`,
+    [accountId, cipher, at.toISOString()]
+  )
+}
+
+/** 换掉旧快照（清空时用） */
+export async function clearWebSnapshot(accountId: string): Promise<void> {
+  await query(
+    `update account_web_sessions
+        set snapshot_cipher = '', snapshot_at = null
+      where account_id = $1`,
+    [accountId]
+  )
+}
+
+/** 读解密后的快照；没有或解密失败返回 null */
+export async function loadWebSnapshot(
+  accountId: string
+): Promise<{ snapshot: unknown; snapshotAt: string | null } | null> {
+  const row = await one<{ snapshot_cipher: string; snapshot_at: Date | string | null }>(
+    'select snapshot_cipher, snapshot_at from account_web_sessions where account_id = $1',
+    [accountId]
+  )
+  if (!row || !row.snapshot_cipher) return null
+  const raw = openWebSession(row.snapshot_cipher, env.masterKey)
+  if (raw === null) return null
+  try {
+    return {
+      snapshot: JSON.parse(raw) as unknown,
+      snapshotAt: row.snapshot_at ? new Date(row.snapshot_at).toISOString() : null
+    }
+  } catch {
+    return null
+  }
+}
+
 /** 读解密后的 Cookie；没有会话或解密失败都返回 null */
 export async function loadWebSession(accountId: string): Promise<{ cookie: string } | null> {
   const row = await one<{ cipher: string }>(
     'select cipher from account_web_sessions where account_id = $1',
     [accountId]
   )
-  if (!row) return null
+  if (!row || !row.cipher) return null
   const cookie = openWebSession(row.cipher, env.masterKey)
   if (cookie === null) return null
   return { cookie }

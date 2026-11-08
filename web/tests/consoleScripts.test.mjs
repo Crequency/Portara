@@ -1,9 +1,9 @@
 /**
- * 网页会话控制台脚本的约束测试。
+ * 网页会话采集脚本的约束测试。
  *
- * 这段字符串会被用户**原样粘贴到浏览器控制台**里执行 —— 它一旦悄悄多了个
- * 网络请求或本地存储读取，就不再是「只读 document.cookie」的只读脚本了。
- * 这些约束没法靠 typecheck 保证，只能钉在测试里。
+ * 这段字符串会被用户**原样粘贴到浏览器控制台**执行 —— 它的能力边界必须被钉死：
+ * 只允许请求 OpenDesign 自己的接口，不许读本地存储、不许碰别的域名。
+ * 这些约束没法靠 typecheck 保证。
  *
  * 跑法：`pnpm --filter @portara/web test`（= node --test tests/*.test.mjs）。
  */
@@ -19,41 +19,42 @@ test('导出的是非空字符串', () => {
 })
 
 test('是 IIFE：不往页面全局塞变量', () => {
-  assert.ok(script.trimStart().startsWith('(() => {'), '应以 (() => { 开头')
+  assert.ok(script.trimStart().startsWith('(async () => {'), '应以 (async () => { 开头')
   assert.ok(script.trimEnd().endsWith('})()'), '应以 })() 结尾')
 })
 
-test('只读 document.cookie', () => {
-  assert.match(script, /document\.cookie/)
-  assert.doesNotMatch(script, /document\.cookie\s*=/)
+test('只请求 OpenDesign 自己的接口（唯一允许的网络目标）', () => {
+  assert.match(script, /amr-api\.open-design\.ai\/api\/v1\/me/)
+  const urls = [...script.matchAll(/https?:\/\/[^'"\s)]+/g)].map((m) => m[0])
+  for (const u of urls) {
+    assert.equal(u, 'https://amr-api.open-design.ai/api/v1/me', `出现了不该请求的地址：${u}`)
+  }
 })
 
-test('给出 HttpOnly 的手动兜底路径（DevTools → Application → Cookies）', () => {
-  assert.match(script, /HttpOnly/i)
-  assert.match(script, /DevTools/)
-  assert.match(script, /Application/)
-  assert.match(script, /Cookies/)
-  // 手动路径要具体到域名，否则用户不知道该找哪个站点的 cookie
-  assert.match(script, /amr-api\.open-design\.ai/)
+test('带 credentials: include，才能用上 HttpOnly 会话', () => {
+  assert.match(script, /credentials:\s*'include'/)
 })
 
-test('打印完整内容，并尝试自动复制', () => {
+test('输出带可识别的包标记，后端据此解析', () => {
+  assert.match(script, /portara:\s*'opendesign-session'/)
+  assert.match(script, /capturedAt/)
+})
+
+test('打印完整内容并尝试自动复制', () => {
   assert.match(script, /console\.log\(/)
   assert.match(script, /copy\(/)
-  // 自动复制失败要有手动兜底提示，不能静默失败
   assert.match(script, /自动复制失败|手动/)
 })
 
-test('不发网络请求、不读本地存储、不引依赖', () => {
+test('不读本地存储、不引入依赖、不开其它通道', () => {
   const forbidden = [
-    [/\bfetch\s*\(/, 'fetch('],
-    [/XMLHttpRequest/, 'XMLHttpRequest'],
-    [/\bsendBeacon\b/, 'sendBeacon'],
-    [/\bWebSocket\b/, 'WebSocket'],
-    [/EventSource/, 'EventSource'],
     [/\blocalStorage\b/, 'localStorage'],
     [/\bsessionStorage\b/, 'sessionStorage'],
     [/\bindexedDB\b/, 'indexedDB'],
+    [/\bXMLHttpRequest\b/, 'XMLHttpRequest'],
+    [/\bsendBeacon\b/, 'sendBeacon'],
+    [/\bWebSocket\b/, 'WebSocket'],
+    [/\bEventSource\b/, 'EventSource'],
     [/\bimport\s*\(/, '动态 import'],
     [/^\s*import\s/m, 'import 语句'],
     [/\brequire\s*\(/, 'require(']

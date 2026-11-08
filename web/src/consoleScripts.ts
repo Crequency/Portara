@@ -1,56 +1,55 @@
 /**
  * 网页会话采集脚本（粘贴到浏览器控制台执行）。
  *
- * 背景：有些厂商的余额 / 套餐只有**网页登录态**才读得到。OpenDesign 实测用
- * API Key 打 `https://amr-api.open-design.ai/api/v1/me` 直接 401，
- * 能用的只有浏览器里那份已登录的 Cookie。
+ * 背景：OpenDesign 的用量只在网页登录态里，API Key 打 `/api/v1/me` 直接 401。
+ * 实测三条手动路径都不可靠：
+ *   ① `document.cookie` —— 会话 Cookie 基本是 HttpOnly，JS 读不到；
+ *   ② Copy as cURL —— 拿到了也可能因为 Cloudflare / 设备指纹被判无效；
+ *   ③ Application 面板手抄 —— 同上，且容易抄漏。
  *
- * 三条硬约束（改动前先看）：
+ * 所以脚本改成**在用户自己的浏览器里直接调用接口**：
+ * 请求由浏览器发出，HttpOnly、cf_clearance、设备指纹全部天然带上，
+ * 结果一定是最新的真实数据。脚本把结果打成一个 JSON 包（含可选的 cookie），
+ * 用户粘回 Portara 即可 —— 有 cookie 就能自动刷新，只有快照也能看到用量。
  *
- *  1. **纯浏览器控制台可用**：IIFE 包起来、无依赖、无 import，不污染页面全局。
- *  2. **只读 document.cookie**：不发任何网络请求、不碰 localStorage 里的 token。
- *     Portara 只该拿到用户亲手交出来的这份 Cookie。
- *  3. **必须给出 HttpOnly 的兜底路径**：会话 Cookie 很可能是 HttpOnly，
- *     JS 读不到 —— 这是浏览器的安全限制，不是脚本的 bug。
- *     DevTools 的「Copy as cURL」**包含 HttpOnly Cookie**，是唯一可靠的手动路径；
- *     Portara 的接口已经能直接从整条 cURL 里提取 Cookie。
- *
- * 字符串本身被单测断言（web/tests/consoleScripts.test.mjs）：
- * 必须含 `document.cookie` 与 cURL 提示，且不含 fetch / XHR / localStorage。
+ * 约束（单测钉住，改动前先看）：
+ *   - IIFE，不污染页面全局；
+ *   - 只允许请求 `https://amr-api.open-design.ai` 这一个地址；
+ *   - 不读 localStorage / sessionStorage / indexedDB；
+ *   - 输出必须是 `{portara:'opendesign-session', ...}` 形态，后端按此解析。
  */
-export const WEB_SESSION_CONSOLE_SCRIPT = String.raw`(() => {
+export const WEB_SESSION_CONSOLE_SCRIPT = String.raw`(async () => {
   const line = (msg, color) => console.log('%c' + msg, 'color:' + color + ';font-weight:bold')
-  const cookie = (document.cookie || '').trim()
-
-  line('[Portara] 采集网页会话 Cookie', '#4ade80')
-  console.log('本脚本只读取 document.cookie，不发送任何网络请求，也不读取浏览器的本地存储。')
-
-  if (cookie) {
-    console.log('')
-    line('[Portara] 方式一（推荐先试）：复制下面整行，粘贴到 Portara 的「网页会话」输入框', '#4ade80')
-    console.log(cookie)
-    try {
-      copy(cookie)
-      line('已自动复制到剪贴板', '#4ade80')
-    } catch (e) {
-      console.log('自动复制失败，请手动选中上面那行复制。')
-    }
-  } else {
-    line('当前页面读不到 cookie（很可能都是 HttpOnly），请用下面的方式二。', '#fbbf24')
+  const bundle = {
+    portara: 'opendesign-session',
+    v: 1,
+    capturedAt: new Date().toISOString(),
+    cookie: document.cookie || ''
   }
 
-  console.log('')
-  line('[Portara] 方式二（HttpOnly 也能拿到，最可靠）：Copy as cURL', '#fbbf24')
-  console.log([
-    '1. 按 F12 打开 DevTools，切到 Network（网络）面板',
-    '2. 在页面里点一下「订阅 / 用量 / 账单」这类页面，让浏览器发出请求',
-    '3. 在请求列表里找到发往 amr-api.open-design.ai 的那条（通常是 /api/v1/me）',
-    '4. 右键该请求 → Copy（复制）→ Copy as cURL（复制为 cURL）',
-    '5. 把复制到的整条命令原样粘贴到 Portara 的输入框并保存 —— 它会自动从中提取 Cookie'
-  ].join('\n'))
+  line('[Portara] 正在读取用量数据…', '#4ade80')
+  try {
+    const res = await fetch('https://amr-api.open-design.ai/api/v1/me', {
+      credentials: 'include',
+      headers: { accept: 'application/json' }
+    })
+    if (res.ok) {
+      bundle.me = await res.json()
+      line('[Portara] 读取成功', '#4ade80')
+    } else {
+      line('[Portara] 接口返回 HTTP ' + res.status + '，请确认已登录控制台后重试', '#fbbf24')
+    }
+  } catch (err) {
+    line('[Portara] 请求失败：' + err, '#f87171')
+  }
 
-  console.log('')
-  line('[Portara] 方式三（手动抄）：DevTools → Application → Cookies', '#94a3b8')
-  console.log('选中 open-design.ai 与 amr-api.open-design.ai 下的条目，把 name=value 用 "; " 拼起来粘贴。')
-  console.log('HttpOnly 的条目在 Application 面板里能看到值，但 JS 读不到 —— 这就是为什么需要方式二。')
+  const text = JSON.stringify(bundle)
+  console.log(text)
+  try {
+    copy(text)
+    line('[Portara] 已复制到剪贴板 —— 回到 Portara 的「网页会话」粘贴即可', '#4ade80')
+  } catch (err) {
+    line('自动复制失败，请手动选中上面整行文本复制', '#fbbf24')
+  }
+  line('[Portara] 只有快照也能看到用量；若包里带上了 cookie 则还能自动刷新。', '#94a3b8')
 })()`

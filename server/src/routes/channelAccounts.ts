@@ -29,8 +29,10 @@ import {
   clearWebSession,
   cookieNamesOf,
   getWebSessionStatus,
-  normalizeCookieInput,
+  loadWebSnapshot,
+  parseWebSessionInput,
   saveWebSession,
+  saveWebSnapshot,
   validateCookieText
 } from '../services/webSession.js'
 import { one } from '../db.js'
@@ -248,6 +250,7 @@ channelAccountRoutes.get('/:id/accounts/:aid/web-session', requireAdmin, async (
   if (!account) throw notFound('账户不存在')
 
   const status = await getWebSessionStatus(accountId)
+  const snapshotInfo = await loadWebSnapshot(accountId)
   /*
    * 状态给两种形状：平铺字段（本契约）与 `status` 包装。
    * 两者内容完全相同 —— 面板两种写法都在用，多一个键比让人猜形状便宜。
@@ -255,6 +258,9 @@ channelAccountRoutes.get('/:id/accounts/:aid/web-session', requireAdmin, async (
   return c.json({
     ...status,
     status,
+    /** 手动快照（浏览器内调用接口的结果）：有它就能在会话失效时垫底 */
+    hasSnapshot: snapshotInfo !== null,
+    snapshotAt: snapshotInfo?.snapshotAt ?? null,
     usageAdapter: account.usage_adapter || ch.usage_adapter,
     sessionAdapter: isSessionAdapter(account.usage_adapter || ch.usage_adapter)
   })
@@ -277,13 +283,26 @@ channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async 
 
   const body = await parseJson(c, webSessionSchema)
   /*
-   * 三种粘贴形态都接受：裸 Cookie / 带 "Cookie: " 前缀 / 整条 cURL 命令。
-   * 支持 cURL 不是顺手加的功能 —— 会话 Cookie 大概率是 HttpOnly，
-   * document.cookie 读不到，DevTools 的「Copy as cURL」是唯一能拿到完整会话的路径。
+   * 四种粘贴形态都接受（见 parseWebSessionInput）：
+   *   ① 控制台脚本输出的快照包（cookie + me 一起）
+   *   ② 直接粘的 /api/v1/me 响应 JSON（只有快照）
+   *   ③ 整条 cURL 命令（从里面提 Cookie）
+   *   ④ 裸 Cookie / "Cookie: ..." 行
+   *
+   * 为什么要快照这条路：会话 Cookie 大概率是 HttpOnly，JS 读不到；
+   * 即使拿到了，服务端重放还可能被 Cloudflare / 设备指纹判无效。
+   * 让用户在自己的浏览器里调接口、把结果粘过来，这条路必然可行。
    */
-  const cookieText = normalizeCookieInput(body.cookie)
-  const problem = validateCookieText(cookieText)
-  if (problem) throw badRequest(problem)
+  const bundle = parseWebSessionInput(body.cookie)
+  const cookieText = bundle.cookie
+  const hasCookie = cookieText.trim() !== ''
+  const hasSnapshot = bundle.snapshot !== null
+  if (!hasCookie && !hasSnapshot) throw badRequest('请粘贴 Cookie、cURL 命令，或控制台脚本输出的快照 JSON')
+
+  if (hasCookie) {
+    const problem = validateCookieText(cookieText)
+    if (problem) throw badRequest(problem)
+  }
 
   const account = await getAccount(channelId, accountId)
   if (!account) throw notFound('账户不存在')
@@ -295,9 +314,17 @@ channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async 
    */
   const sessionAdapter = isSessionAdapter(effectiveAdapter)
 
-  const cookieNames = cookieNamesOf(body.cookie)
-  await saveWebSession(accountId, cookieText)
-  // 会话变了，旧快照就是错的口径
+  const cookieNames = cookieNamesOf(cookieText)
+  if (hasCookie) {
+    await saveWebSession(accountId, cookieText)
+  }
+  if (hasSnapshot) {
+    /*
+     * 快照单独存：它和 Cookie 是两条独立的数据来源。
+     * 用户只粘了一个 /api/v1/me JSON 时，也能立刻在面板上看到用量。
+     */
+    await saveWebSnapshot(accountId, bundle.snapshot, bundle.snapshotAt)
+  }
   await invalidateUsageCache(channelId)
 
   // 立刻试跑：让调用方当场知道粘贴的 Cookie 到底能不能读
@@ -311,6 +338,8 @@ channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async 
     account: account.name,
     // 只记名，不记值 —— Cookie 等同于凭据
     cookieNames,
+    /** 本次是否同时更新了快照（快照不含凭据，可以记） */
+    snapshot: hasSnapshot,
     adapter: effectiveAdapter,
     ok
   })

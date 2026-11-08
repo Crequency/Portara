@@ -375,11 +375,12 @@ export const zh = {
     webSession: '网页会话',
     webSessionTitle: '网页会话 Cookie',
     webSessionStep1: '① 复制脚本，到已登录的浏览器执行',
-    webSessionStep2: '② 粘贴脚本输出的 Cookie',
+    webSessionStep2: '② 把脚本输出的整段 JSON 粘回来',
     webSessionStep3: '③ 当前会话状态',
     webSessionCopyScript: '一键复制脚本',
     webSessionCopied: '已复制，请到已登录 open-design.ai 的浏览器里按 F12 → Console 粘贴执行',
-    webSessionPaste: '粘贴控制台输出的 cookie 字符串',
+    webSessionPaste:
+      '粘贴脚本输出的整段 JSON（也接受裸 Cookie / cURL 命令）。脚本在你的浏览器里直接读接口，HttpOnly 与 Cloudflare 都不再是障碍。',
     webSessionSave: '保存并试跑',
     webSessionClear: '清除会话',
     webSessionStatusNone: '未设置',
@@ -388,7 +389,7 @@ export const zh = {
     webSessionHint:
       '该适配器读的是网页登录态：API Key 打上游接口会是 401，只能用浏览器里的 Cookie。Cookie 加密存储，面板只回名不回值。',
     webSessionHttpOnlyHint:
-      '关键 Cookie 很可能是 HttpOnly，JS 读不到 —— 这时请走脚本里给的手动路径：DevTools → Application → Cookies，把 name=value 用 "; " 连接后粘贴。',
+      '只有快照也能看到用量（数据是采集那一刻的）；若脚本顺带读到了 cookie 则会自动刷新。会话失效时用快照垫底，不会整块空白。',
     webSessionCapturedAt: '获取于',
     webSessionLastOk: '上次成功',
     webSessionCookieNames: '包含的 Cookie：',
