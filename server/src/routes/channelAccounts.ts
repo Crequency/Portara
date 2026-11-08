@@ -24,6 +24,14 @@ import {
 import { recordAudit } from '../services/audit.js'
 import { tryDecryptKey } from '../services/channels.js'
 import { getUsageAdapter } from '../services/usage.js'
+import { getUsageSnapshot, invalidateUsageCache } from '../services/usageFetch.js'
+import {
+  clearWebSession,
+  cookieNamesOf,
+  getWebSessionStatus,
+  saveWebSession,
+  validateCookieText
+} from '../services/webSession.js'
 import { one } from '../db.js'
 import { toAccountDto, type ChannelAccountRow, type ChannelRow } from '../types.js'
 
@@ -219,3 +227,122 @@ channelAccountRoutes.get('/:id/accounts/:aid/reveal', requireAdmin, async (c) =>
 
   return c.json({ key, account: account.name, channel: ch.name })
 })
+
+/** 该适配器是否使用网页会话（决定 Cookie 存进去到底会不会被用到） */
+function isSessionAdapter(adapterId: string): boolean {
+  return getUsageAdapter(adapterId)?.auth === 'session-cookie'
+}
+
+/**
+ * 账户的网页会话状态（供渠道详情页展示）。
+ *
+ * 只回 Cookie 名与时间戳，**绝不回值或密文** —— 面板只需要知道「有没有 / 什么时候失效」。
+ */
+channelAccountRoutes.get('/:id/accounts/:aid/web-session', requireAdmin, async (c) => {
+  const channelId = uuid.parse(c.req.param('id'))
+  const accountId = uuid.parse(c.req.param('aid'))
+  const ch = await channelOf(channelId)
+
+  const account = await getAccount(channelId, accountId)
+  if (!account) throw notFound('账户不存在')
+
+  const status = await getWebSessionStatus(accountId)
+  /*
+   * 状态给两种形状：平铺字段（本契约）与 `status` 包装。
+   * 两者内容完全相同 —— 面板两种写法都在用，多一个键比让人猜形状便宜。
+   */
+  return c.json({
+    ...status,
+    status,
+    usageAdapter: account.usage_adapter || ch.usage_adapter,
+    sessionAdapter: isSessionAdapter(account.usage_adapter || ch.usage_adapter)
+  })
+})
+
+const webSessionSchema = z.object({ cookie: z.string() })
+
+/**
+ * 粘贴 / 覆盖网页 Cookie。
+ *
+ * 存库后**立刻试跑一次**余额刷新并把结果回给前端 —— 光看「保存成功」没法判断
+ * Cookie 是否真的有效，试跑才是唯一的证据。
+ *
+ * 安全：审计只记 Cookie 名，绝不记值。
+ */
+channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async (c) => {
+  const channelId = uuid.parse(c.req.param('id'))
+  const accountId = uuid.parse(c.req.param('aid'))
+  const ch = await channelOf(channelId)
+
+  const body = await parseJson(c, webSessionSchema)
+  const problem = validateCookieText(body.cookie)
+  if (problem) throw badRequest(problem)
+
+  const account = await getAccount(channelId, accountId)
+  if (!account) throw notFound('账户不存在')
+
+  const effectiveAdapter = account.usage_adapter || ch.usage_adapter
+  /*
+   * 不拦非会话型适配器：允许「先把 Cookie 存好、再去改适配器」的顺序，
+   * 但要在响应里明说它现在用不上 —— 静默存下去只会让人以为已经生效。
+   */
+  const sessionAdapter = isSessionAdapter(effectiveAdapter)
+
+  const cookieNames = cookieNamesOf(body.cookie)
+  await saveWebSession(accountId, body.cookie)
+  // 会话变了，旧快照就是错的口径
+  await invalidateUsageCache(channelId)
+
+  // 立刻试跑：让调用方当场知道粘贴的 Cookie 到底能不能读
+  const snapshot = await getUsageSnapshot(channelId, { force: true })
+  const mine = snapshot.accounts.find((a) => a.accountId === accountId)
+  const ok = mine ? mine.ok : false
+  const error = mine ? (mine.error ?? '') : (snapshot.error ?? '')
+
+  await recordAudit(c, 'channel_account.web_session.save', { type: 'channel', id: channelId }, {
+    channel: ch.name,
+    account: account.name,
+    // 只记名，不记值 —— Cookie 等同于凭据
+    cookieNames,
+    adapter: effectiveAdapter,
+    ok
+  })
+
+  const status = await getWebSessionStatus(accountId)
+  return c.json({
+    ok,
+    error,
+    /** 该账户当前的适配器是否真的会用这份 Cookie */
+    sessionAdapter,
+    warning: sessionAdapter
+      ? undefined
+      : `该账户当前的余额适配器「${effectiveAdapter || '未配置'}」不使用网页会话，这份 Cookie 暂时用不上`,
+    status,
+    /** 与 status 同值（面板的另一种写法） */
+    session: status,
+    /** 试跑结果：前端按 snapshot 或 usage 取用都行 */
+    snapshot,
+    usage: snapshot
+  })
+})
+
+/** 清除网页会话（Cookie 失效后的常规操作，同样留审计） */
+channelAccountRoutes.delete('/:id/accounts/:aid/web-session', requireAdmin, async (c) => {
+  const channelId = uuid.parse(c.req.param('id'))
+  const accountId = uuid.parse(c.req.param('aid'))
+  const ch = await channelOf(channelId)
+
+  const account = await getAccount(channelId, accountId)
+  if (!account) throw notFound('账户不存在')
+
+  await clearWebSession(accountId)
+  await invalidateUsageCache(channelId)
+
+  await recordAudit(c, 'channel_account.web_session.clear', { type: 'channel', id: channelId }, {
+    channel: ch.name,
+    account: account.name
+  })
+
+  return c.json({ ok: true, status: await getWebSessionStatus(accountId) })
+})
+

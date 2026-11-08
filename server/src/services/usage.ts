@@ -234,11 +234,47 @@ export interface UsageEndpoint {
   required?: boolean
 }
 
+/**
+ * 会话型（session-http）适配器的端点。
+ *
+ * 与 UsageEndpoint 的区别：这里的 url 是**完整地址** —— 没有统一的 base，
+ * 网页接口（如 amr-api.open-design.ai）与渠道的推理地址通常不是同一个域。
+ */
+export interface UsageSessionEndpoint {
+  key: string
+  url: string
+  /** 必需端点失败 → 整个快照失败；可选端点失败只记 warning */
+  required?: boolean
+}
+
 export interface UsageAdapter {
   id: string
   label: string
   endpoints: UsageEndpoint[]
-  auth: 'bearer' | 'x-api-key' | 'none'
+  /**
+   * 鉴权方式。
+   *
+   * 'session-cookie' 表示**不用渠道密钥**，而是用账户上单独粘贴的网页登录态
+   * （见 services/webSession.ts）—— 有些厂商的余额只有网页会话才读得到。
+   */
+  auth: 'bearer' | 'x-api-key' | 'none' | 'session-cookie'
+  /**
+   * 适配器形态。缺省 = 'http'（既有行为，零改动）。
+   *
+   *   'http'         —— 用账户密钥打 endpoints（相对路径 + base/usage_url 拼接）
+   *   'session-http' —— 用解密后的 Cookie 打 sessionEndpoints（完整 URL）
+   */
+  kind?: 'http' | 'session-http'
+  /** 仅 kind='session-http'：完整 URL 的端点列表 */
+  sessionEndpoints?: UsageSessionEndpoint[]
+  /**
+   * endpoints 的相对基准。
+   *
+   * 缺省 'origin'（scheme + host）—— 既有适配器都是这个语义；
+   * 'base' 表示相对**完整 base_url**（含路径）：OpenCode 的 zen go 端点
+   * 是 /zen/go/v1/usage，只拼 origin 会打到一个不存在的 /usage。
+   */
+  baseMode?: 'origin' | 'base'
   /** 选择该适配器时界面上的提示 */
   note?: string
   parse(responses: Record<string, unknown>): Partial<UsageSnapshot>
@@ -567,9 +603,215 @@ const minimax: UsageAdapter = {
   }
 }
 
+// ---------------------------------------------------------------- OpenCode
+
+/**
+ * GET {base}/usage（base = https://opencode.ai/zen/go/v1）
+ * {"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"ISO"},
+ *   "weekly":{...},
+ *   "monthly":{"status":"rate-limited","percent":100,"resetsAt":"ISO"}}}
+ *
+ * 注意三点：
+ *   ① 上游给的是**百分比**，不是 token 数 —— total 固定 100
+ *   ② 端点挂在完整 base 之下（/zen/go/v1/usage），所以 baseMode='base'
+ *   ③ status='rate-limited' 或 percent>=100 都算打满，两者不总是同时成立
+ */
+const OPENCODE_WINDOWS = ['rolling', 'weekly', 'monthly'] as const
+
+const opencode: UsageAdapter = {
+  id: 'opencode',
+  label: 'OpenCode Zen',
+  endpoints: [{ key: 'usage', path: '/usage', required: true }],
+  auth: 'bearer',
+  baseMode: 'base',
+  note: '官方接口，返回滚动 / 周 / 月三个窗口的百分比用量；Base URL 需指向 .../zen/go/v1',
+  parse(responses) {
+    const d = responses.usage
+    if (!isRecord(d)) throw new Error('响应不是对象')
+    const usage = isRecord(d.usage) ? d.usage : null
+    if (!usage) throw new Error('响应里没有 usage 字段')
+
+    const windows: UsageWindow[] = []
+    const warnings: string[] = []
+    for (const key of OPENCODE_WINDOWS) {
+      const raw = usage[key]
+      if (!isRecord(raw)) continue
+      const percent = toNum(raw.percent)
+      if (percent === null) continue
+      const status = typeof raw.status === 'string' ? raw.status : ''
+      const exceeded = status === 'rate-limited' || percent >= 100
+      windows.push({
+        key,
+        // 百分比制：used 是「已用百分比」，total 恒为 100
+        used: percent,
+        total: 100,
+        remaining: 100 - percent,
+        resetAt: toIso(raw.resetsAt) ?? undefined,
+        exceeded
+      })
+      if (status && status !== 'ok' && !exceeded) {
+        warnings.push(`窗口 ${key} 的上游状态为「${status}」（未判为超限）`)
+      }
+    }
+    if (windows.length === 0) {
+      throw new Error('响应里没有可解析的用量窗口（rolling / weekly / monthly）')
+    }
+    return { windows, warnings }
+  }
+}
+
+// ---------------------------------------------------------------- OpenDesign
+
+/**
+ * GET https://amr-api.open-design.ai/api/v1/me —— **只认网页登录态**。
+ *
+ * API Key 打过去直接 401 unauthenticated（实测），所以用 auth='session-cookie'：
+ * Cookie 由管理员在账户详情页粘贴，见 services/webSession.ts。
+ *
+ * 字段来自前端产物的逆向，没有官方文档：
+ *   wallet.balanceUsd          钱包余额（美元）
+ *   walletBreakdown[]          { kind, expiresAt } —— 钱包额度批次
+ *   designPlanWindows[]        { kind, windowStart, resetsAt, remainingCredits, limitCredits }
+ *   plan                       套餐
+ *
+ * 因此解析一律「缺字段就跳过」，但**一个可用的都没有时抛错**。
+ */
+const OPENDESIGN_ME_URL = 'https://amr-api.open-design.ai/api/v1/me'
+
+/** 取第一个能转成数字的字段（上游字段名没有文档，多认几个候选） */
+function firstNum(obj: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const n = toNum(obj[key])
+    if (n !== null) return n
+  }
+  return null
+}
+
+/** 「我」对象本体；有些包装层会塞进 data / user / result 里 */
+function pickMeRoot(me: Record<string, unknown>): Record<string, unknown> {
+  const looksLikeMe = (v: Record<string, unknown>): boolean =>
+    'wallet' in v || 'designPlanWindows' in v || 'walletBreakdown' in v || 'plan' in v
+  if (looksLikeMe(me)) return me
+  for (const wrapper of ['data', 'user', 'result', 'me']) {
+    const inner = me[wrapper]
+    if (isRecord(inner) && looksLikeMe(inner)) return inner
+  }
+  return me
+}
+
+const opendesign: UsageAdapter = {
+  id: 'opendesign',
+  label: 'OpenDesign（网页会话）',
+  endpoints: [],
+  kind: 'session-http',
+  auth: 'session-cookie',
+  sessionEndpoints: [{ key: 'me', url: OPENDESIGN_ME_URL, required: true }],
+  note: '只有网页登录态（Cookie）能读，API Key 打过去是 401；请先在渠道详情页粘贴 Cookie',
+  parse(responses) {
+    const rawMe = responses.me
+    if (!isRecord(rawMe)) throw new Error('响应不是对象')
+    const me = pickMeRoot(rawMe)
+
+    const warnings: string[] = []
+
+    // ---- 余额：wallet.balanceUsd ----
+    const balances: UsageBalance[] = []
+    const wallet = isRecord(me.wallet) ? me.wallet : null
+    const balanceUsd = wallet ? toNum(wallet.balanceUsd) : null
+    if (balanceUsd !== null) {
+      balances.push({ currency: 'USD', unit: 'currency', remaining: balanceUsd })
+    } else if (wallet) {
+      warnings.push('wallet 里没有可解析的 balanceUsd')
+    }
+
+    // ---- 套餐窗口：designPlanWindows ----
+    const windows: UsageWindow[] = []
+    const planWindows = Array.isArray(me.designPlanWindows) ? me.designPlanWindows : []
+    for (const item of planWindows) {
+      if (!isRecord(item)) continue
+      const limit = toNum(item.limitCredits)
+      const remaining = toNum(item.remainingCredits)
+      if (limit === null || remaining === null) continue
+      const kind = typeof item.kind === 'string' && item.kind ? item.kind : ''
+      windows.push({
+        key: kind || `window-${windows.length + 1}`,
+        used: Math.max(0, limit - remaining),
+        total: limit,
+        remaining,
+        resetAt: toIso(item.resetsAt) ?? undefined,
+        exceeded: remaining <= 0
+      })
+    }
+    if (planWindows.length > 0 && windows.length === 0) {
+      warnings.push('designPlanWindows 里的字段无法解析（缺 limitCredits / remainingCredits）')
+    }
+
+    // ---- 只有钱包批次：按 expiresAt 推算窗口 ----
+    const breakdown = Array.isArray(me.walletBreakdown) ? me.walletBreakdown : []
+    if (windows.length === 0 && breakdown.length > 0) {
+      const usedKeys = new Map<string, number>()
+      for (const item of breakdown) {
+        if (!isRecord(item)) continue
+        const kind = typeof item.kind === 'string' && item.kind ? item.kind : 'wallet'
+        // 同名批次可能有多条（不同到期时间），加序号保证 key 唯一
+        const seen = (usedKeys.get(kind) ?? 0) + 1
+        usedKeys.set(kind, seen)
+        const value = firstNum(item, [
+          'remainingUsd',
+          'amountUsd',
+          'amount',
+          'credits',
+          'remaining',
+          'balanceUsd'
+        ])
+        windows.push({
+          key: seen > 1 ? `wallet:${kind}#${seen}` : `wallet:${kind}`,
+          used: 0,
+          total: value ?? 0,
+          remaining: value ?? 0,
+          resetAt: toIso(item.expiresAt) ?? undefined,
+          // 上游没有给窗口对象，这是按到期时间推算的 —— 不参与「打满就不路由」判定
+          inferred: true
+        })
+      }
+      if (windows.length > 0) {
+        warnings.push('上游没有返回套餐窗口，已按钱包批次的到期时间推算（无额度上限）')
+      }
+    }
+
+    // ---- 套餐 ----
+    let plan: UsagePlan | undefined
+    if (typeof me.plan === 'string' && me.plan.trim() !== '') {
+      plan = { name: me.plan.trim() }
+    } else if (isRecord(me.plan)) {
+      const p = me.plan
+      plan = {
+        id: typeof p.id === 'string' ? p.id : undefined,
+        name: typeof p.name === 'string' ? p.name : undefined,
+        status: typeof p.status === 'string' ? p.status : undefined
+      }
+      if (!plan.id && !plan.name && !plan.status) plan = undefined
+    }
+
+    if (balances.length === 0 && windows.length === 0 && !plan) {
+      throw new Error(
+        '响应里既没有 wallet.balanceUsd，也没有 designPlanWindows / walletBreakdown / plan'
+      )
+    }
+    return { balances, windows, plan, warnings }
+  }
+}
+
 // ---------------------------------------------------------------- 注册表
 
-export const USAGE_ADAPTERS: UsageAdapter[] = [deepseek, moonshot, commandcode, minimax]
+export const USAGE_ADAPTERS: UsageAdapter[] = [
+  deepseek,
+  moonshot,
+  commandcode,
+  minimax,
+  opencode,
+  opendesign
+]
 
 export const USAGE_ADAPTER_IDS = USAGE_ADAPTERS.map((a) => a.id)
 
@@ -593,12 +835,24 @@ export function originOf(baseUrl: string): string {
   }
 }
 
-/** 组装某个端点的完整 URL（`usage_url` 覆盖时按覆盖值 + 端点路径） */
+/**
+ * 组装某个端点的完整 URL（`usage_url` 覆盖时按覆盖值 + 端点路径）。
+ *
+ * baseMode='base' 时用**完整 base**（含路径）而不是 origin —— OpenCode 的
+ * 用量端点在 /zen/go/v1/usage 底下，只拼 origin 会打到一个不存在的 /usage。
+ * 有 usage_url 覆盖时永远以覆盖值为准（它是显式配置，不该再被推断改写）。
+ */
 export function endpointUrl(
   baseUrl: string,
   path: string,
-  override?: string
+  override?: string,
+  baseMode: 'origin' | 'base' = 'origin'
 ): string {
-  const base = override && override.trim() !== '' ? override.trim() : originOf(baseUrl)
+  const base =
+    override && override.trim() !== ''
+      ? override.trim()
+      : baseMode === 'base'
+        ? baseUrl.trim()
+        : originOf(baseUrl)
   return base.replace(/\/+$/, '') + path
 }

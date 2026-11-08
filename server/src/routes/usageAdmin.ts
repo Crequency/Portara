@@ -25,7 +25,11 @@ usageAdminRoutes.get('/usage/adapters', requireAdmin, async (c) => {
       id: a.id,
       label: a.label,
       note: a.note ?? '',
-      endpoints: a.endpoints.map((e) => e.path)
+      endpoints: a.endpoints.map((e) => e.path),
+      // 会话型适配器不用渠道密钥，端点也是完整 URL —— 两者都要给前端
+      kind: a.kind ?? 'http',
+      auth: a.auth,
+      sessionEndpoints: (a.sessionEndpoints ?? []).map((e) => e.url)
     }))
   })
 })

@@ -20,6 +20,7 @@ import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
+import { loadWebSession, markSessionResult } from './webSession.js'
 import {
   aggregateAccountSnapshots,
   endpointUrl,
@@ -156,6 +157,66 @@ export async function getUsageSnapshot(
   return snapshot
 }
 
+/** 打一个上游端点（成功 / 失败都归一化成同一种结果，供两种形态共用） */
+interface EndpointOutcome {
+  key: string
+  /** 报错时展示给用户的标识（相对路径或完整 URL） */
+  label: string
+  required: boolean
+  /** HTTP 状态码；0 = 连接层失败（超时 / 网络） */
+  status: number
+  error: string | null
+  body: unknown
+}
+
+/** 打一个端点：超时、代理、RAW_LIMIT 与错误归一化全部在这里，两种形态共用 */
+async function callEndpoint(opts: {
+  key: string
+  label: string
+  url: string
+  required: boolean
+  headers: Record<string, string>
+  timeoutMs: number
+  proxy: Awaited<ReturnType<typeof getProxyTarget>>
+  raws: Record<string, string>
+}): Promise<EndpointOutcome> {
+  const base: Pick<EndpointOutcome, 'key' | 'label' | 'required'> = {
+    key: opts.key,
+    label: opts.label,
+    required: opts.required
+  }
+  try {
+    const res = await upstreamFetch(
+      opts.url,
+      { headers: opts.headers, signal: AbortSignal.timeout(opts.timeoutMs) },
+      opts.proxy
+    )
+    const text = await res.text()
+    opts.raws[opts.key] = text.length > RAW_LIMIT ? text.slice(0, RAW_LIMIT) : text
+    if (!res.ok) {
+      return {
+        ...base,
+        status: res.status,
+        error: `HTTP ${res.status}：${text.slice(0, 200)}`,
+        body: null
+      }
+    }
+    try {
+      return { ...base, status: res.status, error: null, body: JSON.parse(text) as unknown }
+    } catch {
+      return { ...base, status: res.status, error: '响应不是合法 JSON', body: null }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return {
+      ...base,
+      status: 0,
+      error: /timeout|abort/i.test(msg) ? '请求超时' : msg,
+      body: null
+    }
+  }
+}
+
 /** 打一个账户的余额接口并解析（失败只影响这个账户） */
 async function fetchAccountSnapshot(
   ch: ChannelRow,
@@ -178,52 +239,136 @@ async function fetchAccountSnapshot(
   const adapter = getUsageAdapter(account.usage_adapter || ch.usage_adapter)
   if (!adapter) return fail('未配置或未知的余额适配器')
 
-  const apiKey = tryDecryptKey(account.key_cipher)
-  if (apiKey === null) return fail('账户密钥无法解密，请重新填写')
-
   const timeoutMs = Math.min(ch.timeout_ms, 30_000)
   const responses: Record<string, unknown> = {}
   const warnings: string[] = []
   const raws: Record<string, string> = {}
 
+  // ---------------------------------------------------------------- 会话型
+  /*
+   * 会话型（session-http）：凭据不是渠道密钥，而是管理员粘贴的网页 Cookie。
+   * 端点用完整 URL（网页接口通常与推理地址不同域），鉴权头是 cookie。
+   */
+  if (adapter.kind === 'session-http') {
+    if (adapter.auth !== 'session-cookie') {
+      return fail('会话型适配器必须声明 auth="session-cookie"')
+    }
+    const endpoints = adapter.sessionEndpoints ?? []
+    if (endpoints.length === 0) return fail('适配器没有声明任何会话端点')
+
+    const session = await loadWebSession(account.id)
+    if (!session) {
+      return fail('该账户还没有网页会话，请在渠道详情页粘贴 Cookie')
+    }
+
+    /*
+     * 端点地址的**基址覆盖**：账户/渠道的 usage_url 会替换 origin，
+     * 端点自身的 pathname 拼在后面（与纯 HTTP 分支同一套语义）。
+     *
+     * 这不是为测试开后门：网页接口的域名在部分部署里会被反代改写
+     * （办公楼里用代理、自建镜像），而 session 端点的域名又是写死的。
+     */
+    const override = (account.usage_url || ch.usage_url || '').trim()
+    const urlOf = (rawUrl: string): string => {
+      if (!override) return rawUrl
+      try {
+        const u = new URL(rawUrl)
+        return override.replace(/\/+$/, '') + u.pathname + u.search
+      } catch {
+        return rawUrl
+      }
+    }
+
+    const results = await Promise.all(
+      endpoints.map((ep) =>
+        callEndpoint({
+          key: ep.key,
+          label: urlOf(ep.url),
+          url: urlOf(ep.url),
+          required: ep.required === true,
+          headers: { accept: 'application/json', cookie: session.cookie },
+          timeoutMs,
+          proxy,
+          raws
+        })
+      )
+    )
+
+    // 401/403 = 登录态失效。这是**会话层**的事实，先落库再报错
+    const expired = results.find((r) => r.status === 401 || r.status === 403)
+    if (expired) {
+      await markSessionResult(account.id, false, 'session_expired').catch(() => undefined)
+      return fail(
+        `网页会话已失效，请重新粘贴 Cookie（${expired.label} 返回 HTTP ${expired.status}）`,
+        raws
+      )
+    }
+
+    for (const r of results) {
+      if (r.body !== null) {
+        responses[r.key] = r.body
+        continue
+      }
+      if (r.required) {
+        await markSessionResult(account.id, false, r.error ?? 'failed').catch(() => undefined)
+        return fail(`${r.label} 拉取失败：${r.error}`, raws)
+      }
+      warnings.push(`${r.label} 拉取失败：${r.error}`)
+    }
+
+    try {
+      const parsed = adapter.parse(responses)
+      await markSessionResult(account.id, true).catch(() => undefined)
+      return {
+        accountId: account.id,
+        accountName: account.name,
+        adapter: adapter.id,
+        ok: true,
+        warnings: [...(parsed.warnings ?? []), ...warnings],
+        balances: parsed.balances ?? [],
+        windows: parsed.windows ?? [],
+        period: parsed.period,
+        plan: parsed.plan,
+        raw: raws
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // 解析失败不等于会话失效 —— 但这轮确实没读到数据，如实记下
+      await markSessionResult(account.id, false, msg).catch(() => undefined)
+      return fail(msg, raws)
+    }
+  }
+
+  // ---------------------------------------------------------------- 纯 HTTP
+  const apiKey = tryDecryptKey(account.key_cipher)
+  if (apiKey === null) return fail('账户密钥无法解密，请重新填写')
+
   // 并行拉取：各端点相互独立，串行会白白等好几倍时间
   const results = await Promise.all(
     adapter.endpoints.map(async (ep) => {
-      const url = endpointUrl(ch.base_url, ep.path, account.usage_url || ch.usage_url)
       const headers: Record<string, string> = { accept: 'application/json' }
       if (adapter.auth === 'bearer' && apiKey) headers.authorization = `Bearer ${apiKey}`
       if (adapter.auth === 'x-api-key' && apiKey) headers['x-api-key'] = apiKey
-
-      try {
-        const res = await upstreamFetch(
-          url,
-          { headers, signal: AbortSignal.timeout(timeoutMs) },
-          proxy
-        )
-        const text = await res.text()
-        raws[ep.key] = text.length > RAW_LIMIT ? text.slice(0, RAW_LIMIT) : text
-        if (!res.ok) {
-          return { ep, error: `HTTP ${res.status}：${text.slice(0, 200)}`, body: null }
-        }
-        try {
-          return { ep, error: null, body: JSON.parse(text) as unknown }
-        } catch {
-          return { ep, error: '响应不是合法 JSON', body: null }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        return { ep, error: /timeout|abort/i.test(msg) ? '请求超时' : msg, body: null }
-      }
+      return callEndpoint({
+        key: ep.key,
+        label: ep.path,
+        url: endpointUrl(ch.base_url, ep.path, account.usage_url || ch.usage_url, adapter.baseMode),
+        required: ep.required === true,
+        headers,
+        timeoutMs,
+        proxy,
+        raws
+      })
     })
   )
 
   for (const r of results) {
     if (r.body !== null) {
-      responses[r.ep.key] = r.body
+      responses[r.key] = r.body
       continue
     }
-    if (r.ep.required) return fail(`${r.ep.path} 拉取失败：${r.error}`, raws)
-    warnings.push(`${r.ep.path} 拉取失败：${r.error}`)
+    if (r.required) return fail(`${r.label} 拉取失败：${r.error}`, raws)
+    warnings.push(`${r.label} 拉取失败：${r.error}`)
   }
 
   try {

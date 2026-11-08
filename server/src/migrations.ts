@@ -766,5 +766,32 @@ export const migrations: { id: string; sql: string }[] = [
       alter table channels
         add column if not exists max_concurrency integer not null default 0;
     `
+  },
+  {
+    id: '028_account_web_sessions',
+    sql: `
+      -- 网页登录态（Cookie）凭据库：会话型余额适配器（OpenDesign 这类）用。
+      --
+      -- 为什么需要它：有些厂商的余额/套餐只有**网页登录态**才能读，
+      -- API Key 打过去是 401 unauthenticated。Cookie 等同于凭据，
+      -- 因此与上游密钥同规格：AES-256-GCM 加密（PORTARA_MASTER_KEY），
+      -- 接口只回 Cookie 名列表，**绝不回值**。
+      --
+      -- 一个账户最多一份会话：主键就是 channel_accounts(id)，
+      -- 账户被删时级联删除 —— 不留无主凭据。
+      --
+      -- cookie_names：逗号分隔的 Cookie 名（不含值），供面板显示「哪些条已粘贴」。
+      -- captured_at：粘贴时刻；last_ok_at / last_error：最近一次试跑结果；
+      -- expires_at：预留（Cookie 自带过期时间时才填，当前不解析）。
+      create table if not exists account_web_sessions (
+        account_id   uuid primary key references channel_accounts(id) on delete cascade,
+        cipher       text not null,
+        cookie_names text not null default '',
+        captured_at  timestamptz not null default now(),
+        last_ok_at   timestamptz,
+        last_error   text not null default '',
+        expires_at   timestamptz
+      );
+    `
   }
 ]

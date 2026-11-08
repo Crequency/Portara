@@ -287,23 +287,38 @@ test('minimax：model_remains 为空时抛错', () => {
 
 // ---------------------------------------------------------------- 注册表
 
-test('注册表只含已实测可用的四个适配器', () => {
-  assert.deepEqual(USAGE_ADAPTER_IDS, ['deepseek', 'moonshot', 'commandcode', 'minimax'])
+test('注册表覆盖已实测可用的六个适配器（四个纯 HTTP + 一个 OpenCode + 一个会话型）', () => {
+  assert.deepEqual(USAGE_ADAPTER_IDS, [
+    'deepseek',
+    'moonshot',
+    'commandcode',
+    'minimax',
+    'opencode',
+    'opendesign'
+  ])
 })
 
-test('未实现的两个（OpenCode / Kimi Coding）不在注册表里', () => {
+test('仍未实现的（Kimi Coding）不在注册表里', () => {
   // 厂商侧没有 API，不是实现遗漏；将来有了加一条记录即可
-  assert.equal(getUsageAdapter('opencode'), null)
   assert.equal(getUsageAdapter('kimi-coding'), null)
 })
 
 test('每个适配器都声明了端点与鉴权方式', () => {
   for (const id of USAGE_ADAPTER_IDS) {
     const a = getUsageAdapter(id)!
-    assert.ok(a.endpoints.length > 0, `${id} 没有端点`)
-    assert.ok(a.endpoints.some((e) => e.required), `${id} 没有必需端点`)
-    assert.ok(['bearer', 'x-api-key', 'none'].includes(a.auth), `${id} 鉴权方式非法`)
-    for (const e of a.endpoints) assert.ok(e.path.startsWith('/'), `${id} 端点路径要以 / 开头`)
+    assert.ok(['bearer', 'x-api-key', 'none', 'session-cookie'].includes(a.auth), `${id} 鉴权方式非法`)
+    if (a.kind === 'session-http') {
+      // 会话型：完整 URL，不用相对路径
+      const eps = a.sessionEndpoints ?? []
+      assert.ok(eps.length > 0, `${id} 没有会话端点`)
+      assert.ok(eps.some((e) => e.required), `${id} 没有必需端点`)
+      for (const e of eps) assert.ok(e.url.startsWith('https://'), `${id} 会话端点要是完整 URL`)
+      assert.equal(a.auth, 'session-cookie', `${id} 会话型必须用 session-cookie`)
+    } else {
+      assert.ok(a.endpoints.length > 0, `${id} 没有端点`)
+      assert.ok(a.endpoints.some((e) => e.required), `${id} 没有必需端点`)
+      for (const e of a.endpoints) assert.ok(e.path.startsWith('/'), `${id} 端点路径要以 / 开头`)
+    }
   }
 })
 
@@ -377,4 +392,198 @@ test('hasExhaustedWindow：推算出来的窗口不算数（避免误杀健康�
     ]
   }
   assert.equal(hasExhaustedWindow(snap), false)
+})
+// ---------------------------------------------------------------- OpenCode（实测形态）
+
+/** 实测响应（2026-11-08）：三个窗口都是百分比制，monthly 已打满 */
+const OPENCODE_USAGE = {
+  usage: {
+    rolling: { status: 'ok', percent: 0, resetsAt: '2026-11-08T19:00:00.000Z' },
+    weekly: { status: 'ok', percent: 42.5, resetsAt: '2026-11-14T00:00:00.000Z' },
+    monthly: { status: 'rate-limited', percent: 100, resetsAt: '2026-12-01T00:00:00.000Z' }
+  }
+}
+
+test('opencode：三个窗口按百分比映射（used = percent，total = 100）', () => {
+  const out = getUsageAdapter('opencode')!.parse({ usage: OPENCODE_USAGE })
+  const w = Object.fromEntries(out.windows!.map((x) => [x.key, x]))
+  assert.deepEqual(Object.keys(w).sort(), ['monthly', 'rolling', 'weekly'])
+
+  assert.equal(w.rolling!.used, 0)
+  assert.equal(w.rolling!.total, 100)
+  assert.equal(w.rolling!.remaining, 100)
+  assert.equal(w.rolling!.resetAt, '2026-11-08T19:00:00.000Z')
+
+  // 百分比不是 token 数：42.5% 已用 → 剩余 57.5%
+  assert.equal(w.weekly!.used, 42.5)
+  assert.equal(w.weekly!.total, 100)
+  assert.equal(w.weekly!.remaining, 57.5)
+  assert.equal(w.weekly!.exceeded, false)
+  // 会话窗口没有余额，不该凭空造一个
+  assert.equal(out.balances, undefined)
+})
+
+test('opencode：status=rate-limited 或 percent>=100 都判 exceeded', () => {
+  const out = getUsageAdapter('opencode')!.parse({ usage: OPENCODE_USAGE })
+  const w = Object.fromEntries(out.windows!.map((x) => [x.key, x]))
+  assert.equal(w.monthly!.exceeded, true)
+  assert.equal(w.monthly!.remaining, 0)
+
+  // percent 到 100 但 status 还是 ok：同样算打满（两个信号不总是同步）
+  const onlyPercent = getUsageAdapter('opencode')!.parse({
+    usage: { usage: { weekly: { status: 'ok', percent: 100, resetsAt: null } } }
+  })
+  assert.equal(onlyPercent.windows![0]!.exceeded, true)
+
+  // 反过来：status 说限流但 percent 没到 100，也要算
+  const onlyStatus = getUsageAdapter('opencode')!.parse({
+    usage: { usage: { rolling: { status: 'rate-limited', percent: 80 } } }
+  })
+  assert.equal(onlyStatus.windows![0]!.exceeded, true)
+  assert.equal(onlyStatus.windows![0]!.remaining, 20)
+})
+
+test('opencode：只有一个窗口有数据时也正常（缺字段跳过，不报错）', () => {
+  const out = getUsageAdapter('opencode')!.parse({
+    usage: { usage: { weekly: { status: 'ok', percent: 10, resetsAt: '2026-11-14T00:00:00.000Z' } } }
+  })
+  assert.equal(out.windows!.length, 1)
+  assert.equal(out.windows![0]!.key, 'weekly')
+})
+
+test('opencode：一个窗口都解析不出来时抛错（绝不静默给 0）', () => {
+  const adapter = getUsageAdapter('opencode')!
+  assert.throws(() => adapter.parse({}), /不是对象/)
+  assert.throws(() => adapter.parse({ usage: {} }), /没有 usage 字段/)
+  assert.throws(() => adapter.parse({ usage: { usage: {} } }), /用量窗口/)
+  // 字段在但没有 percent：也算「没有可解析的窗口」
+  assert.throws(
+    () => adapter.parse({ usage: { usage: { rolling: { status: 'ok' } } } }),
+    /用量窗口/
+  )
+})
+
+test('opencode：baseMode=base —— 用量端点在完整 base 之下', () => {
+  const a = getUsageAdapter('opencode')!
+  assert.equal(a.baseMode, 'base')
+  assert.equal(a.auth, 'bearer')
+  assert.equal(
+    endpointUrl('https://opencode.ai/zen/go/v1', '/usage', '', a.baseMode),
+    'https://opencode.ai/zen/go/v1/usage'
+  )
+  // 既有适配器仍是 origin 语义（回归）
+  assert.equal(
+    endpointUrl('https://api.moonshot.cn/v1', '/v1/users/me/balance'),
+    'https://api.moonshot.cn/v1/users/me/balance'
+  )
+})
+
+// ---------------------------------------------------------------- OpenDesign（网页会话）
+
+const OPENDESIGN_ME = {
+  wallet: { balanceUsd: 12.34 },
+  walletBreakdown: [
+    { kind: 'grant', expiresAt: '2026-12-01T00:00:00.000Z', amountUsd: 10 },
+    { kind: 'topup', expiresAt: '2027-01-01T00:00:00.000Z', amountUsd: 2.34 }
+  ],
+  designPlanWindows: [
+    {
+      kind: 'weekly',
+      windowStart: '2026-11-03T00:00:00.000Z',
+      resetsAt: '2026-11-10T00:00:00.000Z',
+      remainingCredits: 40,
+      limitCredits: 100
+    },
+    {
+      kind: 'daily',
+      windowStart: '2026-11-08T00:00:00.000Z',
+      resetsAt: '2026-11-09T00:00:00.000Z',
+      remainingCredits: 0,
+      limitCredits: 10
+    }
+  ],
+  plan: { id: 'design-pro', name: 'Design Pro', status: 'active' }
+}
+
+test('opendesign：wallet.balanceUsd → USD 余额，designPlanWindows → 窗口', () => {
+  const out = getUsageAdapter('opendesign')!.parse({ me: OPENDESIGN_ME })
+  assert.deepEqual(out.balances, [{ currency: 'USD', unit: 'currency', remaining: 12.34 }])
+
+  const w = Object.fromEntries(out.windows!.map((x) => [x.key, x]))
+  assert.deepEqual(Object.keys(w).sort(), ['daily', 'weekly'])
+  assert.equal(w.weekly!.used, 60)
+  assert.equal(w.weekly!.total, 100)
+  assert.equal(w.weekly!.remaining, 40)
+  assert.equal(w.weekly!.resetAt, '2026-11-10T00:00:00.000Z')
+  assert.equal(w.weekly!.exceeded, false)
+  // 真实窗口不是推算的
+  assert.equal(w.weekly!.inferred, undefined)
+})
+
+test('opendesign：remainingCredits=0 → exceeded', () => {
+  const out = getUsageAdapter('opendesign')!.parse({ me: OPENDESIGN_ME })
+  const w = Object.fromEntries(out.windows!.map((x) => [x.key, x]))
+  assert.equal(w.daily!.exceeded, true)
+  assert.equal(w.daily!.used, 10)
+  assert.equal(w.daily!.remaining, 0)
+})
+
+test('opendesign：designPlanWindows 为空时才用 walletBreakdown 推算（标 inferred）', () => {
+  const out = getUsageAdapter('opendesign')!.parse({
+    me: { wallet: { balanceUsd: 5 }, walletBreakdown: OPENDESIGN_ME.walletBreakdown }
+  })
+  assert.equal(out.windows!.length, 2)
+  assert.ok(out.windows!.every((w) => w.inferred === true))
+  const w = Object.fromEntries(out.windows!.map((x) => [x.key, x]))
+  assert.equal(w['wallet:grant']!.resetAt, '2026-12-01T00:00:00.000Z')
+  assert.equal(w['wallet:grant']!.remaining, 10)
+  assert.ok(out.warnings!.some((x) => x.includes('推算')))
+
+  // 真实窗口存在时**不**推算：有 designPlanWindows 就只认它
+  const withWindows = getUsageAdapter('opendesign')!.parse({ me: OPENDESIGN_ME })
+  assert.ok(withWindows.windows!.every((w) => w.inferred !== true))
+})
+
+test('opendesign：plan 既接受对象也接受字符串', () => {
+  const asObject = getUsageAdapter('opendesign')!.parse({ me: OPENDESIGN_ME })
+  assert.deepEqual(asObject.plan, { id: 'design-pro', name: 'Design Pro', status: 'active' })
+
+  const asString = getUsageAdapter('opendesign')!.parse({
+    me: { plan: 'Design Pro', wallet: { balanceUsd: 1 } }
+  })
+  assert.equal(asString.plan!.name, 'Design Pro')
+})
+
+test('opendesign：字段缺失容错，但全部取不到时抛错', () => {
+  const adapter = getUsageAdapter('opendesign')!
+  // 只有余额：可用，只是没有窗口
+  const onlyWallet = adapter.parse({ me: { wallet: { balanceUsd: 1 } } })
+  assert.equal(onlyWallet.windows!.length, 0)
+  assert.equal(onlyWallet.balances!.length, 1)
+
+  // 只有套餐：也算拿到了东西
+  assert.equal(adapter.parse({ me: { plan: 'Free' } }).plan!.name, 'Free')
+
+  // 一无所有 → 抛错（绝不静默给 0）
+  assert.throws(() => adapter.parse({}), /不是对象/)
+  assert.throws(() => adapter.parse({ me: {} }), /既没有/)
+  assert.throws(() => adapter.parse({ me: { wallet: {} } }), /既没有/)
+})
+
+test('opendesign：响应套在 data / user 里也能解开', () => {
+  const out = getUsageAdapter('opendesign')!.parse({
+    me: { data: { wallet: { balanceUsd: 7 } } }
+  })
+  assert.equal(out.balances![0]!.remaining, 7)
+})
+
+test('opendesign：声明为会话型（完整 URL + session-cookie）', () => {
+  const a = getUsageAdapter('opendesign')!
+  assert.equal(a.kind, 'session-http')
+  assert.equal(a.auth, 'session-cookie')
+  assert.deepEqual(a.sessionEndpoints, [
+    { key: 'me', url: 'https://amr-api.open-design.ai/api/v1/me', required: true }
+  ])
+  // 会话型不该同时声明相对路径端点（否则两条链路会被混淆）
+  assert.equal(a.endpoints.length, 0)
 })

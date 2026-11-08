@@ -187,6 +187,16 @@ async function smokeRedisGet(key) {
 
 const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
 /**
+ * 网页会话型适配器（OpenDesign）的伪 Cookie。
+ *
+ * 伪上游只在 Cookie 里出现 WEB_SESSION_COOKIE_VALUE 时才回 200，
+ * 否则回 401 unauthenticated —— 与真实接口的行为一致（API Key 打过去就是 401）。
+ * 值里带随机串：断言「接口不回传 Cookie 值」时才有意义。
+ */
+const WEB_SESSION_COOKIE_NAME = 'od_session'
+const WEB_SESSION_COOKIE_VALUE = `ods-ok-${randomBytes(8).toString('hex')}`
+const WEB_SESSION_COOKIE_BAD = `ods-bad-${randomBytes(8).toString('hex')}`
+/**
  * 触发「额度用尽」的伪上游密钥。
  *
  * 网关把它当普通上游 Key 加密存储；伪上游识别它并返回
@@ -453,6 +463,53 @@ function startMockUpstream() {
           current_weekly_total_count: 15000,
           current_weekly_usage_count: 14000, end_time: 1774605600000 }],
           base_resp: { status_code: 0, status_msg: 'success' } }))
+        return
+      }
+      /*
+       * OpenCode Zen：用量端点在**完整 base** 之下（/zen/go/v1/usage），
+       * 三个窗口都是百分比制，monthly 实测就是 rate-limited / 100%。
+       */
+      if (url.endsWith('/zen/go/v1/usage')) {
+        if ((req.headers.authorization ?? '') !== `Bearer ${UPSTREAM_KEY}`) {
+          res.writeHead(401, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { message: 'bad key' } }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          usage: {
+            rolling: { status: 'ok', percent: 0, resetsAt: '2026-11-08T19:00:00.000Z' },
+            weekly: { status: 'ok', percent: 42.5, resetsAt: '2026-11-14T00:00:00.000Z' },
+            monthly: { status: 'rate-limited', percent: 100, resetsAt: '2026-12-01T00:00:00.000Z' }
+          }
+        }))
+        return
+      }
+      /*
+       * OpenDesign：网页会话型接口。**只认 Cookie** —— 用 API Key 打过来
+       * 就是这个 401（实测行为），冒烟要把它固定住。
+       */
+      if (url.endsWith('/api/v1/me')) {
+        const cookieHeader = req.headers.cookie ?? ''
+        if (!cookieHeader.includes(WEB_SESSION_COOKIE_VALUE)) {
+          res.writeHead(401, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'unauthenticated' }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          wallet: { balanceUsd: 12.34 },
+          walletBreakdown: [
+            { kind: 'grant', expiresAt: '2026-12-01T00:00:00.000Z', amountUsd: 10 }
+          ],
+          designPlanWindows: [
+            { kind: 'weekly', windowStart: '2026-11-03T00:00:00.000Z',
+              resetsAt: '2026-11-10T00:00:00.000Z', remainingCredits: 40, limitCredits: 100 },
+            { kind: 'daily', windowStart: '2026-11-08T00:00:00.000Z',
+              resetsAt: '2026-11-09T00:00:00.000Z', remainingCredits: 0, limitCredits: 10 }
+          ],
+          plan: { id: 'design-pro', name: 'Design Pro', status: 'active' }
+        }))
         return
       }
 
@@ -3660,12 +3717,31 @@ async function main() {
     check('可列出余额适配器（供渠道弹窗选择）', () => {
       assert.equal(usAdapters.status, 200)
       const ids = usAdapters.body.adapters.map((a) => a.id)
-      assert.deepEqual(ids.sort(), ['commandcode', 'deepseek', 'minimax', 'moonshot'])
+      assert.deepEqual(ids.sort(), [
+        'commandcode',
+        'deepseek',
+        'minimax',
+        'moonshot',
+        'opencode',
+        'opendesign'
+      ])
       assert.ok(usAdapters.body.adapters.every((a) => a.note), '适配器应带提示文案')
     })
-    check('未实现的两个厂商不在清单里（厂商侧无 API）', () => {
+    check('仍未实现的厂商不在清单里（厂商侧无 API）', () => {
       const ids = usAdapters.body.adapters.map((a) => a.id)
-      assert.ok(!ids.includes('opencode') && !ids.includes('kimi-coding'))
+      assert.ok(!ids.includes('kimi-coding'))
+    })
+    check('清单标出会话型适配器（前端据此显示「粘贴 Cookie」入口）', () => {
+      const byId = Object.fromEntries(usAdapters.body.adapters.map((a) => [a.id, a]))
+      assert.equal(byId.opendesign.kind, 'session-http')
+      assert.equal(byId.opendesign.auth, 'session-cookie')
+      assert.deepEqual(byId.opendesign.sessionEndpoints, [
+        'https://amr-api.open-design.ai/api/v1/me'
+      ])
+      // 纯 HTTP 适配器的形态不变（向后兼容）
+      assert.equal(byId.deepseek.kind, 'http')
+      assert.equal(byId.deepseek.auth, 'bearer')
+      assert.deepEqual(byId.deepseek.sessionEndpoints, [])
     })
 
     // 造四个渠道，各配一个适配器（baseUrl 用伪上游，适配器按 origin 拼路径）
@@ -3817,6 +3893,205 @@ async function main() {
     for (const id of Object.values(usageChannels)) {
       await apiCall('DELETE', `/api/channels/${id}`)
     }
+    // ---------------------------------------------------------- OpenCode / 会话型适配器
+    /*
+     * 两个新形态各钉几条：
+     *   OpenCode   —— 纯 HTTP，端点挂在**完整 base** 之下（/zen/go/v1/usage），百分比制
+     *   OpenDesign —— 会话型，凭据是粘贴的 Cookie；无会话 / 会话失效 / 有效 三条路径
+     *
+     * 全程不连真站：伪上游（MOCK）已有对应路由，会话型的域名用 usageUrl 覆盖指过来。
+     */
+    section('㉚b OpenCode 官方适配器 + 会话型适配器（OpenDesign）')
+
+    const ocChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-us-opencode-${RUN}`,
+      // 关键：base 要带路径，用量端点才拼得对（origin 会得到 /usage，是错的）
+      baseUrl: `${MOCK}/zen/go/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      usageAdapter: 'opencode',
+      priority: 900
+    })
+    check('OpenCode：渠道可保存 opencode 适配器', () => assert.equal(ocChannel.status, 201))
+    const ocId = ocChannel.body.channel.id
+    const ocAccId = ocChannel.body.channel.accounts[0].id
+
+    const ocUsage = await apiCall('GET', `/api/channels/${ocId}/usage?refresh=1`)
+    check('OpenCode：三个窗口按百分比解析（rolling / weekly / monthly）', () => {
+      assert.equal(ocUsage.status, 200)
+      assert.equal(ocUsage.body.ok, true, JSON.stringify(ocUsage.body.error))
+      const w = Object.fromEntries(ocUsage.body.windows.map((x) => [x.key, x]))
+      assert.deepEqual(Object.keys(w).sort(), ['monthly', 'rolling', 'weekly'])
+      assert.equal(w.rolling.used, 0)
+      assert.equal(w.rolling.total, 100)
+      assert.equal(w.rolling.remaining, 100)
+      assert.equal(w.weekly.used, 42.5)
+      assert.equal(w.weekly.remaining, 57.5)
+      assert.equal(w.weekly.resetAt, '2026-11-14T00:00:00.000Z')
+      assert.equal(w.monthly.used, 100)
+      assert.equal(w.monthly.remaining, 0)
+    })
+    check('OpenCode：percent=100 / rate-limited 判为已打满', () => {
+      const w = Object.fromEntries(ocUsage.body.windows.map((x) => [x.key, x]))
+      assert.equal(w.monthly.exceeded, true)
+      assert.equal(w.rolling.exceeded, false)
+      // 打满窗口要写回账户（skipExhaustedWindows 依赖这一列）
+      assert.equal(ocUsage.body.accounts[0].accountId, ocAccId)
+    })
+    // check() 只接受同步回调 —— 需要读库的断言先 await，回调里只做比较
+    const ocWindowRows = await smokeQuery(
+      'select window_exhausted from channel_accounts where id = $1',
+      [ocAccId]
+    )
+    check('OpenCode：月度打满被写回账户（windowExhausted）', () =>
+      assert.equal(ocWindowRows[0].window_exhausted, true)
+    )
+
+    // ---- 会话型：建渠道 + 账户，先不粘贴 Cookie
+    const odChannel = await apiCall('POST', '/api/channels', {
+      name: `smoke-us-opendesign-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      usageAdapter: 'opendesign',
+      // 会话端点的域名写死在适配器里；测试用 usageUrl 把它指到伪上游
+      usageUrl: MOCK,
+      priority: 900
+    })
+    check('OpenDesign：会话型适配器可保存到渠道', () => assert.equal(odChannel.status, 201))
+    const odId = odChannel.body.channel.id
+    const odAccId = odChannel.body.channel.accounts[0].id
+
+    const odNoSession = await apiCall('GET', `/api/channels/${odId}/usage?refresh=1`)
+    check('会话型：没有 Cookie 时报错并提示粘贴（绝不静默给 0）', () => {
+      assert.equal(odNoSession.status, 200)
+      assert.equal(odNoSession.body.ok, false)
+      assert.match(String(odNoSession.body.error), /网页会话/)
+      assert.equal(odNoSession.body.windows.length, 0)
+    })
+
+    const odStatusEmpty = await apiCall(
+      'GET',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`
+    )
+    check('会话型：GET web-session 初始为「不存在」', () => {
+      assert.equal(odStatusEmpty.status, 200)
+      assert.equal(odStatusEmpty.body.exists, false)
+      assert.deepEqual(odStatusEmpty.body.cookieNames, [])
+    })
+
+    // 无效 Cookie：伪上游回 401 → 必须说「已失效」并落 session_expired
+    const badPaste = await apiCall(
+      'POST',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`,
+      { cookie: `${WEB_SESSION_COOKIE_NAME}=${WEB_SESSION_COOKIE_BAD}` }
+    )
+    check('会话型：无效 Cookie 试跑报「已失效」', () => {
+      assert.equal(badPaste.status, 200)
+      assert.equal(badPaste.body.ok, false)
+      assert.match(String(badPaste.body.error), /已失效/)
+    })
+    const badStatus = await apiCall(
+      'GET',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`
+    )
+    check('会话型：失败原因落到 last_error=session_expired', () => {
+      assert.equal(badStatus.body.exists, true)
+      assert.equal(badStatus.body.lastError, 'session_expired')
+      assert.equal(badStatus.body.lastOkAt, null)
+    })
+
+    // 有效 Cookie：解析出余额 + 两个窗口 + 套餐
+    const goodCookie = `${WEB_SESSION_COOKIE_NAME}=${WEB_SESSION_COOKIE_VALUE}`
+    const goodPaste = await apiCall(
+      'POST',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`,
+      { cookie: goodCookie }
+    )
+    check('会话型：有效 Cookie 试跑成功并当场返回快照', () => {
+      assert.equal(goodPaste.status, 200)
+      assert.equal(goodPaste.body.ok, true, JSON.stringify(goodPaste.body.error))
+      assert.equal(goodPaste.body.status.lastError, '')
+      assert.ok(goodPaste.body.status.lastOkAt, '试跑成功要写 last_ok_at')
+      const mine = goodPaste.body.snapshot.accounts.find((a) => a.accountId === odAccId)
+      assert.ok(mine && mine.ok, JSON.stringify(mine?.error))
+    })
+    check('OpenDesign：wallet.balanceUsd 与 designPlanWindows 映射正确', () => {
+      const mine = goodPaste.body.snapshot.accounts.find((a) => a.accountId === odAccId)
+      assert.deepEqual(mine.balances, [{ currency: 'USD', unit: 'currency', remaining: 12.34 }])
+      const w = Object.fromEntries(mine.windows.map((x) => [x.key, x]))
+      assert.equal(w.weekly.used, 60)
+      assert.equal(w.weekly.total, 100)
+      assert.equal(w.weekly.remaining, 40)
+      assert.equal(w.daily.exceeded, true)
+      assert.equal(mine.plan.id, 'design-pro')
+    })
+
+    const odUsage = await apiCall('GET', `/api/channels/${odId}/usage`)
+    check('会话型：会话有效后普通读取也成功（凭证已持久化）', () => {
+      assert.equal(odUsage.body.ok, true, JSON.stringify(odUsage.body.error))
+      assert.equal(odUsage.body.balances[0].remaining, 12.34)
+    })
+
+    const odStatus = await apiCall(
+      'GET',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`
+    )
+    check('会话型：GET web-session 只回 Cookie 名，绝不回值', () => {
+      assert.equal(odStatus.status, 200)
+      assert.equal(odStatus.body.exists, true)
+      assert.deepEqual(odStatus.body.cookieNames, [WEB_SESSION_COOKIE_NAME])
+      // 整个响应体（含嵌套）都不能出现 Cookie 值
+      assert.ok(!odStatus.text.includes(WEB_SESSION_COOKIE_VALUE), '响应泄漏了 Cookie 值')
+      // 也不该出现密文前缀
+      assert.ok(!odStatus.text.includes('v1:'), '响应泄漏了密文')
+    })
+    const webSessionAudits = await smokeQuery(
+      `select detail from audit_events
+         where action = 'channel_account.web_session.save'
+         order by ts desc limit 1`
+    )
+    check('会话型：审计只记 Cookie 名，不记值', () => {
+      const detail = webSessionAudits[0].detail
+      assert.deepEqual(detail.cookieNames, [WEB_SESSION_COOKIE_NAME])
+      assert.ok(!JSON.stringify(detail).includes(WEB_SESSION_COOKIE_VALUE))
+    })
+
+    // 校验：空 / 非法格式被拒
+    const emptyPaste = await apiCall(
+      'POST',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`,
+      { cookie: '   ' }
+    )
+    check('会话型：空 Cookie 被拒（400）', () => assert.equal(emptyPaste.status, 400))
+    const malformedPaste = await apiCall(
+      'POST',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`,
+      { cookie: 'not-a-cookie-pair' }
+    )
+    check('会话型：非 name=value 的 Cookie 被拒（400）', () => {
+      assert.equal(malformedPaste.status, 400)
+      assert.match(String(malformedPaste.body.error.message), /name=value/)
+    })
+
+    const cleared = await apiCall(
+      'DELETE',
+      `/api/channels/${odId}/accounts/${odAccId}/web-session`
+    )
+    check('会话型：DELETE 清除会话', () => {
+      assert.equal(cleared.status, 200)
+      assert.equal(cleared.body.status.exists, false)
+    })
+    const afterClear = await apiCall('GET', `/api/channels/${odId}/usage?refresh=1`)
+    check('会话型：清除后再读又提示粘贴 Cookie', () => {
+      assert.equal(afterClear.body.ok, false)
+      assert.match(String(afterClear.body.error), /网页会话/)
+    })
+
+    // 清理
+    await apiCall('DELETE', `/api/channels/${ocId}`)
+    await apiCall('DELETE', `/api/channels/${odId}`)
+
 
     // ---------------------------------------------------------- 会话与 refresh token
     section('㉛ 渠道多上游账户（结构 + 选路 + 操作）')
