@@ -260,7 +260,44 @@ function onHash(): void {
 
 window.addEventListener('hashchange', onHash)
 
+/*
+ * 诊断模式：?diag=1
+ *
+ * 线上"点了没反应"最难查的一点是：我们看不到用户的浏览器。
+ * 打开后会在右上角挂一条小浮条，实时显示「最后一次点击命中的元素」，
+ * 并把未捕获异常 / Promise 拒绝也显示出来：
+ *   - 点按钮时浮条完全没有更新 → 点击根本没到达页面（被某个浮层挡住）
+ *   - 浮条显示的是别的元素 → 命中测试被覆盖物拦了
+ *   - 浮条显示按钮但没弹窗 → 处理函数内部出错（浮条会同时显示异常）
+ * 只在带参数时启用，正常访问零开销。
+ */
+const diagOn = ref(false)
+const diagText = ref('')
+
+function initDiag(): void {
+  if (!new URLSearchParams(location.search).has('diag')) return
+  diagOn.value = true
+  document.addEventListener(
+    'click',
+    (event) => {
+      const el = event.target as HTMLElement | null
+      const label = (el?.innerText || el?.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()
+      diagText.value = 'click → ' + (el?.tagName?.toLowerCase() ?? '?') + ' .' +
+        String(el?.className ?? '').split(' ').filter(Boolean).slice(0, 2).join('.') +
+        (label ? ' 「' + label.slice(0, 24) + '」' : '')
+    },
+    true
+  )
+  window.addEventListener('error', (event) => {
+    diagText.value = 'JS error → ' + String(event.message).slice(0, 120)
+  })
+  window.addEventListener('unhandledrejection', (event) => {
+    diagText.value = 'Promise → ' + String(event.reason).slice(0, 120)
+  })
+}
+
 onMounted(async () => {
+  initDiag()
   // 与登录态并行拉取：登录页也要显示网关名称
   void loadMeta()
   try {
@@ -477,4 +514,10 @@ function go(id: string): void {
 
   <AboutPage :open="aboutOpen" @close="closeAbout" />
   <ToastHost />
+
+  <!-- 诊断浮条：仅 ?diag=1 时出现，见 initDiag() 的注释 -->
+  <div v-if="diagOn" class="diag-bar" role="status" aria-live="polite">
+    <span class="diag-bar-tag">DIAG</span>
+    <span class="diag-bar-text">{{ diagText || '等待点击…' }}</span>
+  </div>
 </template>
