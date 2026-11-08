@@ -176,6 +176,9 @@ const routeAllowed = computed(() => {
 /** 左上角副标题：设置了网关名称就显示它，否则回落到默认文案 */
 const brandSub = computed(() => meta.gatewayName.trim() || t('nav.appSub'))
 
+/** 构建指纹（由 vite define 注入）：页脚显示，用来确认浏览器跑的是哪次构建 */
+const buildId = __BUILD_ID__
+
 /*
  * 侧栏页脚的两个外链：仓库与许可证。
  *
@@ -367,6 +370,11 @@ function go(id: string): void {
           <Github :size="12" :stroke-width="1.7" aria-hidden="true" />
           <span class="nav-foot-text">{{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template></span>
         </a>
+        <!--
+          构建指纹：排查"改了没生效"时，看一眼它就知道浏览器是不是还在跑旧产物。
+          与导航链接分开一行，避免把仓库链接的文字撑长。
+        -->
+        <div class="nav-foot-text" :title="'build ' + buildId">build {{ buildId }}</div>
         <a
           class="nav-foot-link"
           :href="LICENSE_URL"

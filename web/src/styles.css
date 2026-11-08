@@ -2075,6 +2075,9 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .pinfo-tip {
   position: fixed;
   z-index: 260;
+  /* 说明气泡永远不该拦截点击：它只是"跟着光标/借位显示"的浮层，
+     挡住下面的按钮时会表现成"点了没反应"。 */
+  pointer-events: none;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: 8px;

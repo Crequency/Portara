@@ -316,14 +316,20 @@ async function removeAccount(a: ChannelAccount): Promise<void> {
   }
 }
 
+/** 正在取明文的账户 id：按钮显示"加载中"，避免慢请求期间看起来像点击没反应 */
+const revealingId = ref('')
+
 async function revealAccountKey(a: ChannelAccount): Promise<void> {
   const ch = channel.value
-  if (!ch) return
+  if (!ch || revealingId.value) return
+  revealingId.value = a.id
   try {
     const r = await api.get<{ key: string }>(`/api/channels/${ch.id}/accounts/${a.id}/reveal`)
     accountReveal.value = { name: a.name, key: r.key }
   } catch (err) {
     toastError(err, t('channels.revealKeyFailed'))
+  } finally {
+    revealingId.value = ''
   }
 }
 
@@ -762,7 +768,7 @@ onMounted(loadChannel)
           {{ t('channels.accounts') }}
           <span class="tag">{{ channel.accounts.length }}</span>
         </div>
-        <button class="btn btn-sm" @click="openAccountForm()">
+        <button type="button" class="btn btn-sm" @click="openAccountForm()">
           ＋ {{ t('channels.addAccount') }}
         </button>
       </div>
@@ -790,10 +796,16 @@ onMounted(loadChannel)
             {{ t('channels.accountPriority', { p: a.priority, w: a.weight }) }}
           </span>
           <span class="spacer" />
-          <button class="btn btn-sm" :disabled="!a.hasKey" @click="revealAccountKey(a)">
-            {{ t('channels.revealKey') }}
+          <button
+            type="button"
+            class="btn btn-sm"
+            :disabled="!a.hasKey || revealingId === a.id"
+            :title="a.hasKey ? '' : t('channels.accountNoKey')"
+            @click="revealAccountKey(a)"
+          >
+            {{ revealingId === a.id ? t('common.loading') : t('channels.revealKey') }}
           </button>
-          <button class="btn btn-sm" @click="openAccountForm(a)">{{ t('common.edit') }}</button>
+          <button type="button" class="btn btn-sm" @click="openAccountForm(a)">{{ t('common.edit') }}</button>
           <button
             v-if="cooldownLeft(a) > 0 || quotaCooldownLeft(a) > 0"
             class="btn btn-sm"
