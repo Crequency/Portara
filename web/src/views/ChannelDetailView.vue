@@ -262,7 +262,17 @@ function cooldownText(secs: number): string {
 function openAccountForm(account?: ChannelAccount): void {
   // 诊断钩子：只在 ?diag=1 时有输出（见 diag.ts），用来区分"处理函数没跑"与"跑了但没渲染"
   setDiagLine('handler openAccountForm → ' + (account ? 'edit ' + account.name : 'new'))
-  setTimeout(() => setDiagDetail('accountForm=' + (accountForm.value ? 'set' : 'null')), 60)
+  // 两个时间点回读：60ms 看状态是否置位，1500ms 看 DOM 里到底有没有弹窗
+  setTimeout(
+    () => setDiagDetail('60ms: accountForm=' + (accountForm.value ? 'set' : 'null') +
+      ' overlays=' + document.querySelectorAll('.overlay').length),
+    60
+  )
+  setTimeout(
+    () => setDiagDetail('1500ms: accountForm=' + (accountForm.value ? 'set' : 'null') +
+      ' overlays=' + document.querySelectorAll('.overlay').length),
+    1500
+  )
   accountForm.value = account
     ? {
         id: account.id,
@@ -328,10 +338,17 @@ async function revealAccountKey(a: ChannelAccount): Promise<void> {
   const ch = channel.value
   if (!ch || revealingId.value) return
   revealingId.value = a.id
+  setDiagDetail('reveal: 请求中…')
   try {
     const r = await api.get<{ key: string }>(`/api/channels/${ch.id}/accounts/${a.id}/reveal`)
     accountReveal.value = { name: a.name, key: r.key }
+    setTimeout(
+      () => setDiagDetail('reveal 成功；1500ms overlays=' + document.querySelectorAll('.overlay').length),
+      1500
+    )
+    setDiagDetail('reveal 成功；accountReveal=' + (accountReveal.value ? 'set' : 'null'))
   } catch (err) {
+    setDiagDetail('reveal 失败：' + errorText(err, 'unknown').slice(0, 120))
     toastError(err, t('channels.revealKeyFailed'))
   } finally {
     revealingId.value = ''

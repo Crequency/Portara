@@ -274,6 +274,12 @@ a { color: var(--accent); text-decoration: none; }
 
 .nav-spacer { flex: 1; }
 
+.nav-foot-build {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
 .nav-foot {
   border-top: 1px solid var(--border);
   padding: 10px 8px 0;

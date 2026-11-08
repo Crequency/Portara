@@ -425,13 +425,12 @@ function go(id: string): void {
           rel="noopener noreferrer"
         >
           <Github :size="12" :stroke-width="1.7" aria-hidden="true" />
-          <span class="nav-foot-text">{{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template></span>
+          <span class="nav-foot-text">
+            {{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template>
+            <!-- 构建指纹：排查"改了没生效"时一眼确认浏览器是否还在跑旧产物 -->
+            <span class="nav-foot-build" :title="'build ' + buildId"> · {{ buildId }}</span>
+          </span>
         </a>
-        <!--
-          构建指纹：排查"改了没生效"时，看一眼它就知道浏览器是不是还在跑旧产物。
-          与导航链接分开一行，避免把仓库链接的文字撑长。
-        -->
-        <div class="nav-foot-text" :title="'build ' + buildId">build {{ buildId }}</div>
         <a
           class="nav-foot-link"
           :href="LICENSE_URL"
