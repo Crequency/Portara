@@ -672,14 +672,31 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           res = attempt
           break
         }
-        if (!isRetriableStatus(attempt.status)) {
-          // 换号也没用：把上游原文原样交给后续处理
-          res = attempt
+        /*
+         * 先读原文，再判断「值不值得换号」。
+         *
+         * 必须这样排序的原因：部分上游把「余额/额度用尽」报成 **400**
+         * （CommandCode："You have insufficient credits to make this request"），
+         * 而 400 在 isRetriableStatus 里是不可重试的。若先按状态码短路，
+         * 这类上游就会：
+         *   ① 不换号/不换渠道 —— 把 400 原文透传给客户端，用户看到「额度已用尽」；
+         *   ② 不冻结坏账户 —— 下一次请求继续打同一个号，反复复现。
+         * 所以额度用尽的判定必须先于「不可重试」的短路。
+         */
+        const text = await attempt.text()
+        const quotaHit = isQuotaExhaustionResponse(attempt.status, text)
+        if (!quotaHit && !isRetriableStatus(attempt.status)) {
+          // 换号也没用：把上游原文原样交给后续处理（body 已读走，重建响应）
+          res = new Response(text, {
+            status: attempt.status,
+            headers: {
+              'content-type': attempt.headers.get('content-type') ?? 'application/json'
+            }
+          })
           break
         }
 
-        // 可重试：留下原文（全部失败时给客户端看这个，比网关自造的 502 有用）
-        const text = await attempt.text()
+        // 可重试（或额度用尽）：留下原文给后续失败兜底
         const attemptLatencyMs = Date.now() - attemptStartedAt
         lastFailure = `上游 ${attempt.status}：${text.slice(0, 200)}`
         const retryAfter = Number(attempt.headers.get('retry-after'))
@@ -696,7 +713,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
          *   ② 上游明确给了 Retry-After，且比设置值更大 —— 尊重上游
          * 这样"最近一次失败的上游默认 1 小时不路由"就是可预期的默认行为。
          */
-        if (isQuotaExhaustionResponse(attempt.status, text)) {
+        if (quotaHit) {
           /*
            * 上游明确说「额度用尽」→ 阶梯冷冻，而**不是**通用失败冷却。
            *

@@ -194,6 +194,14 @@ const UPSTREAM_KEY = `sk-upstream-${randomBytes(8).toString('hex')}`
  */
 const QUOTA_ERROR_KEY = 'sk-quota-error-account'
 /**
+ * 400 + "insufficient credits"。
+ *
+ * CommandCode 实际上游就是把余额不足报成 400（而不是 402/429），
+ * 400 在路由层默认不可重试 —— 曾经因此既不换号也不冻结账户，
+ * 用户反复看到"额度已用尽"。这条 key 用来钉死该场景。
+ */
+const QUOTA_400_KEY = 'sk-quota-400-account'
+/**
  * 稳定返回 500 的伪上游密钥。
  *
  * 用于验证「可重试的上游失败 → 换号 → 最终成功」会写 attempt_failed +
@@ -341,6 +349,7 @@ function startMockUpstream() {
       const authed =
         authedKey(UPSTREAM_KEY) ||
         authedKey(QUOTA_ERROR_KEY) ||
+        authedKey(QUOTA_400_KEY) ||
         authedKey(QUOTA_RESET_KEY) ||
         authedKey(QUOTA_RESET_FAR_KEY) ||
         authedKey(RATE_LIMIT_KEY) ||
@@ -562,6 +571,23 @@ function startMockUpstream() {
           )
           return
         }
+        /*
+         * 真实场景（CommandCode）：余额不足返回 **400**，而不是 402/429。
+         * 这条分支专门验证"400 命中额度关键词也要换号 + 冻结账户"。
+         */
+        if (authedKey(QUOTA_400_KEY)) {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              error: {
+                message:
+                  'You have insufficient credits to make this request. Please purchase more credits.'
+              }
+            })
+          )
+          return
+        }
+
         // 供「不可重试错误不该换号」的断言使用：这类错误换账户也一样失败
         if (String(body.model ?? '').includes('bad-request')) {
           res.writeHead(400, { 'content-type': 'application/json' })
@@ -6660,6 +6686,52 @@ async function main() {
       assert.equal(event.statusCode, 429)
       assert.match(event.reason, /level=1/)
       assert.match(event.reason, /until=/)
+    })
+
+    // ---- 场景三：上游把额度用尽报成 400（CommandCode）→ 必须换号并冷冻 ----
+    const bad400Channel = await apiCall('POST', '/api/channels', {
+      name: `smoke-lb-400-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 962
+    })
+    check('400 额度场景：创建测试渠道', () => assert.equal(bad400Channel.status, 201))
+    const bad400ChannelId = bad400Channel.body.channel.id
+    await apiCall('POST', `/api/channels/${bad400ChannelId}/accounts`, {
+      name: `400账户-${RUN}`,
+      apiKey: QUOTA_400_KEY,
+      priority: 1,
+      weight: 1
+    })
+    await apiCall('POST', `/api/channels/${bad400ChannelId}/accounts`, {
+      name: `400备用-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 100,
+      weight: 1
+    })
+    const bad400Alias = `smoke-lb-400-${RUN}/model`
+    await apiCall('POST', '/api/model-routes', {
+      alias: bad400Alias,
+      targets: [{ channelId: bad400ChannelId, upstreamModel: MOCK_MODEL }]
+    })
+    const bad400Hit = await proxyCall(
+      '/v1/chat/completions',
+      { model: bad400Alias, messages: [{ role: 'user', content: '400 quota' }] },
+      lbSecret
+    )
+    check('400 额度场景：400 insufficient credits 也会换号成功（不再透传）', () => {
+      assert.equal(bad400Hit.status, 200)
+      assert.equal(bad400Hit.body?.error ?? null, null)
+    })
+    const bad400Accounts = await apiCall('GET', `/api/channels/${bad400ChannelId}/accounts`)
+    const bad400Account = bad400Accounts.body.accounts.find(
+      (a) => a.name === `400账户-${RUN}`
+    )
+    check('400 额度场景：400 账户被判定额度用尽并冷冻', () => {
+      assert.ok(bad400Account, '找不到 400 账户')
+      assert.ok(bad400Account.quotaCooldownLevel >= 1, '没有进入阶梯冷冻')
+      assert.ok(bad400Account.quotaCooldownUntil, '缺少 quotaCooldownUntil')
     })
 
     // ---- 权限与过滤 ----

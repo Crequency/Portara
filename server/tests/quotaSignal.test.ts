@@ -114,9 +114,25 @@ test('识别：常见英文与中文关键词', () => {
   }
 })
 
-test('误判防护：非 402/429 一律不识别（403 也排除）', () => {
+test('识别：400 + insufficient credits（CommandCode 的真实形态）', () => {
+  const body =
+    '{"error":{"message":"You have insufficient credits to make this request. Please purchase more credits."}}'
+  assert.equal(isQuotaExhaustionResponse(400, body), true)
+})
+
+test('误判防护：400 只有命中额度关键词才算，普通参数错误不算', () => {
+  assert.equal(
+    isQuotaExhaustionResponse(
+      400,
+      '{"error":{"message":"invalid request: messages is required","type":"invalid_request_error"}}'
+    ),
+    false
+  )
+  assert.equal(isQuotaExhaustionResponse(400, '{"error":{"message":"bad model"}}'), false)
+})
+
+test('误判防护：其它状态码一律不识别（401/403/500/200）', () => {
   const quotaBody = '{"error":{"code":"insufficient_quota"}}'
-  assert.equal(isQuotaExhaustionResponse(400, quotaBody), false)
   assert.equal(isQuotaExhaustionResponse(401, quotaBody), false)
   assert.equal(isQuotaExhaustionResponse(403, quotaBody), false)
   assert.equal(isQuotaExhaustionResponse(500, quotaBody), false)
