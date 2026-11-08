@@ -167,13 +167,26 @@ export function parseWebSessionInput(input: string): WebSessionBundle {
       const parsed = JSON.parse(text) as unknown
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const o = parsed as Record<string, unknown>
-        // ① 控制台脚本包
+        // ① 控制台脚本包（v1 只有 me；v2 还带限额窗口与钱包余额）
         if (typeof o.portara === 'string' && o.portara.includes('opendesign')) {
           const cookieRaw = typeof o.cookie === 'string' ? o.cookie : ''
+          /*
+           * v2 的包结构是「三接口合并」：
+           *   me               → 账户与套餐（plan / balanceUsd）
+           *   codingPlanUsage  → 限额窗口（5h / 7d；Go 套餐没有月度窗口）
+           *   walletBalance    → 钱包余额（可选）
+           * 统一收敛成快照对象，adapter 的 parse 只认这一个形状。
+           */
           const me = o.me ?? o.snapshot ?? null
+          const snapshot = {
+            me,
+            codingPlanUsage: o.codingPlanUsage ?? null,
+            walletBalance: o.walletBalance ?? null,
+            workspaceId: o.workspaceId ?? null
+          }
           return {
             cookie: cookieRaw ? normalizeCookieInput(cookieRaw) : '',
-            snapshot: me,
+            snapshot,
             snapshotAt: typeof o.capturedAt === 'string' ? o.capturedAt : null
           }
         }

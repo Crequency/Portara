@@ -350,9 +350,46 @@ async function fetchAccountSnapshot(
       }
       if (r.required) {
         await markSessionResult(account.id, false, r.error ?? 'failed').catch(() => undefined)
+        const fromSnapshot = parseSnapshot(`${r.label} 拉取失败`)
+        if (fromSnapshot) return fromSnapshot
         return fail(`${r.label} 拉取失败：${r.error}`, raws)
       }
       warnings.push(`${r.label} 拉取失败：${r.error}`)
+    }
+
+    /*
+     * 第二轮：有些用量接口要先拿到 id 才能调（OpenDesign 的
+     * 「工作区 id → 该工作区的 coding-plan-usage」就是这种）。
+     * 依赖不存在就跳过，不影响第一轮已经拿到的数据。
+     */
+    const followEndpoints = adapter.followUps ? adapter.followUps(responses) : []
+    if (followEndpoints.length > 0) {
+      const followResults = await Promise.all(
+        followEndpoints.map((ep) =>
+          callEndpoint({
+            key: ep.key,
+            label: urlOf(ep.url),
+            url: urlOf(ep.url),
+            required: ep.required === true,
+            headers: { accept: 'application/json', cookie: session.cookie },
+            timeoutMs,
+            proxy,
+            raws
+          })
+        )
+      )
+      for (const r of followResults) {
+        if (r.body !== null) {
+          responses[r.key] = r.body
+          continue
+        }
+        if (r.required) {
+          const fromSnapshot = parseSnapshot(`${r.label} 拉取失败`)
+          if (fromSnapshot) return fromSnapshot
+          return fail(`${r.label} 拉取失败：${r.error}`, raws)
+        }
+        warnings.push(`${r.label} 拉取失败：${r.error}`)
+      }
     }
 
     try {

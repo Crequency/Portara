@@ -581,9 +581,70 @@ test('opendesign：声明为会话型（完整 URL + session-cookie）', () => {
   const a = getUsageAdapter('opendesign')!
   assert.equal(a.kind, 'session-http')
   assert.equal(a.auth, 'session-cookie')
-  assert.deepEqual(a.sessionEndpoints, [
-    { key: 'me', url: 'https://amr-api.open-design.ai/api/v1/me', required: true }
-  ])
+  assert.equal(a.sessionEndpoints?.length, 2)
+  assert.deepEqual(a.sessionEndpoints?.[0], {
+    key: 'me',
+    url: 'https://amr-api.open-design.ai/api/v1/me',
+    required: true
+  })
+  assert.equal(a.sessionEndpoints?.[1].key, 'workspaces')
+  // 限额窗口要第二轮（拿到工作区 id 之后）才能抓
+  assert.equal(typeof a.followUps, 'function')
   // 会话型不该同时声明相对路径端点（否则两条链路会被混淆）
   assert.equal(a.endpoints.length, 0)
+})
+/*
+ * OpenDesign 真实响应形状（2026-11-09 从用户控制台实测）。
+ *
+ * 关键事实：
+ *   - /v1/me 返回 { id, email, name, plan: 'free', balanceUsd: '-0.0002' }，
+ *     **没有** wallet / designPlanWindows；
+ *   - 限额窗口在 /v1/workspaces/{id}/billing/coding-plan-usage 的 windows 里；
+ *   - Go 套餐只有 5h 与 7d 两个窗口，**没有月度窗口**，不要自己补。
+ */
+test('OpenDesign：真实 /v1/me + coding-plan-usage 形状', () => {
+  const adapter = getUsageAdapter('opendesign')
+  assert.ok(adapter)
+  const parsed = adapter.parse({
+    me: {
+      me: { id: 'g5vah4', email: '001@example.com', name: 'ACP 001', plan: 'free', balanceUsd: '-0.0002' },
+      codingPlanUsage: {
+        windows: [
+          { kind: 'fiveHour', limitCredits: 100000, remainingCredits: 40000, resetsAt: '2026-11-09T08:00:00Z' },
+          { kind: 'sevenDay', limitCredits: 500000, remainingCredits: 0, resetsAt: '2026-11-12T00:00:00Z' }
+        ]
+      },
+      walletBalance: { balanceUsd: '-0.0002' }
+    }
+  })
+  assert.equal(parsed.balances?.length, 1)
+  assert.equal(parsed.balances?.[0].remaining, -0.0002)
+  assert.equal(parsed.windows?.length, 2, 'Go 套餐应只有 5h / 7d 两个窗口')
+  assert.deepEqual(parsed.windows?.map((w) => w.key), ['fiveHour', 'sevenDay'])
+  assert.equal(parsed.windows?.[0].used, 60000)
+  assert.equal(parsed.windows?.[1].exceeded, true)
+  assert.equal(parsed.plan?.name, 'free')
+  // 负余额要给出提示，不能静默
+  assert.ok((parsed.warnings ?? []).some((w) => w.includes('余额为负')))
+})
+
+test('OpenDesign：实时抓取形状（响应平铺 key，不在 me 包裹里）', () => {
+  const adapter = getUsageAdapter('opendesign')
+  const parsed = adapter!.parse({
+    me: { plan: 'go', balanceUsd: '3.5' },
+    workspaces: { id: 'ws_1' },
+    codingPlanUsage: {
+      windows: [{ kind: 'fiveHour', limitCredits: 200000, remainingCredits: 200000 }]
+    }
+  })
+  assert.equal(parsed.balances?.[0].remaining, 3.5)
+  assert.equal(parsed.windows?.length, 1)
+  assert.equal(parsed.windows?.[0].exceeded, false)
+})
+
+test('OpenDesign：没有限额窗口时给出明确 warning，而不是静默为空', () => {
+  const adapter = getUsageAdapter('opendesign')
+  const parsed = adapter!.parse({ me: { me: { plan: 'free', balanceUsd: '1' } } })
+  assert.equal(parsed.windows?.length, 0)
+  assert.ok((parsed.warnings ?? []).some((w) => w.includes('没有返回限额窗口')))
 })

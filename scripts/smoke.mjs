@@ -3774,9 +3774,11 @@ async function main() {
       const byId = Object.fromEntries(usAdapters.body.adapters.map((a) => [a.id, a]))
       assert.equal(byId.opendesign.kind, 'session-http')
       assert.equal(byId.opendesign.auth, 'session-cookie')
-      assert.deepEqual(byId.opendesign.sessionEndpoints, [
-        'https://amr-api.open-design.ai/api/v1/me'
-      ])
+      // 会话型会调多个接口：me + workspaces/current，限额窗口在第二轮（拿到工作区 id 之后）
+      assert.ok(
+        byId.opendesign.sessionEndpoints.includes('https://amr-api.open-design.ai/api/v1/me')
+      )
+      assert.ok(byId.opendesign.sessionEndpoints.length >= 2)
       // 纯 HTTP 适配器的形态不变（向后兼容）
       assert.equal(byId.deepseek.kind, 'http')
       assert.equal(byId.deepseek.auth, 'bearer')

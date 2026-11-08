@@ -268,6 +268,11 @@ export interface UsageAdapter {
   /** 仅 kind='session-http'：完整 URL 的端点列表 */
   sessionEndpoints?: UsageSessionEndpoint[]
   /**
+   * 第二轮请求：有些接口要先拿到 id 才能调（例如「工作区 id → 该工作区的用量」）。
+   * 入参是第一轮结果；拿不到依赖就返回空数组。
+   */
+  followUps?: (responses: Record<string, unknown>) => UsageSessionEndpoint[]
+  /**
    * endpoints 的相对基准。
    *
    * 缺省 'origin'（scheme + host）—— 既有适配器都是这个语义；
@@ -676,7 +681,24 @@ const opencode: UsageAdapter = {
  *
  * 因此解析一律「缺字段就跳过」，但**一个可用的都没有时抛错**。
  */
-const OPENDESIGN_ME_URL = 'https://amr-api.open-design.ai/api/v1/me'
+const OPENDESIGN_API_ORIGIN = 'https://amr-api.open-design.ai'
+const OPENDESIGN_ME_URL = `${OPENDESIGN_API_ORIGIN}/api/v1/me`
+
+/**
+ * 从 `/v1/workspaces/current` 的响应里取工作区 id。
+ *
+ * 该接口可能直接返回工作区对象，也可能包一层 `{workspace: {...}}`；
+ * 用量接口的路径需要它，取不到就只能拿到账户信息、没有限额窗口。
+ */
+function pickWorkspaceId(responses: Record<string, unknown>): string | null {
+  const raw = responses.workspaces
+  const candidates: unknown[] = [raw]
+  if (isRecord(raw)) candidates.push(raw.workspace, raw.data)
+  for (const c of candidates) {
+    if (isRecord(c) && typeof c.id === 'string' && c.id.trim() !== '') return c.id.trim()
+  }
+  return null
+}
 
 /** 取第一个能转成数字的字段（上游字段名没有文档，多认几个候选） */
 function firstNum(obj: Record<string, unknown>, keys: string[]): number | null {
@@ -705,29 +727,72 @@ const opendesign: UsageAdapter = {
   endpoints: [],
   kind: 'session-http',
   auth: 'session-cookie',
-  sessionEndpoints: [{ key: 'me', url: OPENDESIGN_ME_URL, required: true }],
-  note: '只有网页登录态（Cookie）能读，API Key 打过去是 401；请先在渠道详情页粘贴 Cookie',
+  /*
+   * 三个接口，缺一个都看不全：
+   *   /v1/me                                → 账户与套餐（plan / balanceUsd）
+   *   /v1/workspaces/current                → 工作区 id（用量接口要它）
+   *   /v1/workspaces/{id}/billing/coding-plan-usage → 限额窗口（5h / 7d）
+   * 注意：**Go 套餐没有月度窗口**，接口给几个窗口就展示几个，不要自己补。
+   */
+  sessionEndpoints: [
+    { key: 'me', url: OPENDESIGN_ME_URL, required: true },
+    { key: 'workspaces', url: `${OPENDESIGN_API_ORIGIN}/api/v1/workspaces/current` }
+  ],
+  followUps(responses) {
+    const ws = pickWorkspaceId(responses)
+    if (!ws) return []
+    return [
+      {
+        key: 'codingPlanUsage',
+        url: `${OPENDESIGN_API_ORIGIN}/api/v1/workspaces/${encodeURIComponent(ws)}/billing/coding-plan-usage`,
+        required: true
+      }
+    ]
+  },
+  note: '非官方方式：用浏览器登录态读取控制台数据（含 5h / 7d 限额）。会话失效时可用控制台脚本输出的快照兜底。',
   parse(responses) {
-    const rawMe = responses.me
-    if (!isRecord(rawMe)) throw new Error('响应不是对象')
-    const me = pickMeRoot(rawMe)
-
     const warnings: string[] = []
 
-    // ---- 余额：wallet.balanceUsd ----
+    /*
+     * 两种输入形状都要吃：
+     *   ① 实时抓取：{ me, workspaces, codingPlanUsage }
+     *   ② 控制台快照包：{ me: { me, codingPlanUsage, walletBalance } }
+     * 统一收敛到 { me, usage, wallet }。
+     */
+    const wrap = responses.me
+    if (!isRecord(wrap)) throw new Error('响应不是对象')
+    const me = isRecord(wrap.me) ? wrap.me : pickMeRoot(wrap)
+    const usageSrc = isRecord(wrap.codingPlanUsage)
+      ? wrap.codingPlanUsage
+      : isRecord(responses.codingPlanUsage)
+        ? responses.codingPlanUsage
+        : null
+    const walletSrc = isRecord(wrap.walletBalance)
+      ? wrap.walletBalance
+      : isRecord(me.wallet)
+        ? me.wallet
+        : null
+
+    // ---- 余额（USD）----
+    // 真实接口给的是字符串，且**可能是负数**（欠费），不要当 0 丢掉
     const balances: UsageBalance[] = []
-    const wallet = isRecord(me.wallet) ? me.wallet : null
-    const balanceUsd = wallet ? toNum(wallet.balanceUsd) : null
+    const balanceUsd =
+      toNum(me.balanceUsd) ??
+      (isRecord(me.wallet) ? toNum(me.wallet.balanceUsd) : null) ??
+      (walletSrc ? firstNum(walletSrc, ['balanceUsd', 'balance', 'availableUsd']) : null)
     if (balanceUsd !== null) {
       balances.push({ currency: 'USD', unit: 'currency', remaining: balanceUsd })
-    } else if (wallet) {
-      warnings.push('wallet 里没有可解析的 balanceUsd')
     }
 
-    // ---- 套餐窗口：designPlanWindows ----
+    // ---- 限额窗口 ----
+    // 新接口在 codingPlanUsage.windows；旧形状（社区逆向）在 me.designPlanWindows
     const windows: UsageWindow[] = []
-    const planWindows = Array.isArray(me.designPlanWindows) ? me.designPlanWindows : []
-    for (const item of planWindows) {
+    const rawWindows = usageSrc && Array.isArray(usageSrc.windows)
+      ? usageSrc.windows
+      : Array.isArray(me.designPlanWindows)
+        ? me.designPlanWindows
+        : []
+    for (const item of rawWindows) {
       if (!isRecord(item)) continue
       const limit = toNum(item.limitCredits)
       const remaining = toNum(item.remainingCredits)
@@ -742,18 +807,25 @@ const opendesign: UsageAdapter = {
         exceeded: remaining <= 0
       })
     }
-    if (planWindows.length > 0 && windows.length === 0) {
-      warnings.push('designPlanWindows 里的字段无法解析（缺 limitCredits / remainingCredits）')
+    if (rawWindows.length > 0 && windows.length === 0) {
+      warnings.push('coding-plan-usage.windows 里缺少 limitCredits / remainingCredits')
+    }
+    if (rawWindows.length === 0) {
+      warnings.push('接口没有返回限额窗口（该套餐可能没有 coding plan）')
     }
 
-    // ---- 只有钱包批次：按 expiresAt 推算窗口 ----
+    /*
+     * 兜底：只有钱包批次（walletBreakdown）时，按到期时间推算窗口。
+     *
+     * 这不是实时限额 —— 上游没给窗口对象，只能从"这批额度什么时候过期"倒推。
+     * 所以标 `inferred`：面板会显示，但不参与「打满就不路由」的判定。
+     */
     const breakdown = Array.isArray(me.walletBreakdown) ? me.walletBreakdown : []
     if (windows.length === 0 && breakdown.length > 0) {
       const usedKeys = new Map<string, number>()
       for (const item of breakdown) {
         if (!isRecord(item)) continue
         const kind = typeof item.kind === 'string' && item.kind ? item.kind : 'wallet'
-        // 同名批次可能有多条（不同到期时间），加序号保证 key 唯一
         const seen = (usedKeys.get(kind) ?? 0) + 1
         usedKeys.set(kind, seen)
         const value = firstNum(item, [
@@ -770,7 +842,6 @@ const opendesign: UsageAdapter = {
           total: value ?? 0,
           remaining: value ?? 0,
           resetAt: toIso(item.expiresAt) ?? undefined,
-          // 上游没有给窗口对象，这是按到期时间推算的 —— 不参与「打满就不路由」判定
           inferred: true
         })
       }
@@ -793,10 +864,13 @@ const opendesign: UsageAdapter = {
       if (!plan.id && !plan.name && !plan.status) plan = undefined
     }
 
+    // 负余额是有意义的信息（欠费），单独提示一句
+    if (balanceUsd !== null && balanceUsd < 0) {
+      warnings.push(`钱包余额为负（${balanceUsd} USD），上游可能已限制新请求`)
+    }
+
     if (balances.length === 0 && windows.length === 0 && !plan) {
-      throw new Error(
-        '响应里既没有 wallet.balanceUsd，也没有 designPlanWindows / walletBreakdown / plan'
-      )
+      throw new Error('响应里既没有 balanceUsd，也没有限额窗口与套餐信息')
     }
     return { balances, windows, plan, warnings }
   }

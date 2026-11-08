@@ -134,7 +134,13 @@ test('parseWebSessionInput：控制台快照包 → cookie + me', () => {
   }
   const out = parseWebSessionInput(JSON.stringify(bundle))
   assert.equal(out.cookie, 'a=1; b=2')
-  assert.deepEqual(out.snapshot, bundle.me)
+  // v2 起快照是「三接口合并」的包裹对象，不再只是 me
+  assert.deepEqual(out.snapshot, {
+    me: bundle.me,
+    codingPlanUsage: null,
+    walletBalance: null,
+    workspaceId: null
+  })
   assert.equal(out.snapshotAt, '2026-11-09T03:20:00.000Z')
 })
 
@@ -147,7 +153,7 @@ test('parseWebSessionInput：HttpOnly 场景没有 cookie，只剩快照', () =>
   }
   const out = parseWebSessionInput(JSON.stringify(bundle))
   assert.equal(out.cookie, '')
-  assert.deepEqual(out.snapshot, bundle.me)
+  assert.deepEqual((out.snapshot as { me: unknown }).me, bundle.me)
 })
 
 test('parseWebSessionInput：直接粘 /api/v1/me 响应 → 只有快照', () => {

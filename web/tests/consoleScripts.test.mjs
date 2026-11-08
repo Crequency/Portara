@@ -2,8 +2,7 @@
  * 网页会话采集脚本的约束测试。
  *
  * 这段字符串会被用户**原样粘贴到浏览器控制台**执行 —— 它的能力边界必须被钉死：
- * 只允许请求 OpenDesign 自己的接口，不许读本地存储、不许碰别的域名。
- * 这些约束没法靠 typecheck 保证。
+ * 只允许请求 OpenDesign 自己的 API、不许读本地存储、不许碰别的域名。
  *
  * 跑法：`pnpm --filter @portara/web test`（= node --test tests/*.test.mjs）。
  */
@@ -23,12 +22,19 @@ test('是 IIFE：不往页面全局塞变量', () => {
   assert.ok(script.trimEnd().endsWith('})()'), '应以 })() 结尾')
 })
 
-test('只请求 OpenDesign 自己的接口（唯一允许的网络目标）', () => {
-  assert.match(script, /amr-api\.open-design\.ai\/api\/v1\/me/)
+test('只请求 OpenDesign 自己的 API（唯一允许的网络目标）', () => {
+  assert.match(script, /https:\/\/amr-api\.open-design\.ai\/api/)
   const urls = [...script.matchAll(/https?:\/\/[^'"\s)]+/g)].map((m) => m[0])
+  assert.ok(urls.length > 0, '脚本里至少要有一个 API 基址')
   for (const u of urls) {
-    assert.equal(u, 'https://amr-api.open-design.ai/api/v1/me', `出现了不该请求的地址：${u}`)
+    assert.equal(u, 'https://amr-api.open-design.ai/api', `出现了不该请求的地址：${u}`)
   }
+})
+
+test('调用三个必需接口：me / workspaces-current / coding-plan-usage', () => {
+  assert.match(script, /'\/v1\/me'/)
+  assert.match(script, /'\/v1\/workspaces\/current'/)
+  assert.match(script, /billing\/coding-plan-usage/)
 })
 
 test('带 credentials: include，才能用上 HttpOnly 会话', () => {
