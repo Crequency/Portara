@@ -6,22 +6,27 @@
  * 所以脚本**在用户自己的浏览器里直接调接口**，把结果打包粘回 Portara。
  *
  * 需要三个接口：
- *   ① `/api/v1/me`                                        —— 账户与套餐（plan / balanceUsd）
- *   ② 工作区 id（`/workspaces/current`，拿不到就退回 `/workspaces` 列表）
- *   ③ `/workspaces/{id}/billing/coding-plan-usage`        —— **限额窗口**（5h / 7d）
+ *   ① /api/v1/me                                        —— 账户与套餐（plan / balanceUsd）
+ *   ② /api/v1/workspaces/current                        —— 工作区 id 在 activeWorkspaceId 里
+ *   ③ /api/v1/workspaces/{id}/billing/coding-plan-usage —— 限额窗口（5h / 7d）
+ *
+ * 实测结论（2026-11-09，从用户控制台输出里读出来的）：
+ *   - current 的响应字段是 activeWorkspaceId / workspaceId，**不是 id**；
+ *   - /v1/workspaces 列表包在 {items: [...]} 里，不是裸数组；
+ *   - 工作区级接口要带 x-vela-workspace-id 头。
+ * 前两版脚本就栽在「只认 id / 只认裸数组」上。
  *
  * 注意：Go 套餐只有 5 小时与 7 天两个窗口，**没有月度窗口**。
  *
- * 工作区相关的接口要带 `x-vela-workspace-id` 头（官方前端就是这么发的），
- * 这是第一版脚本失败的原因 —— 只请求了路径，没带工作区头。
- *
  * 约束（单测钉住）：IIFE、只请求 amr-api 一个 origin、不读本地存储。
+ *
+ * 实现注意：模板字符串里**不能出现反引号**（会截断 String.raw），
+ * 注释里需要强调字段名时用引号或中文书名号。
  */
 export const WEB_SESSION_CONSOLE_SCRIPT = String.raw`(async () => {
   const ORIGIN = 'https://amr-api.open-design.ai'
   const line = (msg, color) => console.log('%c' + msg, 'color:' + color + ';font-weight:bold')
 
-  /** 统一的请求：404/401 不抛，交给调用方判断（诊断需要看到状态码） */
   const call = async (path, workspaceId) => {
     const headers = { accept: 'application/json' }
     if (workspaceId) headers['x-vela-workspace-id'] = workspaceId
@@ -31,21 +36,42 @@ export const WEB_SESSION_CONSOLE_SCRIPT = String.raw`(async () => {
     return { status: res.status, ok: res.ok, body }
   }
 
-  /** 从任意形状里抠出工作区 id：直接对象 / {workspace} / {data} / 数组 */
+  /**
+   * 从响应里抠工作区 id。
+   *
+   * 实测 current 返回的是 activeWorkspaceId；list 返回 {items:[...]}；
+   * 其它站内接口可能给 workspaceId / workspace.id / data.id，一并兼容。
+   */
   const pickWorkspaceId = (body) => {
     if (!body) return ''
-    const cands = [body, body.workspace, body.data, body.current]
-    if (Array.isArray(body)) cands.push(...body)
-    if (body && Array.isArray(body.workspaces)) cands.push(...body.workspaces)
-    for (const c of cands) {
-      if (c && typeof c === 'object' && typeof c.id === 'string' && c.id) return c.id
+    const direct = ['activeWorkspaceId', 'workspaceId', 'id']
+    for (const k of direct) {
+      if (typeof body[k] === 'string' && body[k]) return body[k]
+    }
+    const nested = [body.workspace, body.data, body.current, body.activeWorkspace]
+    for (const c of nested) {
+      if (c && typeof c === 'object') {
+        for (const k of direct) {
+          if (typeof c[k] === 'string' && c[k]) return c[k]
+        }
+      }
+    }
+    const lists = [body.items, body.workspaces, body.data, body]
+    for (const l of lists) {
+      if (!Array.isArray(l)) continue
+      for (const item of l) {
+        if (!item || typeof item !== 'object') continue
+        for (const k of direct) {
+          if (typeof item[k] === 'string' && item[k]) return item[k]
+        }
+      }
     }
     return ''
   }
 
   const bundle = {
     portara: 'opendesign-session',
-    v: 3,
+    v: 4,
     capturedAt: new Date().toISOString(),
     cookie: document.cookie || ''
   }
@@ -58,10 +84,9 @@ export const WEB_SESSION_CONSOLE_SCRIPT = String.raw`(async () => {
   else line('[Portara] /v1/me 返回 HTTP ' + meRes.status + '（确认已登录控制台）', '#f87171')
 
   line('[Portara] ② 读取工作区…', '#4ade80')
-  let workspaceId = ''
   const current = await call('/v1/workspaces/current')
   diag.current = { status: current.status, keys: current.body ? Object.keys(current.body) : [] }
-  workspaceId = pickWorkspaceId(current.body)
+  let workspaceId = pickWorkspaceId(current.body)
 
   if (!workspaceId) {
     const list = await call('/v1/workspaces')

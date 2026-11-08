@@ -694,10 +694,43 @@ const OPENDESIGN_ME_URL = `${OPENDESIGN_API_ORIGIN}/api/v1/me`
  */
 function pickWorkspaceId(responses: Record<string, unknown>): string | null {
   const raw = responses.workspaces
-  const candidates: unknown[] = [raw]
-  if (isRecord(raw)) candidates.push(raw.workspace, raw.data)
-  for (const c of candidates) {
-    if (isRecord(c) && typeof c.id === 'string' && c.id.trim() !== '') return c.id.trim()
+  /** 实测字段顺序：current 给 activeWorkspaceId，列表项给 id */
+  const idOf = (o: Record<string, unknown>): string | null => {
+    for (const k of ['activeWorkspaceId', 'workspaceId', 'id']) {
+      const v = o[k]
+      if (typeof v === 'string' && v.trim() !== '') return v.trim()
+    }
+    return null
+  }
+  if (isRecord(raw)) {
+    const direct = idOf(raw)
+    if (direct) return direct
+    for (const k of ['workspace', 'data', 'current', 'activeWorkspace']) {
+      const inner = raw[k]
+      if (isRecord(inner)) {
+        const hit = idOf(inner)
+        if (hit) return hit
+      }
+    }
+    for (const k of ['items', 'workspaces']) {
+      const list = raw[k]
+      if (Array.isArray(list)) {
+        for (const item of list) {
+          if (isRecord(item)) {
+            const hit = idOf(item)
+            if (hit) return hit
+          }
+        }
+      }
+    }
+  }
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (isRecord(item)) {
+        const hit = idOf(item)
+        if (hit) return hit
+      }
+    }
   }
   return null
 }

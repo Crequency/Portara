@@ -648,3 +648,33 @@ test('OpenDesign：没有限额窗口时给出明确 warning，而不是静默�
   assert.equal(parsed.windows?.length, 0)
   assert.ok((parsed.warnings ?? []).some((w) => w.includes('没有返回限额窗口')))
 })
+/*
+ * 工作区 id 提取（followUps 的入口条件）。
+ *
+ * 实测形状（2026-11-09 用户控制台 diag）：
+ *   current → { userId, authUserId, workspaceId, activeWorkspaceId, ... }  ← 没有 id 字段
+ *   list    → { items: [...] }                                            ← 不是裸数组
+ * 这两点写错就会出现「限额永远为空」，所以单独钉住。
+ */
+test('OpenDesign followUps：current 的 activeWorkspaceId 优先', () => {
+  const a = getUsageAdapter('opendesign')!
+  const eps = a.followUps!({
+    workspaces: { userId: 'u1', workspaceId: 'ws_old', activeWorkspaceId: 'ws_live' }
+  })
+  assert.equal(eps.length, 1)
+  assert.match(eps[0].url, /workspaces\/ws_live\/billing\/coding-plan-usage/)
+  assert.equal(eps[0].headers?.['x-vela-workspace-id'], 'ws_live')
+})
+
+test('OpenDesign followUps：列表包在 {items:[...]} 里也能取到', () => {
+  const a = getUsageAdapter('opendesign')!
+  const eps = a.followUps!({ workspaces: { items: [{ id: 'ws_item' }] } })
+  assert.equal(eps.length, 1)
+  assert.match(eps[0].url, /ws_item/)
+})
+
+test('OpenDesign followUps：裸数组也能取到；完全没有则返回空', () => {
+  const a = getUsageAdapter('opendesign')!
+  assert.match(a.followUps!({ workspaces: [{ id: 'ws_arr' }] })[0].url, /ws_arr/)
+  assert.equal(a.followUps!({ workspaces: { userId: 'u1' } }).length, 0)
+})
