@@ -312,6 +312,21 @@ function initDiag(): void {
     },
     true
   )
+  /*
+   * Vue 的渲染错误 / 递归更新警告都是走 console.error|warn，不进 window.onerror。
+   * 诊断模式下把它们也接到浮条上，避免"页面没报错但就是不动"。
+   */
+  const origError = console.error.bind(console)
+  const origWarn = console.warn.bind(console)
+  console.error = (...args: unknown[]) => {
+    origError(...args)
+    setDiagDetail('console.error: ' + args.map((a) => String(a)).join(' ').slice(0, 160))
+  }
+  console.warn = (...args: unknown[]) => {
+    origWarn(...args)
+    setDiagDetail('console.warn: ' + args.map((a) => String(a)).join(' ').slice(0, 160))
+  }
+
   window.addEventListener('error', (event) => {
     setDiagLine('JS error → ' + String(event.message).slice(0, 140))
   })

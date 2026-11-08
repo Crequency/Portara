@@ -6,7 +6,7 @@
  * 数据全部走既有接口，仅统计与映射按 channelId 过滤。
  */
 import { errorText, toastError } from '../error'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   api,
   type Channel,
@@ -284,6 +284,25 @@ function openAccountForm(account?: ChannelAccount): void {
         note: account.note
       }
     : { id: '', name: '', apiKey: '', priority: 100, weight: 1, status: 'active', note: '' }
+
+  /*
+   * 兜底：状态已置位但 DOM 里没有弹窗时，强制重渲染一次。
+   *
+   * Edge Beta 上出现过「accountForm=set、overlays=0、也没有任何 Vue 报错」——
+   * 状态写入成功但这次渲染没被调度（或被某次异常吞掉）。$forceUpdate 不依赖
+   * 依赖收集，直接把当前渲染函数再跑一遍；如果只差"一次重新渲染"，这样就够了。
+   */
+  const inst = getCurrentInstance()
+  ;[60, 300, 900].forEach((ms) => {
+    setTimeout(() => {
+      if (document.querySelector('.overlay')) return
+      inst?.proxy?.$forceUpdate()
+      setDiagDetail(
+        ms + 'ms 无弹窗 → forceUpdate；之后 overlays=' +
+          document.querySelectorAll('.overlay').length
+      )
+    }, ms)
+  })
 }
 
 async function saveAccount(): Promise<void> {
