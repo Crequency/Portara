@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   MAX_COOKIE_TEXT,
+  cookieFromCurl,
   cookieNamesOf,
+  normalizeCookieInput,
   openWebSession,
   sealWebSession,
   validateCookieText
@@ -73,4 +75,45 @@ test('webSession：长度上限是 8192（与接口契约一致）', () => {
   const ok = 'a=' + 'x'.repeat(8189)
   assert.equal(ok.length, 8191)
   assert.equal(validateCookieText(ok), null)
+})
+/*
+ * cURL 提取。
+ *
+ * 为什么要专门测：会话 Cookie 大概率是 HttpOnly，document.cookie 读不到，
+ * 「DevTools → Copy as cURL」是唯一能拿到完整会话的手动路径。
+ * 这里把三种引号写法、--cookie 形式、非 cURL 输入都钉住。
+ */
+test('cookieFromCurl：单引号 -H cookie 提取', () => {
+  const curl = "curl 'https://amr-api.open-design.ai/api/v1/me' \\n  -H 'accept: application/json' \\n  -H 'cookie: session_token=abc; cf_clearance=xyz' \\n  --compressed"
+  assert.equal(cookieFromCurl(curl), 'session_token=abc; cf_clearance=xyz')
+})
+
+test('cookieFromCurl：双引号与大小写不敏感', () => {
+  const curl = 'curl "https://x/api/v1/me" -H "Cookie: a=1; b=2"'
+  assert.equal(cookieFromCurl(curl), 'a=1; b=2')
+})
+
+test('cookieFromCurl：--cookie 形式', () => {
+  assert.equal(cookieFromCurl("curl https://x --cookie 'sid=9; t=1'"), 'sid=9; t=1')
+})
+
+test('cookieFromCurl：不是 cURL 的输入返回 null（不误吞裸 Cookie）', () => {
+  assert.equal(cookieFromCurl('session_token=abc'), null)
+  assert.equal(cookieFromCurl(''), null)
+})
+
+test('normalizeCookieInput：三种粘贴形态都能归一', () => {
+  assert.equal(normalizeCookieInput('  a=1; b=2  '), 'a=1; b=2')
+  assert.equal(normalizeCookieInput('Cookie: a=1; b=2'), 'a=1; b=2')
+  assert.equal(
+    normalizeCookieInput("curl 'https://x' -H 'cookie: a=1; b=2'"),
+    'a=1; b=2'
+  )
+})
+
+test('normalizeCookieInput：cURL 提取结果能过格式校验', () => {
+  const curl = "curl 'https://amr-api.open-design.ai/api/v1/me' -H 'cookie: session_token=abc; cf_clearance=xyz'"
+  const cookie = normalizeCookieInput(curl)
+  assert.equal(validateCookieText(cookie), null)
+  assert.deepEqual(cookieNamesOf(cookie), ['session_token', 'cf_clearance'])
 })

@@ -10,7 +10,14 @@
  * 上游账户、余额、请求日志仍在渠道详情页 —— 那里是「看」的地方，这里是「改」的地方。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api, type Channel, type FetchModelsResult, type ModelMeta, type User } from '../api'
+import {
+  api,
+  type Channel,
+  type FetchModelsResult,
+  type ModelMeta,
+  type UsageAdapterInfo,
+  type User
+} from '../api'
 import PCheckbox from '../components/PCheckbox.vue'
 import PInfo from '../components/PInfo.vue'
 import PSelect from '../components/PSelect.vue'
@@ -92,11 +99,26 @@ const statusOptions = computed(() => [
 
 // ---------------------------------------------------------------- 辅助数据
 
-const usageAdapters = ref<{ id: string; label: string; note: string }[]>([])
+const usageAdapters = ref<UsageAdapterInfo[]>([])
 const usageAdapterOptions = computed(() => [
   { value: '', label: t('usage.adapterNone'), hint: '' },
   ...usageAdapters.value.map((a) => ({ value: a.id, label: a.label, hint: a.note }))
 ])
+
+/**
+ * 选中的是**会话型**适配器吗（余额只能靠浏览器 Cookie 读）。
+ *
+ * 判断优先用后端给的 `kind` / `auth`；适配器清单拿不到时退回已知 id，
+ * 免得接口抖一下提示就消失、用户以为选了不需要额外步骤。
+ */
+const KNOWN_SESSION_ADAPTERS = new Set(['opendesign'])
+const isSessionAdapter = computed(() => {
+  const id = form.usageAdapter
+  if (!id) return false
+  const hit = usageAdapters.value.find((a) => a.id === id)
+  if (hit) return hit.kind === 'session-http' || hit.auth === 'session-cookie'
+  return KNOWN_SESSION_ADAPTERS.has(id)
+})
 
 const proxies = ref<{ id: string; name: string; host: string; port: number; status: string }[]>([])
 const proxyOptions = computed(() => [
@@ -632,6 +654,18 @@ onMounted(async () => {
                 />
                 <span class="hint">{{ t('usage.limitPriorityHint') }}</span>
               </div>
+            </div>
+
+            <!--
+              会话型适配器的余额只认浏览器 Cookie：建渠道时先提醒，
+              免得配完发现读不到，还以为是「保存没生效」。
+            -->
+            <div
+              v-if="isSessionAdapter"
+              class="alert alert-info"
+              data-testid="session-adapter-hint"
+            >
+              {{ t('channels.webSessionHint') }}
             </div>
 
             <div v-if="form.usageAdapter" class="field">

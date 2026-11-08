@@ -44,6 +44,62 @@ export function cookieNamesOf(cookieText: string): string[] {
 }
 
 /**
+ * 从「DevTools → Copy as cURL」整条命令里抠出 Cookie。
+ *
+ * 为什么必须支持这个入口：会话 Cookie 大概率是 **HttpOnly**，
+ * `document.cookie` 读不到（这是浏览器的安全限制，不是脚本 bug）。
+ * 而 DevTools 的「Copy as cURL」**包含 HttpOnly Cookie**，
+ * 用户只要在 Network 面板右键那条 `/api/v1/me` 请求就能拿到 ——
+ * 这是唯一不依赖浏览器插件、又能拿到完整会话的路径。
+ *
+ * 只做**一次**提取，不执行任何东西：找 `-H 'cookie: ...'` / `--cookie`，
+ * 或者直接把整条命令里形如 name=value 的片段拼起来。
+ * 返回 null 表示看起来不是 cURL。
+ */
+export function cookieFromCurl(input: string): string | null {
+  const text = String(input ?? '')
+  if (!/^\s*(curl|fetch\()/i.test(text) && !/\s-H\s|--header/.test(text)) return null
+
+  /** 单引号 / 双引号 / 无引号 三种写法都要吃 */
+  const headerRe =
+    /(?:-H|--header)\s+(?:'([^']*)'|"([^"]*)"|([^\s]+))/gi
+  let m: RegExpExecArray | null
+  while ((m = headerRe.exec(text))) {
+    const raw = (m[1] ?? m[2] ?? m[3] ?? '').trim()
+    const sep = raw.indexOf(':')
+    if (sep <= 0) continue
+    if (raw.slice(0, sep).trim().toLowerCase() !== 'cookie') continue
+    const value = raw.slice(sep + 1).trim()
+    if (value) return value
+  }
+
+  // --cookie 'a=1; b=2'
+  const cookieFlag = /--cookie\s+(?:'([^']*)'|"([^"]*)"|([^\s]+))/i.exec(text)
+  const flagValue = (cookieFlag?.[1] ?? cookieFlag?.[2] ?? cookieFlag?.[3] ?? '').trim()
+  if (flagValue) return flagValue
+
+  // 兜底：整条命令里 name=value 形态的片段
+  const pairs = text.match(/[!#$%&'*+.^_\`|~0-9A-Za-z-]+=[^;\s'"]+/g)
+  if (pairs && pairs.length > 0) return pairs.join('; ')
+  return null
+}
+
+/**
+ * 把用户粘贴的内容归一成 Cookie 串。
+ *
+ * 三种形态都能吃：裸 Cookie、带 `Cookie: ` 前缀、整条 cURL 命令。
+ */
+export function normalizeCookieInput(input: string): string {
+  const text = String(input ?? '').trim()
+  if (!text) return ''
+  const fromCurl = cookieFromCurl(text)
+  if (fromCurl) return fromCurl
+  const prefix = /^cookie\s*:\s*/i.exec(text)
+  if (prefix) return text.slice(prefix[0].length).trim()
+  return text
+}
+
+/**
  * 校验粘贴的 Cookie 文本。
  *
  * 规则（与接口契约一致）：

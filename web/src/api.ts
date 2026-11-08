@@ -233,6 +233,50 @@ export interface UsageAdapterInfo {
   label: string
   note: string
   endpoints: string[]
+  /**
+   * 适配器形态：
+   *   'http'         —— 用账户密钥打 endpoints（相对路径）
+   *   'session-http' —— 用网页 Cookie 打 sessionEndpoints（完整 URL）
+   *
+   * 后端尚未提供时按 'http' 处理，旧适配器的行为不受影响。
+   */
+  kind?: 'http' | 'session-http'
+  /** 鉴权方式；'session-cookie' 表示用的是网页登录态而不是渠道密钥 */
+  auth?: 'bearer' | 'x-api-key' | 'none' | 'session-cookie'
+  /** 仅 kind='session-http'：完整 URL 的端点列表 */
+  sessionEndpoints?: string[]
+}
+
+/**
+ * 账户的网页登录态（Cookie）状态。
+ *
+ * **不含 Cookie 值与密文** —— 面板只需要知道「有没有 / 什么时候失效」。
+ */
+export interface WebSessionStatus {
+  exists: boolean
+  /** 粘贴时间（ISO）；未设置时为 null */
+  capturedAt: string | null
+  /** 上次成功读到余额的时间（ISO） */
+  lastOkAt: string | null
+  /**
+   * 上次失败原因原文；'' = 没有记录。
+   * 上游 401/403 时应为 'session_expired'（面板据此提示重新获取）。
+   */
+  lastError: string
+  /** Cookie 名（**只有名**，供用户确认自己贴对了站点） */
+  cookieNames: string[]
+}
+
+/** `GET /api/channels/:id/accounts/:aid/web-session` 的响应 */
+export interface WebSessionInfo {
+  session: WebSessionStatus | null
+}
+
+/** `POST …/web-session` 的响应：存完立刻试跑一次的结果 */
+export interface WebSessionSaveResult {
+  session: WebSessionStatus | null
+  /** 该次试跑的余额快照；账户不存在时可能缺省 */
+  usage?: UsageSnapshot | null
 }
 
 /** 系统设置（与后端 services/settings.ts 的注册表一一对应） */

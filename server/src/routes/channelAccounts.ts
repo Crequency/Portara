@@ -29,6 +29,7 @@ import {
   clearWebSession,
   cookieNamesOf,
   getWebSessionStatus,
+  normalizeCookieInput,
   saveWebSession,
   validateCookieText
 } from '../services/webSession.js'
@@ -275,7 +276,13 @@ channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async 
   const ch = await channelOf(channelId)
 
   const body = await parseJson(c, webSessionSchema)
-  const problem = validateCookieText(body.cookie)
+  /*
+   * 三种粘贴形态都接受：裸 Cookie / 带 "Cookie: " 前缀 / 整条 cURL 命令。
+   * 支持 cURL 不是顺手加的功能 —— 会话 Cookie 大概率是 HttpOnly，
+   * document.cookie 读不到，DevTools 的「Copy as cURL」是唯一能拿到完整会话的路径。
+   */
+  const cookieText = normalizeCookieInput(body.cookie)
+  const problem = validateCookieText(cookieText)
   if (problem) throw badRequest(problem)
 
   const account = await getAccount(channelId, accountId)
@@ -289,7 +296,7 @@ channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async 
   const sessionAdapter = isSessionAdapter(effectiveAdapter)
 
   const cookieNames = cookieNamesOf(body.cookie)
-  await saveWebSession(accountId, body.cookie)
+  await saveWebSession(accountId, cookieText)
   // 会话变了，旧快照就是错的口径
   await invalidateUsageCache(channelId)
 

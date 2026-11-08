@@ -369,7 +369,38 @@ export const en = {
     testAllProgress: 'Testing {done}/{total}…',
     testAllDone: 'Tested {total} channels: {ok} reachable',
     loadFailed: 'Failed to load channels',
-    headerFormatError: 'Invalid fixed header: {msg}'
+    headerFormatError: 'Invalid fixed header: {msg}',
+
+    // ---- Web session (Cookie): only for session-type balance adapters ----
+    webSession: 'Web session',
+    webSessionTitle: 'Web session cookie',
+    webSessionStep1: '1. Copy the script and run it in the signed-in browser',
+    webSessionStep2: '2. Paste the cookie printed by the script',
+    webSessionStep3: '3. Current session status',
+    webSessionCopyScript: 'Copy script',
+    webSessionCopied:
+      'Copied. Open F12 → Console in the browser where you are signed in to open-design.ai and paste it there',
+    webSessionPaste: 'Paste the cookie string printed by the console',
+    webSessionSave: 'Save and test',
+    webSessionClear: 'Clear session',
+    webSessionStatusNone: 'Not set',
+    webSessionStatusOk: 'Set',
+    webSessionExpired: 'Session expired, please fetch it again',
+    webSessionHint:
+      'This adapter reads the signed-in web session: the API key returns 401 upstream, so only the browser cookie works. Cookies are stored encrypted, and the panel only returns their names, never values.',
+    webSessionHttpOnlyHint:
+      'The key cookies are likely HttpOnly, which JavaScript cannot read. In that case use the manual path from the script: DevTools → Application → Cookies, join name=value pairs with "; " and paste them here.',
+    webSessionCapturedAt: 'Captured',
+    webSessionLastOk: 'Last success',
+    webSessionCookieNames: 'Cookies included: ',
+    webSessionTrial: 'Result of the test run after saving',
+    webSessionTrialOk: 'Read succeeded',
+    webSessionTrialFailed: 'Test run failed',
+    webSessionSaved: 'Web session saved',
+    webSessionCleared: 'Web session cleared',
+    webSessionClearConfirm:
+      'Clear the web session of account "{name}"? Its balance will stop loading until a new cookie is pasted.',
+    webSessionCookieRequired: 'Paste a cookie first'
   },
   keys: {
     subAdmin: 'Admins can see every key',

@@ -21,6 +21,7 @@ import {
   markAccountFailure,
   markAccountSuccess,
   markQuotaExhaustedResponse,
+  networkFailureCooldownSec,
   pickAccounts
 } from '../services/accounts.js'
 import {
@@ -977,11 +978,35 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
             ? `上游响应超时（${channel.timeout_ms}ms）`
             : `上游连接失败：${err instanceof Error ? err.message : String(err)}`
 
-        await markAccountFailure(
-          candidate.id,
-          lastFailure,
-          Math.max(routing.accountFailureCooldownSec, COOLDOWN.upstream)
-        )
+        /*
+         * 连接失败 / 超时：**不要**用设置项里的通用冷却（默认 1 小时）。
+         *
+         * 这是实测踩到的坑：OpenDesign/ACP-001 只是抖了一次 `fetch failed`，
+         * 就被关进 1 小时冷却；而同一时间别的号正在真·额度用尽，
+         * 于是整条链路只剩「额度已用尽」这一种错误 —— 用户连续多次请求全失败。
+         *
+         * 网络抖动是**瞬时的**，正确做法是短冷却让它尽快回到池子里，
+         * 同时用连续失败次数做退避（避免坏链路被高频重试）。
+         * 上限仍然受设置项约束，但取的是 **min**：设置项配得再大，
+         * 网络错误也不会被放大成一个小时的禁足。
+         */
+        /*
+         * 客户端主动断开**不惩罚账户**：上游可能完全正常，
+         * 是用户关页面/切模型导致的取消。以前这种情况也会写冷却，
+         * 结果是"用户多点几次取消，好几个健康号就被轮着关进冷却"。
+         */
+        if (clientGone) {
+          // 只记事件，不动冷却
+        } else {
+          await markAccountFailure(
+            candidate.id,
+            lastFailure,
+            networkFailureCooldownSec(
+              candidate.consecutive_failures,
+              routing.accountFailureCooldownSec
+            )
+          )
+        }
 
         // 抛异常同样算一次失败尝试（status_code 为空）
         await recordLbEvent({

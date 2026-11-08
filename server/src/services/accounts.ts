@@ -461,6 +461,26 @@ export const COOLDOWN = {
   upstream: 30
 } as const
 
+/**
+ * 网络错误 / 超时的冷却秒数（阶梯退避）。
+ *
+ * 为什么必须和「通用失败冷却」分开：
+ *   - 通用冷却默认 1 小时，是给"上游明确拒绝、短时间内不会变好"准备的；
+ *   - 网络抖动 / 连接超时是**瞬时**的，关一小时等于把一个健康号从池子里删掉。
+ * 实测事故：OpenDesign 的号只是 `fetch failed` 一次就被禁足 1 小时，
+ * 期间只剩真正没额度的 CommandCode 在服务，用户连续收到"额度已用尽"。
+ *
+ * 阶梯：30s → 60s → 120s → 240s → 480s（封顶），再受设置项上限约束。
+ */
+export function networkFailureCooldownSec(
+  consecutiveFailures: number,
+  maxCooldownSec: number
+): number {
+  const step = Math.max(0, Math.min(Math.floor(consecutiveFailures) || 0, 4))
+  const backoff = COOLDOWN.upstream * 2 ** step
+  return Math.max(COOLDOWN.upstream, Math.min(maxCooldownSec, backoff))
+}
+
 /** 该状态码是否值得换一个账户再试 */
 export function isRetriableStatus(status: number): boolean {
   return (

@@ -369,7 +369,36 @@ export const zh = {
     testAllProgress: '测试中 {done}/{total}…',
     testAllDone: '已测完 {total} 个渠道：{ok} 个可用',
     loadFailed: '加载渠道失败',
-    headerFormatError: '固定请求头格式有问题：{msg}'
+    headerFormatError: '固定请求头格式有问题：{msg}',
+
+    // ---- 网页会话（Cookie）：会话型余额适配器专用 ----
+    webSession: '网页会话',
+    webSessionTitle: '网页会话 Cookie',
+    webSessionStep1: '① 复制脚本，到已登录的浏览器执行',
+    webSessionStep2: '② 粘贴脚本输出的 Cookie',
+    webSessionStep3: '③ 当前会话状态',
+    webSessionCopyScript: '一键复制脚本',
+    webSessionCopied: '已复制，请到已登录 open-design.ai 的浏览器里按 F12 → Console 粘贴执行',
+    webSessionPaste: '粘贴控制台输出的 cookie 字符串',
+    webSessionSave: '保存并试跑',
+    webSessionClear: '清除会话',
+    webSessionStatusNone: '未设置',
+    webSessionStatusOk: '已设置',
+    webSessionExpired: '会话已失效，请重新获取',
+    webSessionHint:
+      '该适配器读的是网页登录态：API Key 打上游接口会是 401，只能用浏览器里的 Cookie。Cookie 加密存储，面板只回名不回值。',
+    webSessionHttpOnlyHint:
+      '关键 Cookie 很可能是 HttpOnly，JS 读不到 —— 这时请走脚本里给的手动路径：DevTools → Application → Cookies，把 name=value 用 "; " 连接后粘贴。',
+    webSessionCapturedAt: '获取于',
+    webSessionLastOk: '上次成功',
+    webSessionCookieNames: '包含的 Cookie：',
+    webSessionTrial: '保存后的试跑结果',
+    webSessionTrialOk: '读取成功',
+    webSessionTrialFailed: '试跑失败',
+    webSessionSaved: '网页会话已保存',
+    webSessionCleared: '网页会话已清除',
+    webSessionClearConfirm: '清除账户「{name}」的网页会话？清除后该账户的余额会读不到，需要重新粘贴 Cookie。',
+    webSessionCookieRequired: '请先粘贴 Cookie'
   },
   keys: {
     subAdmin: '管理员可见全部密钥',

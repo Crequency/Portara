@@ -16,14 +16,18 @@ import {
   type ModelMeta,
   type ModelOverride,
   type ModelRoute,
+  type UsageAccountSnapshot,
+  type UsageAdapterInfo,
   type UsageSnapshot,
   type RangePreset,
   type RequestLog,
   type SeriesPoint,
   type StatsOverview,
   type StatsSeries,
-  type User
+  type User,
+  type WebSessionStatus
 } from '../api'
+import { WEB_SESSION_CONSOLE_SCRIPT } from '../consoleScripts'
 import Modal from '../components/Modal.vue'
 import AccountUsage from '../components/AccountUsage.vue'
 import BillingRateDialog from '../components/BillingRateDialog.vue'
@@ -355,6 +359,205 @@ async function revealAccountKey(a: ChannelAccount): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- 网页会话
+
+/**
+ * 会话型适配器：余额只有**浏览器登录态（Cookie）**读得到，渠道密钥打过去是 401。
+ *
+ * 判断依据优先用后端 `/api/usage/adapters` 给的 `kind` / `auth`；
+ * 接口没就绪（或旧版后端）时按已知 id 兜底，页面不至于因此没有入口。
+ */
+const KNOWN_SESSION_ADAPTERS = new Set(['opendesign'])
+const usageAdapters = ref<UsageAdapterInfo[]>([])
+
+async function loadUsageAdapters(): Promise<void> {
+  try {
+    const res = await api.get<{ adapters: UsageAdapterInfo[] }>('/api/usage/adapters')
+    usageAdapters.value = res.adapters
+  } catch {
+    // 拿不到清单不影响详情页 —— 退回按 id 判断
+    usageAdapters.value = []
+  }
+}
+
+/** 账户可以覆盖渠道的适配器（后端按 account.usage_adapter || channel.usage_adapter 取） */
+function effectiveAdapter(a?: ChannelAccount | null): string {
+  return a?.usageAdapter || channel.value?.usageAdapter || ''
+}
+
+function isSessionAdapter(adapterId: string): boolean {
+  if (!adapterId) return false
+  const hit = usageAdapters.value.find((x) => x.id === adapterId)
+  if (hit) return hit.kind === 'session-http' || hit.auth === 'session-cookie'
+  return KNOWN_SESSION_ADAPTERS.has(adapterId)
+}
+
+/** 正在编辑网页会话的账户；null = 弹窗关闭 */
+const webSessionAccount = ref<ChannelAccount | null>(null)
+const webSessionStatus = ref<WebSessionStatus | null>(null)
+const webSessionLoading = ref(false)
+const webSessionSaving = ref(false)
+const webSessionClearing = ref(false)
+const webSessionCookie = ref('')
+const webSessionError = ref('')
+const webSessionTrial = ref<UsageSnapshot | null>(null)
+/** 复制过脚本才显示「已复制，去浏览器粘贴执行」—— 没点就提示等于没说 */
+const webSessionScriptCopied = ref(false)
+
+/**
+ * 两种响应形状都认：契约里的 `{ session }`，以及后端可能直接平铺的 `{ status }`。
+ * 契约还没最终定稿时，前端不该因为多一层壳就显示「未设置」。
+ */
+function normalizeSession(res: {
+  session?: WebSessionStatus | null
+  status?: WebSessionStatus | null
+}): WebSessionStatus | null {
+  const s = res?.session ?? res?.status ?? null
+  if (!s || s.exists === false) return null
+  return s
+}
+
+/** 会话失效：后端在 401/403 时记 'session_expired'，面板据此提示重新获取 */
+const webSessionExpired = computed(() => {
+  const err = (webSessionStatus.value?.lastError ?? '').toLowerCase()
+  return err.includes('session_expired') || err.includes('expired')
+})
+
+/** 该次试跑在**当前账户**上的结果；明细缺失时退回聚合值 */
+const webSessionTrialAccount = computed<UsageAccountSnapshot | null>(() => {
+  const trial = webSessionTrial.value
+  const acct = webSessionAccount.value
+  if (!trial) return null
+  const list = trial.accounts ?? []
+  if (list.length > 0) {
+    const hit = acct ? list.find((x) => x.accountId === acct.id) : undefined
+    if (hit) return hit
+    if (list.length === 1) return list[0]
+  }
+  if (trial.ok || trial.balances.length > 0 || trial.windows.length > 0) {
+    return {
+      accountId: acct?.id ?? '',
+      accountName: acct?.name ?? '',
+      adapter: trial.adapter ?? '',
+      ok: trial.ok,
+      error: trial.error,
+      warnings: trial.warnings ?? [],
+      balances: trial.balances ?? [],
+      windows: trial.windows ?? []
+    }
+  }
+  return null
+})
+
+/** 试跑失败原因原文 —— 不吞掉，用户需要照着它判断是 Cookie 还是别的问题 */
+const webSessionTrialError = computed(() => {
+  const trial = webSessionTrial.value
+  if (!trial) return ''
+  const acct = webSessionTrialAccount.value
+  if (acct && !acct.ok) return acct.error ?? trial.error ?? ''
+  if (!acct) return trial.error ?? ''
+  return ''
+})
+
+const webSessionTrialOk = computed(
+  () => webSessionTrial.value !== null && webSessionTrialError.value === ''
+)
+
+async function openWebSession(a: ChannelAccount): Promise<void> {
+  const ch = channel.value
+  if (!ch) return
+  webSessionAccount.value = a
+  webSessionStatus.value = null
+  webSessionCookie.value = ''
+  webSessionError.value = ''
+  webSessionTrial.value = null
+  webSessionScriptCopied.value = false
+  webSessionLoading.value = true
+  try {
+    const res = await api.get<{ session?: WebSessionStatus | null; status?: WebSessionStatus | null }>(
+      `/api/channels/${ch.id}/accounts/${a.id}/web-session`
+    )
+    webSessionStatus.value = normalizeSession(res)
+  } catch (err) {
+    webSessionError.value = errorText(err, t('toast.loadFailed'))
+  } finally {
+    webSessionLoading.value = false
+  }
+}
+
+function closeWebSession(): void {
+  webSessionAccount.value = null
+  webSessionStatus.value = null
+  webSessionCookie.value = ''
+  webSessionError.value = ''
+  webSessionTrial.value = null
+}
+
+/** 把控制台脚本复制到剪贴板；用户再去已登录的浏览器里粘贴执行 */
+async function copyWebSessionScript(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(WEB_SESSION_CONSOLE_SCRIPT)
+    webSessionScriptCopied.value = true
+    toast.success(t('channels.webSessionCopied'))
+  } catch {
+    toast.error(t('toast.copyFailed'))
+  }
+}
+
+async function saveWebSession(): Promise<void> {
+  const ch = channel.value
+  const acct = webSessionAccount.value
+  if (!ch || !acct) return
+  const cookie = webSessionCookie.value.trim()
+  if (!cookie) {
+    webSessionError.value = t('channels.webSessionCookieRequired')
+    return
+  }
+  webSessionSaving.value = true
+  webSessionError.value = ''
+  try {
+    const res = await api.post<{
+      session?: WebSessionStatus | null
+      status?: WebSessionStatus | null
+      usage?: UsageSnapshot | null
+      snapshot?: UsageSnapshot | null
+      ok?: boolean
+      error?: string
+    }>(`/api/channels/${ch.id}/accounts/${acct.id}/web-session`, { cookie })
+    webSessionStatus.value = normalizeSession(res)
+    webSessionTrial.value = res.usage ?? res.snapshot ?? null
+    webSessionCookie.value = ''
+    // 平铺形状用 ok/error 明确表达「这次试跑成没成」
+    if (res.ok === false && res.error) webSessionError.value = res.error
+    if (res.ok !== false && webSessionTrialError.value === '') {
+      toast.success(t('channels.webSessionSaved'))
+    }
+  } catch (err) {
+    webSessionError.value = errorText(err, t('channels.saveFailed'))
+  } finally {
+    webSessionSaving.value = false
+  }
+}
+
+async function clearWebSession(): Promise<void> {
+  const ch = channel.value
+  const acct = webSessionAccount.value
+  if (!ch || !acct) return
+  if (!confirm(t('channels.webSessionClearConfirm', { name: acct.name }))) return
+  webSessionClearing.value = true
+  webSessionError.value = ''
+  try {
+    await api.del(`/api/channels/${ch.id}/accounts/${acct.id}/web-session`)
+    webSessionStatus.value = null
+    webSessionTrial.value = null
+    toast.success(t('channels.webSessionCleared'))
+  } catch (err) {
+    webSessionError.value = errorText(err, t('channels.saveFailed'))
+  } finally {
+    webSessionClearing.value = false
+  }
+}
+
 /**
  * 账户区按钮的**事件委托**。
  *
@@ -382,6 +585,7 @@ function onAcctDelegatedClick(event: MouseEvent): void {
   }
   if (act === 'edit') openAccountForm(account)
   else if (act === 'reveal') void revealAccountKey(account)
+  else if (act === 'web-session') void openWebSession(account)
   else setDiagDetail('未知动作：' + act)
 }
 
@@ -606,6 +810,7 @@ watch(preset, () => {
 })
 onMounted(() => {
   void loadChannel()
+  void loadUsageAdapters()
   document.addEventListener('click', onAcctDelegatedClick)
 })
 onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick))
@@ -861,6 +1066,20 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
             {{ t('channels.accountPriority', { p: a.priority, w: a.weight }) }}
           </span>
           <span class="spacer" />
+          <!--
+            会话型适配器（如 opendesign）的余额只认浏览器 Cookie ——
+            该账户有多近的会话、什么时候失效，只有这个弹窗里看得到。
+          -->
+          <button
+            v-if="isSessionAdapter(effectiveAdapter(a))"
+            type="button"
+            class="btn btn-sm"
+            data-acct-act="web-session"
+            :data-acct-id="a.id"
+            :data-testid="'web-session-btn-' + a.id"
+          >
+            {{ t('channels.webSession') }}
+          </button>
           <button
             type="button"
             class="btn btn-sm"
@@ -1275,6 +1494,152 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
       <button class="btn" @click="closeReveal">{{ t('common.close') }}</button>
     </div>
   </Modal>
+  <!-- 网页会话：复制控制台脚本 → 粘贴 Cookie → 看当前状态与试跑结果 -->
+  <Modal
+    v-if="webSessionAccount"
+    :title="t('channels.webSessionTitle') + ' · ' + webSessionAccount.name"
+    wide
+    @close="closeWebSession"
+  >
+    <div class="alert alert-info">{{ t('channels.webSessionHint') }}</div>
+
+    <!-- ① 一键复制脚本：用户拿去已登录的浏览器控制台执行 -->
+    <div class="ws-step">
+      <div class="ws-step-title">{{ t('channels.webSessionStep1') }}</div>
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        data-testid="web-session-copy"
+        @click="copyWebSessionScript"
+      >
+        {{ t('channels.webSessionCopyScript') }}
+      </button>
+      <div
+        v-if="webSessionScriptCopied"
+        class="dim ws-step-hint"
+        data-testid="web-session-copied-hint"
+      >
+        {{ t('channels.webSessionCopied') }}
+      </div>
+    </div>
+
+    <!-- ② 从控制台输出里把 Cookie 贴回来 -->
+    <div class="ws-step">
+      <div class="ws-step-title">{{ t('channels.webSessionStep2') }}</div>
+      <textarea
+        v-model="webSessionCookie"
+        class="ws-textarea"
+        rows="3"
+        spellcheck="false"
+        autocomplete="off"
+        data-testid="web-session-cookie"
+        :placeholder="t('channels.webSessionPaste')"
+      />
+    </div>
+
+    <!-- ③ 当前会话状态：有没有、什么时候取的、上次成没成 -->
+    <div class="ws-step">
+      <div class="ws-step-title">{{ t('channels.webSessionStep3') }}</div>
+      <div v-if="webSessionLoading" class="dim ws-step-hint">
+        {{ t('common.loading') }}
+      </div>
+      <template v-else-if="!webSessionStatus">
+        <span class="badge badge-off" data-testid="web-session-status-none">
+          {{ t('channels.webSessionStatusNone') }}
+        </span>
+      </template>
+      <template v-else>
+        <div class="row row-wrap" style="gap: 6px">
+          <span
+            class="badge"
+            :class="webSessionExpired ? 'badge-err' : 'badge-ok'"
+            data-testid="web-session-status"
+          >
+            {{
+              webSessionExpired
+                ? t('channels.webSessionExpired')
+                : t('channels.webSessionStatusOk')
+            }}
+          </span>
+          <span v-if="webSessionStatus.capturedAt" class="tag">
+            {{ t('channels.webSessionCapturedAt') }} {{ formatTime(webSessionStatus.capturedAt) }}
+          </span>
+          <span v-if="webSessionStatus.lastOkAt" class="tag">
+            {{ t('channels.webSessionLastOk') }} {{ formatTime(webSessionStatus.lastOkAt) }}
+          </span>
+        </div>
+        <div v-if="webSessionStatus.cookieNames.length" class="dim ws-step-hint mono">
+          {{ t('channels.webSessionCookieNames') }}
+          {{ webSessionStatus.cookieNames.join(', ') }}
+        </div>
+        <!-- 失败原因照原文显示，不做二次翻译：原文才够定位 -->
+        <div
+          v-if="webSessionStatus.lastError"
+          class="err-text ws-step-hint"
+          data-testid="web-session-last-error"
+        >
+          {{ webSessionStatus.lastError }}
+        </div>
+      </template>
+      <div class="dim ws-step-hint">{{ t('channels.webSessionHttpOnlyHint') }}</div>
+    </div>
+
+    <!-- 保存后的试跑结果 -->
+    <div v-if="webSessionTrial" class="ws-step" data-testid="web-session-trial">
+      <div class="ws-step-title">{{ t('channels.webSessionTrial') }}</div>
+      <template v-if="webSessionTrialOk && webSessionTrialAccount">
+        <div class="row row-wrap" style="gap: 6px">
+          <span class="badge badge-ok">{{ t('channels.webSessionTrialOk') }}</span>
+          <span
+            v-for="b in webSessionTrialAccount.balances"
+            :key="b.currency"
+            class="tag mono"
+          >
+            {{ formatMoney(b.remaining, b.currency) }}
+          </span>
+          <span v-for="w in webSessionTrialAccount.windows" :key="w.key" class="tag mono">
+            {{ windowLabel(w.key) }}
+            {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
+          </span>
+        </div>
+        <div
+          v-for="(wn, i) in webSessionTrialAccount.warnings"
+          :key="i"
+          class="dim ws-step-hint"
+        >
+          · {{ wn }}
+        </div>
+      </template>
+      <div v-else class="err-text" data-testid="web-session-trial-error">
+        <b>{{ t('channels.webSessionTrialFailed') }}：</b>{{ webSessionTrialError || '—' }}
+      </div>
+    </div>
+
+    <div v-if="webSessionError" class="err-text ws-step-hint" data-testid="web-session-error">
+      {{ webSessionError }}
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn" @click="closeWebSession">{{ t('common.close') }}</button>
+      <button
+        class="btn"
+        :disabled="webSessionClearing || webSessionSaving"
+        data-testid="web-session-clear"
+        @click="clearWebSession"
+      >
+        {{ webSessionClearing ? t('common.saving') : t('channels.webSessionClear') }}
+      </button>
+      <button
+        class="btn btn-primary"
+        :disabled="webSessionSaving || !webSessionCookie.trim()"
+        data-testid="web-session-save"
+        @click="saveWebSession"
+      >
+        {{ webSessionSaving ? t('common.saving') : t('channels.webSessionSave') }}
+      </button>
+    </div>
+  </Modal>
+
   <!-- 账户表单 -->
   <Modal
     v-if="accountForm"
@@ -1340,3 +1705,28 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
   </Modal>
 
 </template>
+
+<style scoped>
+/* 网页会话弹窗：三步各有自己的小标题，段间用细线分开，避免看起来像一整块表单 */
+.ws-step + .ws-step {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.ws-step-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.ws-step-hint {
+  font-size: 11.5px;
+  margin-top: 8px;
+}
+.ws-textarea {
+  width: 100%;
+  min-height: 68px;
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+}
+</style>
