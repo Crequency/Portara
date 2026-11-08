@@ -260,6 +260,8 @@ const channelShape = {
   usageUrl: z.string().max(500),
   /** 耗尽判定依据：balance（余额优先）| quota（用量限额优先） */
   limitPriority: z.enum(['balance', 'quota']),
+  /** 渠道并发上限：0 = 不限制（默认），>0 = 同时在途的上游请求上限 */
+  maxConcurrency: z.coerce.number().int().min(0).max(100000),
   /** 只暴露映射模型：未映射的模型名不出现也不受理 */
   hideUnmappedModels: z.boolean(),
   models: z.array(z.string().min(1)),
@@ -302,6 +304,7 @@ function withCreateDefaults(b: CreateInput) {
     usageUrl: b.usageUrl ?? '',
     limitPriority: b.limitPriority ?? 'balance',
     hideUnmappedModels: b.hideUnmappedModels ?? false,
+    maxConcurrency: b.maxConcurrency ?? 0,
     apiKey: b.apiKey ?? '',
     models: b.models ?? [],
     priority: b.priority ?? 100,
@@ -404,8 +407,9 @@ channelRoutes.post('/', requireAdmin, async (c) => {
     `insert into channels
        (name, base_url, protocol, vendor, extra_headers, models_path, models_meta,
         model_overrides, api_key_cipher, proxy_id, models, priority, weight, timeout_ms,
-        status, note, usage_adapter, usage_url, limit_priority, hide_unmapped_models)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+        status, note, usage_adapter, usage_url, limit_priority, hide_unmapped_models,
+        max_concurrency)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
      returning *`,
     [
       body.name,
@@ -427,7 +431,8 @@ channelRoutes.post('/', requireAdmin, async (c) => {
       body.usageAdapter ?? '',
       body.usageUrl ?? '',
       body.limitPriority ?? 'balance',
-      body.hideUnmappedModels
+      body.hideUnmappedModels,
+      body.maxConcurrency ?? 0
     ]
   )
   await recordAudit(c, 'channel.create', { type: 'channel', id: row!.id }, {
@@ -493,6 +498,7 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
        usage_url      = coalesce($19, usage_url),
        limit_priority = coalesce($20, limit_priority),
        hide_unmapped_models = coalesce($21, hide_unmapped_models),
+       max_concurrency = coalesce($22, max_concurrency),
        updated_at     = now()
      where id = $1
      returning *`,
@@ -518,7 +524,8 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
       body.usageAdapter ?? null,
       body.usageUrl ?? null,
       body.limitPriority ?? null,
-      body.hideUnmappedModels ?? null
+      body.hideUnmappedModels ?? null,
+      body.maxConcurrency ?? null
     ]
   )
   // 只记「改了哪些字段」，不记值 —— 其中可能有密钥

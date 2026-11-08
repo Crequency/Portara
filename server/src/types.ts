@@ -75,6 +75,8 @@ export interface ChannelRow {
   limit_priority: 'balance' | 'quota'
   /** 只暴露映射模型：为 true 时该渠道未映射的模型既不出现在 /models，也不受理 */
   hide_unmapped_models: boolean
+  /** 渠道级并发上限：0 = 不限制；>0 时同时在途的上游请求不超过它 */
+  max_concurrency: number
   models: string[]
   priority: number
   weight: number
@@ -344,6 +346,8 @@ export function toChannelDto(
     usageUrl: ch.usage_url ?? '',
     limitPriority: ch.limit_priority ?? 'balance',
     hideUnmappedModels: ch.hide_unmapped_models === true,
+    /** 渠道级并发上限；0 = 不限制 */
+    maxConcurrency: ch.max_concurrency ?? 0,
     baseUrl: ch.base_url,
     apiKeyMasked: maskedKey,
     // 有账户就按账户算（账户才是密钥的载体）；没有则回退到渠道列，兼容旧数据

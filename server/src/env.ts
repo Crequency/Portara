@@ -131,9 +131,21 @@ const concurrencyCooldownSec = Math.max(
   Number(process.env.PORTARA_CONCURRENCY_COOLDOWN_SEC ?? 20)
 )
 
+/**
+ * 所有候选渠道都满并发时，最多排队多久（毫秒）。
+ *
+ * 语义：请求不会立刻失败，而是每 50ms 重试申请槽位；超过这个时长才返回 429。
+ * 默认 30s —— 足够覆盖一次上游普通请求的排队，又不至于让客户端挂到超时。
+ */
+const concurrencyQueueTimeoutMs = Math.max(
+  0,
+  Number(process.env.PORTARA_CONCURRENCY_QUEUE_TIMEOUT_MS ?? 30000)
+)
+
 export const env = {
   port: num(process.env.PORTARA_PORT, 52740),
   concurrencyCooldownSec,
+  concurrencyQueueTimeoutMs,
   affinityTtlSeconds,
   affinityMaxAgeSeconds,
   maxChannelAttempts,

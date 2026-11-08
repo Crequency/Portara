@@ -6854,6 +6854,166 @@ async function main() {
       assert.equal(lbClean2.status, 200)
     })
 
+    // ------------------------------------------- 渠道并发闸门（默认无上限）
+    section('㊴ 渠道并发限流：限满切路由 / 全满排队 / 释放正确')
+
+    /** 建一个只含单个渠道的别名，返回 { channelId, alias } */
+    async function newConcChannel(name, maxConcurrency, extraAccounts = []) {
+      const ch = await apiCall('POST', '/api/channels', {
+        name: `smoke-conc-${name}-${RUN}`,
+        baseUrl: `${MOCK}/v1`,
+        apiKey: UPSTREAM_KEY,
+        models: [MOCK_MODEL],
+        priority: 970,
+        maxConcurrency
+      })
+      assert.equal(ch.status, 201, `建渠道失败：${JSON.stringify(ch.body).slice(0, 160)}`)
+      const channelId = ch.body.channel.id
+      assert.equal(ch.body.channel.maxConcurrency, maxConcurrency, 'DTO 未回显 maxConcurrency')
+      for (const acc of extraAccounts) {
+        await apiCall('POST', `/api/channels/${channelId}/accounts`, acc)
+      }
+      const alias = `smoke-conc-${name}-${RUN}/model`
+      await apiCall('POST', '/api/model-routes', {
+        alias,
+        targets: [{ channelId, upstreamModel: MOCK_MODEL }]
+      })
+      return { channelId, alias }
+    }
+
+    // ① 默认 0 = 不限制：并发 5 个全部放行，且 Redis 无计数
+    const unlimited = await newConcChannel('unlimited', 0, [{
+      name: `并发不受限-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 1,
+      weight: 1
+    }])
+    const unlimitedHits = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        proxyCall(
+          '/v1/chat/completions',
+          { model: unlimited.alias, messages: [{ role: 'user', content: `u${i}` }] },
+          lbSecret
+        )
+      )
+    )
+    check('并发不受限（maxConcurrency=0）：5 个并发请求全部 200', () => {
+      assert.deepEqual(unlimitedHits.map((r) => r.status), [200, 200, 200, 200, 200])
+    })
+
+    // ② 上限 1 + 上游延迟 300ms：两个并发请求 → 第二个排队后仍成功
+    const limited = await newConcChannel('limit1', 1, [{
+      name: `并发上限1-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 1,
+      weight: 1
+    }])
+    const startedAt = Date.now()
+    const slowPair = await Promise.all([
+      proxyCall(
+        '/v1/chat/completions',
+        {
+          model: limited.alias,
+          messages: [{ role: 'user', content: 'conc-a' }],
+          mock_delay_ms: 300
+        },
+        lbSecret
+      ),
+      proxyCall(
+        '/v1/chat/completions',
+        {
+          model: limited.alias,
+          messages: [{ role: 'user', content: 'conc-b' }],
+          mock_delay_ms: 300
+        },
+        lbSecret
+      )
+    ])
+    const elapsed = Date.now() - startedAt
+    check('并发上限 1：两个并发请求都成功（第二个排队而非失败）', () => {
+      assert.deepEqual(slowPair.map((r) => r.status), [200, 200])
+    })
+    check('并发上限 1：串行化生效（总耗时 ≥ 2×延迟，说明没有同时打过去）', () => {
+      assert.ok(elapsed >= 500, `总耗时 ${elapsed}ms 过短，两个请求可能并发了`)
+    })
+    check('并发上限 1：排队命中者带 x-portara-concurrency-wait-ms 响应头', () => {
+      const waited = slowPair.map((r) => Number(r.headers.get('x-portara-concurrency-wait-ms') ?? 0))
+      assert.ok(waited.some((w) => w > 0), `两个响应都没有排队头：${waited}`)
+    })
+
+    // ③ 两个渠道各限 1：并发 2 个应分别落到两个渠道（不排队）
+    const chA = await newConcChannel('multiA', 1, [{
+      name: `多路由A-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 1,
+      weight: 1
+    }])
+    const chB = await apiCall('POST', '/api/channels', {
+      name: `smoke-conc-multiB-${RUN}`,
+      baseUrl: `${MOCK}/v1`,
+      apiKey: UPSTREAM_KEY,
+      models: [MOCK_MODEL],
+      priority: 971,
+      maxConcurrency: 1
+    })
+    const chBId = chB.body.channel.id
+    await apiCall('POST', `/api/channels/${chBId}/accounts`, {
+      name: `多路由B-${RUN}`,
+      apiKey: UPSTREAM_KEY,
+      priority: 1,
+      weight: 1
+    })
+    const multiAlias = `smoke-conc-multi-${RUN}/model`
+    await apiCall('POST', '/api/model-routes', {
+      alias: multiAlias,
+      targets: [
+        { channelId: chA.channelId, upstreamModel: MOCK_MODEL },
+        { channelId: chBId, upstreamModel: MOCK_MODEL }
+      ]
+    })
+    const multiStart = Date.now()
+    const multiPair = await Promise.all([
+      proxyCall(
+        '/v1/chat/completions',
+        { model: multiAlias, messages: [{ role: 'user', content: 'm1' }], mock_delay_ms: 400 },
+        lbSecret
+      ),
+      proxyCall(
+        '/v1/chat/completions',
+        { model: multiAlias, messages: [{ role: 'user', content: 'm2' }], mock_delay_ms: 400 },
+        lbSecret
+      )
+    ])
+    const multiElapsed = Date.now() - multiStart
+    check('多路由各限 1：两个并发请求都成功且并行执行（<600ms）', () => {
+      assert.deepEqual(multiPair.map((r) => r.status), [200, 200])
+      assert.ok(multiElapsed < 600, `耗时 ${multiElapsed}ms，说明没有分散到两个渠道`)
+    })
+    check('多路由各限 1：请求确实落在不同渠道', () => {
+      const chans = multiPair.map((r) => r.headers.get('x-portara-channel'))
+      assert.equal(new Set(chans).size, 2, `渠道未分散：${chans}`)
+    })
+
+    // ④ 释放正确：全部完成后 Redis 计数归零
+    await sleep(200)
+    const inflightAfter = await apiCall('GET', '/api/lb/live?minutes=15')
+    check('并发槽位已释放：实况里 inFlight 全部归零', () => {
+      const targets = (inflightAfter.body?.aliases ?? []).flatMap((a) => a.targets ?? [])
+      const concTargets = targets.filter((t) => t.maxConcurrency > 0)
+      assert.ok(concTargets.length > 0, '实况里没有带并发上限的目标')
+      for (const t of concTargets) {
+        assert.equal(t.inFlight, 0, `渠道 ${t.channelName} 仍有 ${t.inFlight} 个在途`)
+      }
+    })
+
+    // 清理并发场景
+    for (const alias of [unlimited.alias, limited.alias, multiAlias]) {
+      await apiCall('POST', '/api/model-routes/purge', { alias })
+    }
+    for (const id of [unlimited.channelId, limited.channelId, chA.channelId, chBId]) {
+      await apiCall('DELETE', `/api/channels/${id}`)
+    }
+
     // ---------------------------------------------------------- 清理
     section('㊳ 清理测试数据')
 

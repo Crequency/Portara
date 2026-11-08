@@ -50,6 +50,7 @@ interface RouteJoin extends ModelRouteRow {
   c_model_overrides: Record<string, { protocol?: string; baseUrl?: string }> | null
   c_proxy_id: string | null
   c_hide_unmapped_models: boolean
+  c_max_concurrency: number
 }
 
 /** 别名映射查询：只取「映射启用 且 渠道启用」的目标 */
@@ -65,7 +66,8 @@ const ROUTE_SQL = `
          c.protocol        as c_protocol,
          c.model_overrides as c_model_overrides,
          c.proxy_id        as c_proxy_id,
-         c.hide_unmapped_models as c_hide_unmapped_models
+         c.hide_unmapped_models as c_hide_unmapped_models,
+         c.max_concurrency as c_max_concurrency
     from model_routes r
     join channels c on c.id = r.channel_id
    where r.alias = $1
@@ -89,7 +91,8 @@ function toCandidate(row: RouteJoin): ChannelCandidate {
     protocol: row.c_protocol,
     model_overrides: row.c_model_overrides ?? {},
     proxy_id: row.c_proxy_id,
-    hide_unmapped_models: row.c_hide_unmapped_models === true
+    hide_unmapped_models: row.c_hide_unmapped_models === true,
+    max_concurrency: row.c_max_concurrency ?? 0
   }
 }
 

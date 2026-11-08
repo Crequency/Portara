@@ -9,6 +9,7 @@ import {
   summarizeAccountStates,
   type LiveAccount
 } from '../services/lbLive.js'
+import { channelInFlight } from '../services/concurrency.js'
 import { getRoutingSettings } from '../services/routingSettings.js'
 import type { ChannelAccountRow } from '../types.js'
 
@@ -47,6 +48,8 @@ interface TargetRow {
   upstream_model: string
   priority: number
   weight: number
+  /** 渠道并发上限：0 = 不限制 */
+  max_concurrency: number
 }
 
 interface AccountRowWithChannel extends ChannelAccountRow {
@@ -165,6 +168,7 @@ lbRoutes.get('/live', async (c) => {
       `select r.alias,
               r.channel_id,
               c.name as channel_name,
+              c.max_concurrency,
               r.upstream_model,
               r.priority,
               r.weight
@@ -198,6 +202,18 @@ lbRoutes.get('/live', async (c) => {
         [channelIds]
       ))
     )
+  }
+
+  /*
+   * ④-b 各渠道的当前在途数（并发闸门的实时占用）。
+   *
+   * 一次读全部相关渠道，而不是每个 target 读一次：面板会同时展示多个别名/渠道，
+   * 逐个读会把一次页面刷新放大成几十次 Redis 往返。
+   */
+  const inFlightByChannel = new Map<string, number>()
+  if (channelIds.length > 0) {
+    const values = await Promise.all(channelIds.map((id) => channelInFlight(id)))
+    channelIds.forEach((id, i) => inFlightByChannel.set(id, values[i] ?? 0))
   }
 
   const routing = await getRoutingSettings()
@@ -252,7 +268,10 @@ lbRoutes.get('/live', async (c) => {
         channelName: t.channel_name,
         upstreamModel: t.upstream_model,
         priority: t.priority,
-        weight: t.weight
+        weight: t.weight,
+        // 并发闸门：面板显示「在途 / 上限」，满载时能一眼看出排队原因
+        maxConcurrency: t.max_concurrency ?? 0,
+        inFlight: inFlightByChannel.get(t.channel_id) ?? 0
       })),
       accounts: accountDtos
     }

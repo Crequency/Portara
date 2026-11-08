@@ -22,6 +22,8 @@ export interface ChannelCandidate {
   vendor?: string
   /** 渠道自定义固定请求头 */
   extra_headers?: Record<string, string>
+  /** 渠道并发上限：0/缺省 = 不限制（负载均衡据此切渠道或排队） */
+  max_concurrency?: number
   /** 渠道默认协议：openai | anthropic | mixed */
   protocol?: string
   /** 逐模型覆盖：协议与 Base URL */

@@ -30,6 +30,12 @@ import {
   parseQuotaResetAt
 } from '../services/quotaSignal.js'
 import { tryDecryptKey } from '../services/channels.js'
+import {
+  QUEUE_POLL_MS,
+  acquireChannelSlot,
+  queueTimeoutMs,
+  releaseChannelSlot
+} from '../services/concurrency.js'
 import { upstreamFetch } from '../services/proxyAgent.js'
 import {
   buildUpstreamHeaders,
@@ -151,6 +157,50 @@ async function selectTargets(
 interface ProxyOptions {
   /** 是否解析 usage（JSON 响应与 SSE 流） */
   scanUsage: boolean
+}
+
+/** 排队的睡眠：可被客户端断开 / 整体超时提前打断 */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/** 并发相关的响应头：排队耗时（0 表示没排队 / 未启用） */
+function concurrencyHeadersOf(waitMs: number): Record<string, string> {
+  return waitMs > 0 ? { 'x-portara-concurrency-wait-ms': String(Math.round(waitMs)) } : {}
+}
+
+/**
+ * 把「释放并发槽位」挂到响应体的生命周期上。
+ *
+ * 流式响应在 return 之后才真正传输，所以不能用 try/finally 立即释放 ——
+ * 那样并发计数会在请求还在跑的时候就掉下来，闸门等于没开。
+ * flush（正常读完）与 cancel（客户端断开）各释放一次，靠调用方的幂等标记去重。
+ */
+function wrapStreamWithRelease(body: ReadableStream, release: () => void): ReadableStream {
+  return body.pipeThrough(
+    new TransformStream({
+      flush() {
+        release()
+      },
+      cancel() {
+        release()
+      }
+    })
+  )
 }
 
 async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
@@ -498,7 +548,71 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    */
   let frozenRetryAtMs: number | null = null
 
-  for (const [targetIndex, target] of pick.targets.slice(0, channelLimit).entries()) {
+  /**
+   * 当前持有的并发槽位（渠道 + 上限）。
+   *
+   * `release` 必须是幂等的：流式响应会在 flush 与 cancel 两条路径上各调一次，
+   * 非流式则在 return 之前直接调用。用闭包内的一次性标记去重。
+   */
+  let slotHolder: { channelId: string; limit: number; release: () => void } | null = null
+  const takeSlot = (channelId: string, limit: number): (() => void) => {
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      void releaseChannelSlot(channelId, limit)
+    }
+  }
+  /** 立即归还（非流式 / 出错返回前调用；重复调用无害） */
+  const releaseSlotNow = (): void => {
+    slotHolder?.release()
+    slotHolder = null
+  }
+  /** 排队累计耗时（诊断 / 面板用） */
+  let queueWaitMs = 0
+  /** 当前请求的并发排队头（0 = 没排队） */
+  const concurrencyHeaders = (): Record<string, string> => concurrencyHeadersOf(queueWaitMs)
+
+  /**
+   * 并发排队的**整体**截止时间。
+   *
+   * 一个请求跨多个候选渠道时，排队预算只算一次 ——
+   * 若每个渠道各排一个 queueTimeoutMs，最坏会挂 N×30s，
+   * 客户端早就超时了，而请求还占着连接不放。
+   */
+  const concDeadline = Date.now() + queueTimeoutMs()
+
+  /**
+   * 为某个渠道申请名额；已满则排队到整体截止时间。
+   *
+   * 返回 false 表示「这个渠道在剩余预算内始终满载」，调用方应换下一个候选渠道；
+   * 换到最后一个仍失败就是整站并发满载（429 channel_concurrency_full）。
+   */
+  const acquireForChannel = async (channelId: string, limit: number): Promise<boolean> => {
+    const waitedFrom = Date.now()
+    for (;;) {
+      const slot = await acquireChannelSlot(channelId, limit)
+      if (slot.ok) {
+        queueWaitMs += Date.now() - waitedFrom
+        slotHolder = { channelId, limit, release: takeSlot(channelId, limit) }
+        return true
+      }
+      if (c.req.raw.signal.aborted || Date.now() >= concDeadline) return false
+      await sleepUnlessAborted(QUEUE_POLL_MS, c.req.raw.signal)
+    }
+  }
+
+  /*
+   * 用 while + 可变顺序而不是 for-of：某个候选渠道并发已满时，
+   * 可能等来的是**另一个**候选渠道先空出来，那时把它挪到当前位置继续，
+   * 而不是傻等原顺序里那个满的渠道。
+   */
+  const candidateOrder = pick.targets.slice(0, channelLimit)
+  let orderIndex = 0
+  while (orderIndex < candidateOrder.length) {
+    const target = candidateOrder[orderIndex]
+    const targetIndex = orderIndex
+    orderIndex++
     channel = target.channel
     upstreamModel = target.upstreamModel
 
@@ -605,6 +719,42 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         code: 'upstream_quota_exhausted',
         extra: { retryAfter: retryAfterSec, resetAt: resetAtIso }
       })
+    }
+
+    /*
+     * 并发闸门（渠道级）。
+     *
+     * 位置很关键：必须在**打上游之前**、且每个渠道只申请一次 ——
+     * 换号不额外占名额（同一个上游池共享并发额度），换渠道才重新申请。
+     * 已满时排队等待：所有候选渠道都满 → 请求挂起而不是立刻失败，
+     * 只要任意一个渠道空出来就继续（见 acquireSlotWithQueue）。
+     */
+    /*
+     * 并发闸门（渠道级）：必须在**打上游之前**、且每个渠道只申请一次 ——
+     * 换号不额外占名额（同一上游池共享并发额度），换渠道才重新申请。
+     * 已满时排队；排队期间如果有别的候选渠道空出来，就先去那个渠道。
+     */
+    const concLimit = channel.max_concurrency ?? 0
+    if (concLimit > 0) {
+      const got = await acquireForChannel(channel.id, concLimit)
+      if (!got) {
+        lastFailure = `渠道「${channel.name}」并发已满（上限 ${concLimit}）`
+        if (targetIndex < channelLimit - 1) {
+          // 还有别的候选渠道：它的并发可能没满，先去看它
+          continue
+        }
+        baseLog.channelId = channel.id
+        baseLog.channelName = channel.name
+        baseLog.upstreamModel = upstreamModel
+        return rejectEarly({
+          status: 429,
+          logError: `所有候选渠道并发均已满载（channel_concurrency_full），排队 ${queueTimeoutMs()}ms`,
+          message: '所有候选渠道的并发均已满载，请稍后重试',
+          type: 'rate_limit_error',
+          code: 'channel_concurrency_full',
+          extra: { retryAfter: 1 }
+        })
+      }
     }
 
     const attemptLimit = Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length)
@@ -856,7 +1006,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     }
 
     if (res) break
-    // 这个渠道整层失败 → 换下一个候选渠道（若有）
+    // 这个渠道整层失败：立刻归还名额，再换下一个候选渠道（若有）
+    releaseSlotNow()
     if (targetIndex < channelLimit - 1) affinityDrifted = true
   }
 
@@ -902,7 +1053,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   res ??= lastUpstreamError
   if (!res) {
     const clientGone = c.req.raw.signal.aborted
-    // 一个可用的上游响应都没拿到：不会结算，归还预留
+    // 一个可用的上游响应都没拿到：不会结算，归还预留与并发名额
+    releaseSlotNow()
     void releaseReservationOnce()
     fireAndForgetLog({
       ...logCtx,
@@ -947,7 +1099,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         startedAt
       )
 
-      return new Response(stream, {
+      return new Response(wrapStreamWithRelease(stream, releaseSlotNow), {
         status: res.status,
         headers: {
           'content-type': 'text/event-stream',
@@ -955,6 +1107,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           'x-accel-buffering': 'no',
           'x-portara-channel': channel.name,
           'x-portara-protocol': 'anthropic',
+          ...concurrencyHeaders(),
           ...sessionEcho
         }
       })
@@ -965,7 +1118,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     const parsed = parseJsonSafe(text)
 
     if (!res.ok || !parsed || typeof parsed !== 'object') {
-      // 解析失败 / 上游非 2xx：不会结算，归还预留
+      // 解析失败 / 上游非 2xx：不会结算，归还预留与并发名额
+      releaseSlotNow()
       void releaseReservationOnce()
       fireAndForgetLog({
         ...logCtx,
@@ -983,6 +1137,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         headers: {
           'content-type': contentType,
           'x-portara-protocol': 'anthropic',
+          ...concurrencyHeaders(),
           ...sessionEcho
         }
       })
@@ -1002,12 +1157,14 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       error: ''
     }, billingAfterFor(translated.usage))
 
+    releaseSlotNow()
     return new Response(translated.body, {
       status: res.status,
       headers: {
         'content-type': 'application/json',
         'x-portara-channel': channel.name,
         'x-portara-protocol': 'anthropic',
+        ...concurrencyHeaders(),
         ...sessionEcho
       }
     })
@@ -1035,11 +1192,13 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       totalTokens: usage?.totalTokens ?? 0
     }))
 
+    releaseSlotNow()
     return new Response(text, {
       status: res.status,
       headers: {
         'content-type': contentType,
         'x-portara-channel': channel.name,
+        ...concurrencyHeaders(),
         ...sessionEcho
       }
     })
@@ -1048,6 +1207,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   // ⑨ 流式：tee 出两条支路 —— 一条原样下传，一条旁路扫描 usage
   const upstreamBody = res.body
   if (!upstreamBody) {
+    releaseSlotNow()
     void releaseReservationOnce()
     return openaiError(c, 502, '上游返回了空的流式响应', 'api_error', 'empty_stream')
   }
@@ -1086,13 +1246,14 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     }
   })()
 
-  return new Response(clientStream, {
+  return new Response(wrapStreamWithRelease(clientStream, releaseSlotNow), {
     status: res.status,
     headers: {
       'content-type': contentType,
       'cache-control': 'no-cache',
       'x-accel-buffering': 'no',
       'x-portara-channel': channel.name,
+      ...concurrencyHeaders(),
       ...sessionEcho
     }
   })

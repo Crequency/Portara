@@ -754,5 +754,17 @@ export const migrations: { id: string; sql: string }[] = [
       create index if not exists idx_lb_events_ts on lb_events (ts desc);
       create index if not exists idx_lb_events_alias_ts on lb_events (alias, ts desc);
     `
+  },
+  {
+    id: '027_channel_max_concurrency',
+    sql: `
+      -- 渠道级并发上限：0 = 不限制（默认，保持既有行为）。
+      --
+      -- 为什么放在渠道而不是账户：账号之间共享同一个上游会员档位，
+      -- 「同时最多 N 个在途请求」是**渠道（= 上游账号池）**的属性。
+      -- 达到上限时负载均衡会切到其它渠道；全部满载则排队等待。
+      alter table channels
+        add column if not exists max_concurrency integer not null default 0;
+    `
   }
 ]
