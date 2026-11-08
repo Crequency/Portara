@@ -844,6 +844,9 @@ export const en = {
     urlFieldHint: 'Leave empty to build the adapter path on the Base URL host; fill it when the API lives on another domain (e.g. a billing service).',
     cacheTtl: 'Balance cache TTL (seconds)',
     cacheTtlHint: 'Prevents hammering upstream rate limits. Both the panel and the API read this cache.',
+    autoRefreshSec: 'Web-session auto refresh (seconds)',
+    autoRefreshSecHint:
+      'Only applies to channels that need a browser session (e.g. OpenDesign). Each refresh updates usage and extends the session; 0 disables it. Default 600s.',
     canRead: 'Can read balance',
     canReadHint: 'Lets this key read balances via /v1/usage. Off by default — balances reveal account funds.',
     canRefresh: 'Can force refresh',

@@ -40,6 +40,7 @@ const form = ref<GatewaySettings>({
   defaultKeyRpmLimit: 60,
   timezone: 'UTC',
   usageCacheTtlSec: 300,
+  usageAutoRefreshSec: 600,
   accountFailureCooldownSec: 3600,
   skipExhaustedWindows: true,
   concurrencyCooldownSec: 20,
@@ -212,6 +213,18 @@ onMounted(load)
           <label>{{ t('usage.cacheTtl') }}</label>
           <input v-model.number="form.usageCacheTtlSec" type="number" min="30" max="86400" />
           <span class="hint">{{ t('usage.cacheTtlHint') }}</span>
+        </div>
+
+        <div class="field">
+          <label>{{ t('usage.autoRefreshSec') }}</label>
+          <input
+            v-model.number="form.usageAutoRefreshSec"
+            type="number"
+            min="0"
+            max="86400"
+            step="60"
+          />
+          <span class="hint">{{ t('usage.autoRefreshSecHint') }}</span>
         </div>
 
         <!-- 路由策略：失败冷却 + 打满窗口跳过 -->

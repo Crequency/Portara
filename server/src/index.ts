@@ -6,6 +6,7 @@ import { env, printStartupWarnings } from './env.js'
 import { closeProxyAgents } from './services/proxyAgent.js'
 import { closeRedis, redis } from './redis.js'
 import { getSettings, purgeOldLogs } from './services/settings.js'
+import { refreshSessionUsageChannels } from './services/usageFetch.js'
 import { pruneSessions } from './services/sessions.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -89,6 +90,41 @@ async function main(): Promise<void> {
     }
   }
   setInterval(() => void sweepSessions(), LOG_SWEEP_INTERVAL_MS).unref()
+
+  /**
+   * 网页会话型渠道的用量自动刷新（顺带续期会话）。
+   *
+   * 为什么要做：会话型上游（OpenDesign）的登录态是**滚动过期**的，
+   * 必须有人定期带着 Cookie 去访问，服务端才会回新的 token。
+   * 定时刷新同时解决两件事：面板显示的是实时用量、会话不会被放过期。
+   *
+   * 调度方式：每 60 秒 tick 一次，读设置项 `usageAutoRefreshSec` 决定是否到点。
+   * 不直接把 interval 设成设置值 —— 那样改了设置要重启才生效。
+   */
+  let lastUsageAutoRefresh = 0
+  const USAGE_TICK_MS = 60 * 1000
+  const autoRefreshUsage = async (): Promise<void> => {
+    try {
+      const settings = await getSettings()
+      const intervalSec = settings.settings.usageAutoRefreshSec
+      if (intervalSec <= 0) return
+      const now = Date.now()
+      if (now - lastUsageAutoRefresh < intervalSec * 1000) return
+      lastUsageAutoRefresh = now
+      const r = await refreshSessionUsageChannels()
+      if (r.refreshed > 0 || r.failed > 0) {
+        console.log(
+          `[portara] 网页会话用量自动刷新：成功 ${r.refreshed}、失败 ${r.failed}`
+        )
+      }
+    } catch (err) {
+      console.warn(
+        '[portara] 网页会话用量自动刷新失败：',
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+  }
+  setInterval(() => void autoRefreshUsage(), USAGE_TICK_MS).unref()
 
   const app = createApp()
   const server = serve(

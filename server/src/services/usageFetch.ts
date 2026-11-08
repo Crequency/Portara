@@ -20,7 +20,12 @@ import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
-import { loadWebSession, loadWebSnapshot, markSessionResult } from './webSession.js'
+import {
+  loadWebSession,
+  loadWebSnapshot,
+  markSessionResult,
+  rollWebSessionCookies
+} from './webSession.js'
 import {
   aggregateAccountSnapshots,
   endpointUrl,
@@ -167,6 +172,8 @@ interface EndpointOutcome {
   status: number
   error: string | null
   body: unknown
+  /** 上游返回的 Set-Cookie（会话滚动续期用） */
+  setCookies: string[]
 }
 
 /** 打一个端点：超时、代理、RAW_LIMIT 与错误归一化全部在这里，两种形态共用 */
@@ -192,19 +199,29 @@ async function callEndpoint(opts: {
       opts.proxy
     )
     const text = await res.text()
+    /*
+     * 抓 Set-Cookie：会话型上游（如 OpenDesign 的 better-auth）是**滚动过期**的，
+     * 每带 Cookie 访问一次就可能回一个新 token。接住它并回写，
+     * 会话就能一直续下去；不接住，到点就 401。
+     */
+    const setCookies =
+      typeof res.headers.getSetCookie === 'function'
+        ? res.headers.getSetCookie()
+        : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie') as string] : [])
     opts.raws[opts.key] = text.length > RAW_LIMIT ? text.slice(0, RAW_LIMIT) : text
     if (!res.ok) {
       return {
         ...base,
         status: res.status,
         error: `HTTP ${res.status}：${text.slice(0, 200)}`,
-        body: null
+        body: null,
+        setCookies
       }
     }
     try {
-      return { ...base, status: res.status, error: null, body: JSON.parse(text) as unknown }
+      return { ...base, status: res.status, error: null, body: JSON.parse(text) as unknown, setCookies }
     } catch {
-      return { ...base, status: res.status, error: '响应不是合法 JSON', body: null }
+      return { ...base, status: res.status, error: '响应不是合法 JSON', body: null, setCookies }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -212,7 +229,8 @@ async function callEndpoint(opts: {
       ...base,
       status: 0,
       error: /timeout|abort/i.test(msg) ? '请求超时' : msg,
-      body: null
+      body: null,
+      setCookies: []
     }
   }
 }
@@ -331,6 +349,22 @@ async function fetchAccountSnapshot(
       )
     )
 
+    /*
+     * 会话滚动续期：把本次响应里的 Set-Cookie 合并回库。
+     *
+     * **只在没有 401/403 时回写** —— 实测踩过：失效的 401 响应会带
+     * `Set-Cookie: __Secure-...session_token=; Max-Age=0`，照着合并会把库里
+     * 唯一那份 Cookie 也清掉，之后连"手动重放"都没得试（只能重粘）。
+     * 保留原样至少还能让用户判断是"会话过期"而不是"没配置"。
+     */
+    const sessionInvalid = results.some((r) => r.status === 401 || r.status === 403)
+    if (!sessionInvalid && results.some((r) => (r.setCookies ?? []).length > 0)) {
+      await rollWebSessionCookies(
+        account.id,
+        results.flatMap((r) => r.setCookies ?? [])
+      ).catch(() => undefined)
+    }
+
     // 401/403 = 登录态失效。这是**会话层**的事实，先落库再报错
     const expired = results.find((r) => r.status === 401 || r.status === 403)
     if (expired) {
@@ -393,6 +427,16 @@ async function fetchAccountSnapshot(
           return fail(`${r.label} 拉取失败：${r.error}`, raws)
         }
         warnings.push(`${r.label} 拉取失败：${r.error}`)
+      }
+      // 第二轮同样要接住 Set-Cookie（限制窗口接口也会续期），同样跳过失效响应
+      if (
+        !followResults.some((r) => r.status === 401 || r.status === 403) &&
+        followResults.some((r) => (r.setCookies ?? []).length > 0)
+      ) {
+        await rollWebSessionCookies(
+          account.id,
+          followResults.flatMap((r) => r.setCookies ?? [])
+        ).catch(() => undefined)
       }
     }
 
@@ -577,6 +621,45 @@ export async function listUsageChannelIds(): Promise<string[]> {
  * 再各自去取数据 —— 这样快的一回来就能显示，不必等最慢的那个。
  * 只查本地表，不碰上游，毫秒级。
  */
+/**
+ * 网页会话型渠道的自动刷新。
+ *
+ * 两个作用合一：
+ *   ① 拿到新的用量数字（面板不再是"复制那一刻"的快照）；
+ *   ② **顺便完成会话续期** —— 会话型上游是滚动过期的，不访问就会 401。
+ *
+ * 串行执行而不是并发：这些渠道都要打外部网页接口，并发只会更容易触发限流；
+ * 单个失败不影响其它渠道（每个都是独立 try）。
+ */
+export async function refreshSessionUsageChannels(): Promise<{ refreshed: number; failed: number }> {
+  const channels = await listUsageChannels()
+  const sessionIds: string[] = []
+  for (const ch of channels) {
+    const adapter = getUsageAdapter(ch.adapter)
+    if (adapter?.kind === 'session-http') sessionIds.push(ch.channelId)
+  }
+  let refreshed = 0
+  let failed = 0
+  for (const id of sessionIds) {
+    try {
+      const snap = await getUsageSnapshot(id, { force: true })
+      /*
+       * 只把**真正打上游成功**的算作刷新成功。
+       * 快照兜底也会返回 ok=true（带"来自手动快照"的 warning），
+       * 把它算成成功会让日志看起来"一直在正常刷新"，掩盖会话已经失效的事实。
+       */
+      const live = snap.accounts.some(
+        (a) => a.ok && !(a.warnings ?? []).some((w) => w.includes('手动快照'))
+      )
+      if (live) refreshed++
+      else failed++
+    } catch {
+      failed++
+    }
+  }
+  return { refreshed, failed }
+}
+
 export async function listUsageChannels(): Promise<
   Array<{ channelId: string; channelName: string; adapter: string }>
 > {

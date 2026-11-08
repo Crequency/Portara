@@ -842,6 +842,9 @@ export const zh = {
     urlFieldHint: '留空则按 Base URL 的域名拼适配器路径；接口在别的域名（如独立的 billing 服务）时才需要填。',
     cacheTtl: '余额缓存时长（秒）',
     cacheTtlHint: '避免频繁打上游接口被限频。面板与 API 都走这份缓存。',
+    autoRefreshSec: '网页会话自动刷新间隔（秒）',
+    autoRefreshSecHint:
+      '仅对需要浏览器会话的渠道（如 OpenDesign）生效。定时刷新既更新用量，也顺带续期登录态；填 0 关闭。默认 600 秒。',
     canRead: '可读取余额',
     canReadHint: '允许该密钥通过 /v1/usage 读取余额。默认关闭——余额反映账户资金状况。',
     canRefresh: '可强制刷新',

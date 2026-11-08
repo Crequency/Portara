@@ -213,6 +213,77 @@ export function parseWebSessionInput(input: string): WebSessionBundle {
   return { cookie: normalizeCookieInput(text), snapshot: null, snapshotAt: null }
 }
 
+/**
+ * 清洗 Cookie 串（**每次读、每次存都要过一遍**）。
+ *
+ * 为什么必须要：浏览器的「Copy as cURL」给的是
+ * `-H 'cookie: q=0.8; '__Secure-...token=xxx; ...'` —— 里层单引号会跟着名字一起被抠出来，
+ * 于是名字变成 `'__Secure-better-auth.session_token`。
+ * 服务端拿到这种名字会**整条忽略**，表现就是"会话明明粘对了却 401"。
+ * 实测（2026-11-09）：仅把名字两侧的引号去掉，同一份 Cookie 立刻 200。
+ */
+export function sanitizeCookieHeader(raw: string): string {
+  const pairs: string[] = []
+  for (const part of String(raw ?? '').split(/[;\n\r]+/)) {
+    let p = part.trim()
+    if (!p) continue
+    /*
+     * 只剥**前导**引号（cURL 的内层引号就长这样）。
+     * 不能无脑剥末尾引号：`a="1"` 会把值的右引号当条目引号剥掉，
+     * 结果值变成 `"1`，整条 Cookie 又被上游判成非法。
+     */
+    p = p.replace(/^['"]+/, '').trim()
+    const eq = p.indexOf('=')
+    if (eq <= 0) continue
+    const name = p.slice(0, eq).trim().replace(/^['"]+/, '').replace(/['"]+$/, '')
+    let value = p.slice(eq + 1).trim()
+    // 值自身成对的引号去掉；%2B / %3D 这类编码字符不要动
+    if (value.length > 0 && (value[0] === '"' || value[0] === "'")) {
+      const q = value[0]
+      value = value.slice(1)
+      if (value.endsWith(q)) value = value.slice(0, -1)
+    } else if (value.length > 1 && (value.endsWith('"') || value.endsWith("'"))) {
+      value = value.slice(0, -1)
+    }
+    /* 注意字符集要含 `_`：会话 Cookie 就叫 __Secure-better-auth.session_token */
+    if (!name || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) continue
+    if (value === '') continue
+    pairs.push(`${name}=${value}`)
+  }
+  return pairs.join('; ')
+}
+
+/**
+ * 合并上游返回的 Set-Cookie（会话滚动续期）。
+ *
+ * better-auth 这类会话是**滚动过期**的：每次带 Cookie 访问，服务端可能回一个新的
+ * `session_token`（含新的过期时间）。不接住它，会话到点就死；
+ * 接住并回写，只要网关在过期前访问过一次，就能一直续下去。
+ */
+export function mergeSetCookies(existing: string, setCookies: string[]): string {
+  if (setCookies.length === 0) return existing
+  const jar = new Map<string, string>()
+  for (const part of sanitizeCookieHeader(existing).split('; ')) {
+    const eq = part.indexOf('=')
+    if (eq > 0) jar.set(part.slice(0, eq), part.slice(eq + 1))
+  }
+  for (const sc of setCookies) {
+    // Set-Cookie: name=value; Path=/; Expires=...; HttpOnly; Secure
+    const first = sc.split(';')[0]?.trim() ?? ''
+    const eq = first.indexOf('=')
+    if (eq <= 0) continue
+    const name = first.slice(0, eq).trim()
+    const value = first.slice(eq + 1).trim()
+    if (!name) continue
+    if (value === '' || /max-age=0/i.test(sc) || /expires=thu, 01 jan 1970/i.test(sc)) {
+      jar.delete(name)
+    } else {
+      jar.set(name, value)
+    }
+  }
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
+}
+
 /** 加密 Cookie（纯函数，便于单测往返） */
 export function sealWebSession(cookieText: string, masterKey: Buffer): string {
   return encryptSecret(cookieText, masterKey)
@@ -232,6 +303,8 @@ export async function saveWebSession(
   accountId: string,
   cookieText: string
 ): Promise<WebSessionStatus> {
+  // 存之前清洗（见 sanitizeCookieHeader 的注释：cURL 的内层引号会让整条 cookie 失效）
+  cookieText = sanitizeCookieHeader(cookieText)
   const cookieNames = cookieNamesOf(cookieText)
   await query(
     `insert into account_web_sessions (account_id, cipher, cookie_names, captured_at)
@@ -312,7 +385,36 @@ export async function loadWebSession(accountId: string): Promise<{ cookie: strin
   if (!row || !row.cipher) return null
   const cookie = openWebSession(row.cipher, env.masterKey)
   if (cookie === null) return null
-  return { cookie }
+  /*
+   * 读出来也清洗一遍：早期版本存进去的串可能带着 cURL 的内层引号，
+   * 不清洗就会一直 401（而且看日志像"会话失效"，极具误导性）。
+   */
+  const cleaned = sanitizeCookieHeader(cookie)
+  if (!cleaned) return null
+  return { cookie: cleaned }
+}
+
+/**
+ * 用上游返回的 Set-Cookie 滚动续期。
+ *
+ * 只有真的拿到新 Cookie 才写库，避免每次刷新都产生一次无谓的写放大。
+ */
+export async function rollWebSessionCookies(
+  accountId: string,
+  setCookies: string[]
+): Promise<boolean> {
+  if (setCookies.length === 0) return false
+  const current = await loadWebSession(accountId)
+  if (!current) return false
+  const next = mergeSetCookies(current.cookie, setCookies)
+  if (next === current.cookie || !next) return false
+  await query(
+    `update account_web_sessions
+        set cipher = $2, captured_at = now(), last_error = ''
+      where account_id = $1`,
+    [accountId, sealWebSession(next, env.masterKey)]
+  )
+  return true
 }
 
 export async function clearWebSession(accountId: string): Promise<void> {

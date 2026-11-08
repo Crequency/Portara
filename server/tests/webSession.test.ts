@@ -4,7 +4,9 @@ import {
   MAX_COOKIE_TEXT,
   cookieFromCurl,
   cookieNamesOf,
+  mergeSetCookies,
   normalizeCookieInput,
+  sanitizeCookieHeader,
   parseWebSessionInput,
   openWebSession,
   sealWebSession,
@@ -180,4 +182,46 @@ test('parseWebSessionInput：裸 Cookie 原样归一', () => {
 test('parseWebSessionInput：非法 JSON 回落成 Cookie 处理，不抛', () => {
   const out = parseWebSessionInput('{not json} a=1')
   assert.equal(out.snapshot, null)
+})
+/*
+ * Cookie 清洗与滚动续期。
+ *
+ * 事故背景（2026-11-09）：用户用「Copy as cURL」把 Cookie 粘进来，
+ * 界面显示"已设置"、包含 session_token，但服务端一直 401 ——
+ * 原因是 cURL 里层单引号跟着名字一起被抠出来，变成
+ * `'__Secure-better-auth.session_token=...`，服务端直接忽略整条。
+ * 去掉名字两端的引号后同一份 Cookie 立刻 200。
+ */
+test('sanitizeCookieHeader：去掉 cURL 内层引号（事故复现）', () => {
+  const dirty = "q=0.8; '__Secure-better-auth.session_token=abc.def%3D; __Secure-better-auth.session_token_multi-x=u; u=1"
+  const clean = sanitizeCookieHeader(dirty)
+  assert.equal(
+    clean,
+    'q=0.8; __Secure-better-auth.session_token=abc.def%3D; __Secure-better-auth.session_token_multi-x=u; u=1'
+  )
+  assert.ok(!clean.includes("'"), '清洗后不该再有引号')
+})
+
+test('sanitizeCookieHeader：整条被引号包住也能处理', () => {
+  assert.equal(sanitizeCookieHeader("'a=1; b=2'"), 'a=1; b=2')
+  assert.equal(sanitizeCookieHeader('a="1"; b=2'), 'a=1; b=2')
+})
+
+test('sanitizeCookieHeader：丢掉非法条目，保留合法的', () => {
+  assert.equal(sanitizeCookieHeader('a=1; garbage; =noname; b=2'), 'a=1; b=2')
+  assert.equal(sanitizeCookieHeader(''), '')
+})
+
+test('mergeSetCookies：新值覆盖同名、其它保留', () => {
+  const merged = mergeSetCookies('a=1; b=2', ['a=9; Path=/; HttpOnly'])
+  assert.equal(merged, 'a=9; b=2')
+})
+
+test('mergeSetCookies：Max-Age=0 视为删除', () => {
+  const merged = mergeSetCookies('a=1; b=2', ['a=; Max-Age=0'])
+  assert.equal(merged, 'b=2')
+})
+
+test('mergeSetCookies：没有 Set-Cookie 时原样返回', () => {
+  assert.equal(mergeSetCookies('a=1', []), 'a=1')
 })

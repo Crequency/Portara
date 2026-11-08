@@ -41,6 +41,8 @@ export interface GatewaySettings {
    * 面板与 API 都不该每次都真打上游。
    */
   usageCacheTtlSec: number
+  /** 网页会话型渠道的自动刷新间隔（秒）；0 = 关闭 */
+  usageAutoRefreshSec: number
   /**
    * 上游请求失败后的冷却时长（秒）。
    *
@@ -215,6 +217,21 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
     // 5 分钟：足够挡住面板轮询与多人同时查看，又不至于让余额看着像"卡住了"
     schema: z.coerce.number().int().min(30).max(86_400),
     default: 300,
+    group: 'gateway'
+  },
+  /**
+   * 网页会话型渠道的**自动刷新间隔**（秒），0 = 关闭。
+   *
+   * 为什么需要它：会话型上游（如 OpenDesign）的登录态是**滚动过期**的 ——
+   * 每次带 Cookie 访问可能回一个新 token，但**必须有人去访问**才会续期。
+   * 定时刷新既拿到新用量，又顺手完成续期，会话因此能长期活着；
+   * 不刷新的话，隔几天就会 401，只能重新粘贴。
+   *
+   * 默认 600（10 分钟）：足够续期，又不会频繁打上游。
+   */
+  usageAutoRefreshSec: {
+    schema: z.coerce.number().int().min(0).max(86_400),
+    default: 600,
     group: 'gateway'
   },
   accountFailureCooldownSec: {
