@@ -1494,6 +1494,15 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   white-space: nowrap;
 }
 
+.diag-bar-detail {
+  color: var(--text-faint);
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toast-host {
   position: fixed;
   /*

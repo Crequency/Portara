@@ -11,6 +11,7 @@ import {
 import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
 import UserMenu from './components/UserMenu.vue'
+import { diagState, enableDiag, setDiagDetail, setDiagLine } from './diag'
 import { LOCALES, locale, setLocale, useI18n } from './i18n'
 import { loadMeta, meta, siteName } from './meta'
 import { setThemeMode, themeMode, type ThemeMode } from './theme'
@@ -271,28 +272,47 @@ window.addEventListener('hashchange', onHash)
  *   - 浮条显示按钮但没弹窗 → 处理函数内部出错（浮条会同时显示异常）
  * 只在带参数时启用，正常访问零开销。
  */
-const diagOn = ref(false)
-const diagText = ref('')
-
 function initDiag(): void {
   if (!new URLSearchParams(location.search).has('diag')) return
-  diagOn.value = true
+  enableDiag()
   document.addEventListener(
     'click',
     (event) => {
       const el = event.target as HTMLElement | null
       const label = (el?.innerText || el?.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()
-      diagText.value = 'click → ' + (el?.tagName?.toLowerCase() ?? '?') + ' .' +
-        String(el?.className ?? '').split(' ').filter(Boolean).slice(0, 2).join('.') +
-        (label ? ' 「' + label.slice(0, 24) + '」' : '')
+      setDiagLine(
+        'click → ' + (el?.tagName?.toLowerCase() ?? '?') + ' .' +
+          String(el?.className ?? '').split(' ').filter(Boolean).slice(0, 2).join('.') +
+          (label ? ' 「' + label.slice(0, 24) + '」' : '')
+      )
+      setDiagDetail('…')
+      // 350ms 后看弹窗到底有没有被创建、尺寸层级是否正常（这是"点了没弹窗"的关键证据）
+      setTimeout(() => {
+        const overlay = document.querySelector('.overlay') as HTMLElement | null
+        if (!overlay) {
+          setDiagDetail('350ms 后：没有 .overlay（弹窗从未创建）')
+          return
+        }
+        const rect = overlay.getBoundingClientRect()
+        const cs = getComputedStyle(overlay)
+        const modal = document.querySelector('.modal') as HTMLElement | null
+        const mr = modal?.getBoundingClientRect()
+        setDiagDetail(
+          '350ms 后：overlay ' + Math.round(rect.width) + '×' + Math.round(rect.height) +
+            ' @(' + Math.round(rect.left) + ',' + Math.round(rect.top) + ')' +
+            ' z=' + cs.zIndex + ' pos=' + cs.position +
+            ' vis=' + cs.visibility + ' op=' + cs.opacity +
+            (mr ? ' modal=' + Math.round(mr.width) + '×' + Math.round(mr.height) : ' modal=none')
+        )
+      }, 350)
     },
     true
   )
   window.addEventListener('error', (event) => {
-    diagText.value = 'JS error → ' + String(event.message).slice(0, 120)
+    setDiagLine('JS error → ' + String(event.message).slice(0, 140))
   })
   window.addEventListener('unhandledrejection', (event) => {
-    diagText.value = 'Promise → ' + String(event.reason).slice(0, 120)
+    setDiagLine('Promise → ' + String(event.reason).slice(0, 140))
   })
 }
 
@@ -516,8 +536,9 @@ function go(id: string): void {
   <ToastHost />
 
   <!-- 诊断浮条：仅 ?diag=1 时出现，见 initDiag() 的注释 -->
-  <div v-if="diagOn" class="diag-bar" role="status" aria-live="polite">
+  <div v-if="diagState.on" class="diag-bar" role="status" aria-live="polite">
     <span class="diag-bar-tag">DIAG</span>
-    <span class="diag-bar-text">{{ diagText || '等待点击…' }}</span>
+    <span class="diag-bar-text">{{ diagState.line || '等待点击…' }}</span>
+    <span v-if="diagState.detail" class="diag-bar-detail">{{ diagState.detail }}</span>
   </div>
 </template>
