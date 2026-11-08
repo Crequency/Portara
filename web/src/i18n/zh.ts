@@ -691,6 +691,34 @@ export const zh = {
     skipExhaustedWindowsLabel: '跳过任意窗口已打满的账户',
     skipExhaustedWindowsHint:
       '列表里有任一用量窗口打满（≥95%）就不路由到该账户 —— 打满的窗口是硬上限，继续请求只会换回 429/402。仅对配置了余额适配器、能查到用量的渠道有效。',
+    routingConcurrency: '路由与并发',
+    routingConcurrencyHint: '上游并发撞线后的冷却，以及所有候选渠道都满载时的排队策略。',
+    concurrencyCooldownSec: '并发撞线后的短冷却（秒）',
+    concurrencyCooldownSecHint:
+      '上游报「并发超限」时，该账户只冷却这么久，随后可再次被路由。默认 20 秒（1..3600）。调大 → 撞线的账户更久不回池；调小 → 同一账户更频繁被撞线，但恢复更快。',
+    concurrencyQueueTimeoutMs: '满载时的排队预算（毫秒）',
+    concurrencyQueueTimeoutMsHint:
+      '所有候选渠道都满载时最多排队这么久。0 = 不排队（立刻换路或返回 429）。默认 30000（0..300000）。调大 → 高峰期更可能等到名额，但客户端等得更久；调小 → 更快失败。',
+    routingFailover: '故障转移与重试',
+    routingFailoverHint: '候选范围、原地重试次数、整轮重来次数与总时间/次数预算。',
+    maxChannelAttempts: '最多尝试渠道数',
+    maxChannelAttemptsHint:
+      '0 = 全部候选渠道（默认，0..50）。调大 → 可用性更高，但换渠道会丢上游前缀缓存；调小 → 省缓存，某个渠道抖动时更容易失败。',
+    maxAccountAttempts: '单渠道最多尝试账户数',
+    maxAccountAttemptsHint:
+      '0 = 该渠道所有可用账户（默认，0..100）。调大 → 更容易绕过坏账户；调小 → 省上游请求，但前几个账户都不行时整个渠道会被判失败。',
+    attemptsPerCandidate: '同一账户原地重试次数',
+    attemptsPerCandidateHint:
+      '网络抖动、连接重置这类瞬时故障在原地重试几次（1..5，默认 2）。401/403/400/404 不消耗该次数。调大 → 瞬时故障更稳，但上游真挂时每次失败更慢；调小 → 更快换号。',
+    maxFailoverPasses: '失败后整轮重来次数',
+    maxFailoverPassesHint:
+      '全部候选都失败后最多再来几轮（1..10，默认 3）。调大 → 跨分钟级抖动更稳，但最坏耗时与上游请求量增加；调小 → 更快把失败交还客户端。',
+    failoverBudgetMs: '故障转移总预算（毫秒）',
+    failoverBudgetMsHint:
+      '一次请求在故障转移上最多花多久（0..600000，默认 60000）。0 = 不做整轮重试。调大 → 长时间抖动更可能救回请求，但首字延迟上限更长；调小 → 更快失败。',
+    maxTotalAttempts: '单请求总尝试上限',
+    maxTotalAttemptsHint:
+      '跨渠道/账户/轮次累计的上游请求上限（1..200，默认 24），防止所有上游秒失败时一分钟打出上百次请求。调大 → 极端故障下重试更充分但成本更高；调小 → 更快停手。',
     logRetentionDays: '请求日志保留天数',
     logRetentionDaysHint: '0 表示永久保留。服务每 6 小时自动清理一次，也可点右侧按钮立即清理。',
     defaultChannelTimeoutMs: '新建渠道默认超时（毫秒）',

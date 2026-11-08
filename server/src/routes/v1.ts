@@ -14,7 +14,6 @@ import {
 } from '../services/billing.js'
 import {
   COOLDOWN,
-  MAX_ACCOUNT_ATTEMPTS,
   type AccountRow,
   cooldownFor,
   isRetriableStatus,
@@ -378,9 +377,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   }
 
   /*
-   * 路由策略（可配）：失败冷却时长 + 是否跳过打满窗口的账户。
+   * 路由策略（可配）：失败冷却、窗口跳过，以及故障转移/并发调优的全部参数。
    *
-   * 一次请求读一次（内部有 Redis 短缓存，5 秒），不逐次查库。
+   * **一次请求只读一次**（内部有 Redis 短缓存，5 秒）：
+   * 下面所有 attempts/passes/budget/cooldown 都从这份快照取值，
+   * 不逐次查库，也不在热路径上重复调用 getRoutingSettings()。
    */
   const routing = await getRoutingSettings()
 
@@ -503,8 +504,9 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    *   ③ 有上限 —— 否则一个坏请求会打穿所有账户并把它们全打进冷却。
    *
    * 换渠道有额外代价：会话粘性断了，上游前缀缓存下一次要重建。
-   * 所以渠道上限默认只有 2（`PORTARA_MAX_CHANNEL_ATTEMPTS`），
-   * 且换成功之后要**把亲和改写到新渠道**，避免下一轮又打回坏渠道。
+   * 渠道上限默认是「全部候选」（设置项 maxChannelAttempts = 0），
+   * 需要省缓存/控成本时可以调小；换成功之后要**把亲和改写到新渠道**，
+   * 避免下一轮又打回坏渠道。
    */
   let account: AccountRow | null = null
   let upstreamHeaders: ReturnType<typeof buildUpstreamHeaders> | null = null
@@ -583,10 +585,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    * 候选渠道上限：0 = **全部候选**（默认）。
    * 用户选负载均衡就是为了"不因为一个渠道抖动/限额就中断"，
    * 所以默认把映射里的每个目标都试一遍，用总时间预算而不是次数兜底。
+   * 需要省上游前缀缓存时可以调小（设置项 maxChannelAttempts）。
    */
   const channelLimit =
-    env.maxChannelAttempts > 0
-      ? Math.min(env.maxChannelAttempts, pick.targets.length)
+    routing.maxChannelAttempts > 0
+      ? Math.min(routing.maxChannelAttempts, pick.targets.length)
       : pick.targets.length
   /**
    * 已经确认「整池额度冻结」的候选渠道里最早的重置时间。
@@ -626,10 +629,10 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    * 并发排队的**整体**截止时间。
    *
    * 一个请求跨多个候选渠道时，排队预算只算一次 ——
-   * 若每个渠道各排一个 queueTimeoutMs，最坏会挂 N×30s，
+   * 若每个渠道各排一次 concurrencyQueueTimeoutMs，最坏会挂 N×30s，
    * 客户端早就超时了，而请求还占着连接不放。
    */
-  const concDeadline = Date.now() + queueTimeoutMs()
+  const concDeadline = Date.now() + queueTimeoutMs(routing.concurrencyQueueTimeoutMs)
 
   /**
    * 为某个渠道申请名额；已满则排队到整体截止时间。
@@ -661,7 +664,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    *
    * 也就是说：只要还有一个可能恢复的上游，就不把会话打断。
    */
-  const failoverDeadline = startedAt + env.failoverBudgetMs
+  const failoverDeadline = startedAt + routing.failoverBudgetMs
   let passNo = 0
   /**
    * 本轮是否出现过**值得重试**的失败（网络抖动 / 5xx / 并发撞线 / 非额度 429）。
@@ -817,7 +820,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         baseLog.upstreamModel = upstreamModel
         return rejectEarly({
           status: 429,
-          logError: `所有候选渠道并发均已满载（channel_concurrency_full），排队 ${queueTimeoutMs()}ms`,
+          logError: `所有候选渠道并发均已满载（channel_concurrency_full），排队 ${queueTimeoutMs(routing.concurrencyQueueTimeoutMs)}ms`,
           message: '所有候选渠道的并发均已满载，请稍后重试',
           type: 'rate_limit_error',
           code: 'channel_concurrency_full',
@@ -829,16 +832,19 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     /*
      * 账户上限：0 = 该渠道所有可用账户（默认）。
      * 早期默认 3 会让"第 4 个之后的号"永远轮不到，等于渠道可用性被前 3 个号绑架。
+     * 现在可配置：maxAccountAttempts（0 = 全部）。
      */
     const attemptLimit =
-      MAX_ACCOUNT_ATTEMPTS > 0 ? Math.min(MAX_ACCOUNT_ATTEMPTS, candidates.length) : candidates.length
+      routing.maxAccountAttempts > 0
+        ? Math.min(routing.maxAccountAttempts, candidates.length)
+        : candidates.length
     for (const candidate of candidates.slice(0, attemptLimit)) {
       /*
        * 总尝试次数闸门：时间是主预算，这个防"所有上游都秒失败时一分钟打出上百次"。
        * 正常故障转移远远用不到 24 次。
        */
-      if (attemptNo >= env.maxTotalAttempts) {
-        lastFailure = `本请求的上游尝试次数已达上限（${env.maxTotalAttempts}）`
+      if (attemptNo >= routing.maxTotalAttempts) {
+        lastFailure = `本请求的上游尝试次数已达上限（${routing.maxTotalAttempts}）`
         break
       }
       const upstreamKey = tryDecryptKey(candidate.key_cipher)
@@ -878,7 +884,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           init: { method: c.req.method, headers: headers.headers, body: plan.bodyText },
           proxy: target.proxy,
           signal,
-          attempts: env.attemptsPerCandidate,
+          attempts: routing.attemptsPerCandidate,
           onAttempt: () => {
             attemptNo++
           }
@@ -969,11 +975,14 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         if (concurrencyHit) {
           /*
            * 并发撞线：只做**短冷却**，不进额度阶梯、不写 quota_cooldown 事件。
-           * 冷却时长取 env.concurrencyCooldownSec（默认 20s），并尊重上游给的
+           * 冷却时长取设置项 concurrencyCooldownSec（默认 20s），并尊重上游给的
            * Retry-After —— 但上限压到 5 分钟，避免把瞬时问题当成长时间不可用。
            */
           const fromHeader = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0
-          const coolSec = Math.min(300, Math.max(env.concurrencyCooldownSec, fromHeader))
+          const coolSec = Math.min(
+            300,
+            Math.max(routing.concurrencyCooldownSec, fromHeader)
+          )
           sawTransientFailure = true
           await markAccountFailure(candidate.id, lastFailure, coolSec)
           console.warn(
@@ -1193,8 +1202,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     }
 
     if (c.req.raw.signal.aborted) break
-    if (attemptNo >= env.maxTotalAttempts) break
-    if (passNo >= env.maxFailoverPasses) break
+    if (attemptNo >= routing.maxTotalAttempts) break
+    if (passNo >= routing.maxFailoverPasses) break
     /*
      * 只有瞬时类失败（网络 / 5xx / 并发撞线 / 非额度 429）才值得重来一轮。
      * 额度用尽、401、400/404 这些"再试一次结果一样"的失败，重试只是

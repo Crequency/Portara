@@ -41,7 +41,15 @@ const form = ref<GatewaySettings>({
   timezone: 'UTC',
   usageCacheTtlSec: 300,
   accountFailureCooldownSec: 3600,
-  skipExhaustedWindows: true
+  skipExhaustedWindows: true,
+  concurrencyCooldownSec: 20,
+  concurrencyQueueTimeoutMs: 30000,
+  maxChannelAttempts: 0,
+  attemptsPerCandidate: 2,
+  maxFailoverPasses: 3,
+  failoverBudgetMs: 60000,
+  maxTotalAttempts: 24,
+  maxAccountAttempts: 0
 })
 
 const dirty = computed(() => {
@@ -250,6 +258,108 @@ onMounted(load)
               max="1000000"
             />
             <span class="hint">{{ t('settings.defaultKeyRpmLimitHint') }}</span>
+          </div>
+        </div>
+
+        <!-- 路由与并发：撞线冷却 + 满载排队 -->
+        <div class="card-title" style="margin-top: 6px">
+          {{ t('settings.routingConcurrency') }}
+        </div>
+        <div class="dim" style="font-size: 12px">
+          {{ t('settings.routingConcurrencyHint') }}
+        </div>
+        <div class="grid grid-2">
+          <div class="field">
+            <label>{{ t('settings.concurrencyCooldownSec') }}</label>
+            <input
+              v-model.number="form.concurrencyCooldownSec"
+              type="number"
+              min="1"
+              max="3600"
+            />
+            <span class="hint">{{ t('settings.concurrencyCooldownSecHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.concurrencyQueueTimeoutMs') }}</label>
+            <input
+              v-model.number="form.concurrencyQueueTimeoutMs"
+              type="number"
+              min="0"
+              max="300000"
+              step="1000"
+            />
+            <span class="hint">{{ t('settings.concurrencyQueueTimeoutMsHint') }}</span>
+          </div>
+        </div>
+
+        <!-- 故障转移与重试：候选数、轮次、总预算 -->
+        <div class="card-title" style="margin-top: 6px">
+          {{ t('settings.routingFailover') }}
+        </div>
+        <div class="dim" style="font-size: 12px">
+          {{ t('settings.routingFailoverHint') }}
+        </div>
+        <div class="grid grid-2">
+          <div class="field">
+            <label>{{ t('settings.maxChannelAttempts') }}</label>
+            <input
+              v-model.number="form.maxChannelAttempts"
+              type="number"
+              min="0"
+              max="50"
+            />
+            <span class="hint">{{ t('settings.maxChannelAttemptsHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.maxAccountAttempts') }}</label>
+            <input
+              v-model.number="form.maxAccountAttempts"
+              type="number"
+              min="0"
+              max="100"
+            />
+            <span class="hint">{{ t('settings.maxAccountAttemptsHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.attemptsPerCandidate') }}</label>
+            <input
+              v-model.number="form.attemptsPerCandidate"
+              type="number"
+              min="1"
+              max="5"
+            />
+            <span class="hint">{{ t('settings.attemptsPerCandidateHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.maxFailoverPasses') }}</label>
+            <input
+              v-model.number="form.maxFailoverPasses"
+              type="number"
+              min="1"
+              max="10"
+            />
+            <span class="hint">{{ t('settings.maxFailoverPassesHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.failoverBudgetMs') }}</label>
+            <input
+              v-model.number="form.failoverBudgetMs"
+              type="number"
+              min="0"
+              max="600000"
+              step="1000"
+            />
+            <span class="hint">{{ t('settings.failoverBudgetMsHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.maxTotalAttempts') }}</label>
+            <input
+              v-model.number="form.maxTotalAttempts"
+              type="number"
+              min="1"
+              max="200"
+            />
+            <span class="hint">{{ t('settings.maxTotalAttemptsHint') }}</span>
           </div>
         </div>
       </div>

@@ -294,6 +294,22 @@ export interface GatewaySettings {
   accountFailureCooldownSec: number
   /** 是否跳过「任意用量窗口已打满」的账户 */
   skipExhaustedWindows: boolean
+  /** 上游并发撞线后的短冷却秒数 */
+  concurrencyCooldownSec: number
+  /** 所有候选渠道并发满载时的排队预算（毫秒）；0 = 不排队 */
+  concurrencyQueueTimeoutMs: number
+  /** 一次请求最多尝试几个候选渠道；0 = 全部 */
+  maxChannelAttempts: number
+  /** 同一（渠道, 账户）原地重试次数 */
+  attemptsPerCandidate: number
+  /** 全部候选失败后整轮重来的次数 */
+  maxFailoverPasses: number
+  /** 故障转移总时间预算（毫秒）；0 = 不做整轮重试 */
+  failoverBudgetMs: number
+  /** 单请求总上游尝试上限 */
+  maxTotalAttempts: number
+  /** 单个渠道内最多尝试几个账户；0 = 该渠道全部可用账户 */
+  maxAccountAttempts: number
 }
 
 export interface User {

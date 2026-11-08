@@ -87,55 +87,6 @@ const affinityTtlSeconds = num(process.env.PORTARA_AFFINITY_TTL_SECONDS, 1800)
 const affinityMaxAgeSeconds = num(process.env.PORTARA_AFFINITY_MAX_AGE_SEC, 3600)
 
 /**
- * 一次请求最多尝试几个**渠道**（别名映射的多个目标）。
- *
- * **0 = 全部候选渠道都试一遍**（默认）。
- *
- * 早期默认只试 2 个，理由是"换渠道会丢上游前缀缓存"。但那把缓存放在了
- * 可用性之前：用户选负载均衡就是为了不中断，2 个渠道都在抖动时请求就直接失败了。
- * 现在默认走完全部候选，用**总时间预算**（failoverBudgetMs）而不是次数来兜底；
- * 需要省缓存/控成本时可以显式设成 1~2。
- */
-const maxChannelAttempts = Math.max(0, Number(process.env.PORTARA_MAX_CHANNEL_ATTEMPTS ?? 0))
-
-/**
- * 同一个（渠道, 账户）上最多连续尝试几次。
- *
- * 默认 2：网络抖动、连接被重置这类瞬时故障，**原地重试一次**往往就成功了，
- * 比立刻换号（丢掉上游缓存、加重别的号负担）便宜得多。
- * 401/403/400/404 这类"换号也没用"的错误不会消耗这个重试次数。
- */
-const attemptsPerCandidate = Math.max(1, Number(process.env.PORTARA_ATTEMPTS_PER_CANDIDATE ?? 2))
-
-/**
- * 全部候选都失败后，最多再整体重来几轮。
- *
- * 重来一轮之前会有抖动退避：上游可能只是抖了一下，或者某个号的短冷却
- * （网络错误 30s 起）刚好过期 —— 这两类恢复都不需要用户重新发请求。
- */
-const maxFailoverPasses = Math.max(1, Number(process.env.PORTARA_MAX_FAILOVER_PASSES ?? 3))
-
-/**
- * 故障转移的**总时间预算**（毫秒）。
- *
- * 这是"会话连续性"的硬边界：在这个窗口内网关会一直换号/换渠道/重试，
- * 用完才把失败交还给客户端。默认 60s —— 比绝大多数客户端的首字超时短，
- * 又不至于让用户在一次抖动里直接看到错误。
- *
- * 注意：它只约束"拿到可用上游响应"这一段；拿到之后的流式传输不受影响。
- */
-const failoverBudgetMs = Math.max(0, Number(process.env.PORTARA_FAILOVER_BUDGET_MS ?? 60_000))
-
-/**
- * 一次请求的总上游尝试次数上限（跨渠道跨账户跨轮次累计）。
- *
- * 时间预算是主闸门，这个是**防病态**的兜底：如果所有上游都是"秒失败"，
- * 光靠时间预算会在一分钟内打出上百次请求，把上游限流器拱手触发。
- * 默认 24 次，正常故障转移根本用不到。
- */
-const maxTotalAttempts = Math.max(1, Number(process.env.PORTARA_MAX_TOTAL_ATTEMPTS ?? 24))
-
-/**
  * 是否允许用「上下文指纹」做会话亲和。
  *
  * **默认关闭**，只认客户端显式给的 `prompt_cache_key`。
@@ -159,41 +110,10 @@ const billingLowBalanceUsd = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 1
 })()
 
-/**
- * 上游「瞬时并发限制」（如 membership concurrency limit exceeded）的短冷却秒数。
- *
- * 这类错误不是"号没钱了"，而是同一时刻在跑的请求数超过会员档位上限。
- * 上游给的重置时间通常是"并发窗口滑出"的时刻（几分钟到一小时），按它冷冻会让
- * 一个只是撞线的号长时间不可用；正确做法是**短冷却后重试**。
- * 默认 20s：足以让并发滑出，又不会把可用号踢太久。
- */
-const concurrencyCooldownSec = Math.max(
-  1,
-  Number(process.env.PORTARA_CONCURRENCY_COOLDOWN_SEC ?? 20)
-)
-
-/**
- * 所有候选渠道都满并发时，最多排队多久（毫秒）。
- *
- * 语义：请求不会立刻失败，而是每 50ms 重试申请槽位；超过这个时长才返回 429。
- * 默认 30s —— 足够覆盖一次上游普通请求的排队，又不至于让客户端挂到超时。
- */
-const concurrencyQueueTimeoutMs = Math.max(
-  0,
-  Number(process.env.PORTARA_CONCURRENCY_QUEUE_TIMEOUT_MS ?? 30000)
-)
-
 export const env = {
   port: num(process.env.PORTARA_PORT, 52740),
-  concurrencyCooldownSec,
-  concurrencyQueueTimeoutMs,
   affinityTtlSeconds,
   affinityMaxAgeSeconds,
-  maxChannelAttempts,
-  attemptsPerCandidate,
-  maxFailoverPasses,
-  failoverBudgetMs,
-  maxTotalAttempts,
   affinityContext,
   billingLowBalanceUsd,
   host: process.env.PORTARA_HOST ?? '0.0.0.0',

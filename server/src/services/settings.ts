@@ -62,6 +62,102 @@ export interface GatewaySettings {
    * 只在**该渠道/账户配了余额适配器**（能查到用量）时才有数据；查不到则不影响路由。
    */
   skipExhaustedWindows: boolean
+
+  /**
+   * 上游「瞬时并发限制」撞线后的短冷却秒数。
+   *
+   * 触发形态如 `membership concurrency limit exceeded: 11/10`：不是余额或凭据问题，
+   * 只是同一时刻在跑的请求数超过会员档位。按上游给的 reset_at 冷冻会让一个只是
+   * 撞线的账户长时间不可用；正确做法是**短冷却后换号重试**。
+   *
+   * 调大：撞线的账户更久不回池，并发突增时可用账户变少；
+   * 调小：同一个账户会被更频繁地再次撞线，但恢复更快。
+   * 范围 1..3600，默认 20 秒。
+   */
+  concurrencyCooldownSec: number
+
+  /**
+   * 所有候选渠道并发都满载时的排队预算（毫秒）。
+   *
+   * 满载时请求不会立刻失败，而是轮询申请槽位；只在预算内等不到才换路/返回 429。
+   * **0 = 不排队** —— 满载立刻换下一个候选渠道，全部满载则直接失败。
+   *
+   * 调大：高峰期客户端等得更久却更可能成功；
+   * 调小：更快失败/换路，代价是放弃「等一个在途请求结束就轮到我」的机会。
+   * 范围 0..300000，默认 30000（30 秒）。
+   */
+  concurrencyQueueTimeoutMs: number
+
+  /**
+   * 一次请求最多尝试几个候选渠道（别名映射的多个目标）。
+   *
+   * **0 = 全部候选渠道都试一遍**（默认）。1 = 不跨渠道，只试亲和/哈希选出的那一个。
+   *
+   * 调大：可用性更高，但换渠道会丢上游前缀缓存，并让请求在更多上游留下失败记录；
+   * 调小：省缓存、控成本，代价是某个渠道抖动时请求更容易失败。
+   * 范围 0..50。
+   */
+  maxChannelAttempts: number
+
+  /**
+   * 同一个（渠道, 账户）上最多连续尝试几次。
+   *
+   * 网络抖动、连接被重置这类瞬时故障，原地重试一次往往就成功，比立刻换号便宜
+   * （不丢上游前缀缓存、不给别的账户加负担）。401/403/400/404 这类
+   * 「换号也没用」的错误不消耗这个次数。
+   *
+   * 调大：瞬时故障更稳，但上游真挂时每次失败都要多等一轮；
+   * 调小：失败更快暴露给客户端。
+   * 范围 1..5，默认 2。
+   */
+  attemptsPerCandidate: number
+
+  /**
+   * 全部候选都失败后，最多再整体重来几轮。
+   *
+   * 重来前有抖动退避，给上游或账户短冷却恢复的机会。
+   *
+   * 调大：跨分钟级抖动时更不容易中断，但最坏耗时与上游请求量线性增加；
+   * 调小：更快把失败交还客户端。
+   * 范围 1..10，默认 3。
+   */
+  maxFailoverPasses: number
+
+  /**
+   * 故障转移的**总时间预算**（毫秒）—— 会话连续性的硬边界。
+   *
+   * 窗口内网关会持续换号/换渠道/整轮重试，用完才把失败交给客户端。
+   * **0 = 不做整轮重试**（仍会在当前候选内换号/换渠道，但不会再来一轮）。
+   *
+   * 调大：长时间抖动下更容易救回请求，但客户端首字延迟上限随之变长；
+   * 调小：更快失败，代价是错过「上游几秒后就恢复」的情况。
+   * 范围 0..600000，默认 60000（60 秒）。
+   */
+  failoverBudgetMs: number
+
+  /**
+   * 单请求的总上游尝试次数上限（跨渠道、跨账户、跨轮次累计）。
+   *
+   * 时间预算是主闸门，这是**防病态**的兜底：所有上游都「秒失败」时，
+   * 光靠时间预算一分钟能打出上百次请求，把上游限流器拱手触发。
+   *
+   * 调大：极端故障下重试更充分，但上游请求量与成本更高；
+   * 调小：更快停手，代价是还有可用渠道没试完就放弃。
+   * 范围 1..200，默认 24。
+   */
+  maxTotalAttempts: number
+
+  /**
+   * 单个渠道内最多尝试几个账户。
+   *
+   * **0 = 该渠道所有可用账户都试一遍**（默认）。
+   * 早期默认 3 会让「第 4 个之后的账户」永远轮不到，渠道可用性被前几个账户绑架。
+   *
+   * 调大：渠道内某个账户抖动/额度用尽时更容易绕过；
+   * 调小：省上游请求，代价是「前 N 个都不行」时整个渠道被判失败。
+   * 范围 0..100。
+   */
+  maxAccountAttempts: number
 }
 
 export type SettingGroup = 'brand' | 'gateway'
@@ -131,6 +227,54 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
     // 默认开启：打满的窗口是硬上限，继续打过去只会换回 429/402
     schema: z.boolean(),
     default: true,
+    group: 'gateway'
+  },
+  concurrencyCooldownSec: {
+    // 默认 20s：足够让上游并发滑出，又不会把只是撞线的账户踢太久
+    schema: z.coerce.number().int().min(1).max(3600),
+    default: 20,
+    group: 'gateway'
+  },
+  concurrencyQueueTimeoutMs: {
+    // 默认 30s：覆盖一次普通上游请求的排队，又不至于让客户端挂到超时
+    schema: z.coerce.number().int().min(0).max(300_000),
+    default: 30_000,
+    group: 'gateway'
+  },
+  maxChannelAttempts: {
+    // 默认 0 = 全部候选：可用性优先，用总时间预算而不是次数兜底
+    schema: z.coerce.number().int().min(0).max(50),
+    default: 0,
+    group: 'gateway'
+  },
+  attemptsPerCandidate: {
+    // 默认 2：瞬时故障原地重试一次通常就成功，且不丢上游前缀缓存
+    schema: z.coerce.number().int().min(1).max(5),
+    default: 2,
+    group: 'gateway'
+  },
+  maxFailoverPasses: {
+    // 默认 3：覆盖常见的秒级~分钟级抖动；时间预算才是主闸门
+    schema: z.coerce.number().int().min(1).max(10),
+    default: 3,
+    group: 'gateway'
+  },
+  failoverBudgetMs: {
+    // 默认 60s：比多数客户端首字超时短，又不至于一次抖动就直接报错
+    schema: z.coerce.number().int().min(0).max(600_000),
+    default: 60_000,
+    group: 'gateway'
+  },
+  maxTotalAttempts: {
+    // 默认 24：防「所有上游秒失败」时一分钟打出上百次请求；正常故障转移用不到
+    schema: z.coerce.number().int().min(1).max(200),
+    default: 24,
+    group: 'gateway'
+  },
+  maxAccountAttempts: {
+    // 默认 0 = 该渠道所有可用账户：不让前几个账户绑架渠道可用性
+    schema: z.coerce.number().int().min(0).max(100),
+    default: 0,
     group: 'gateway'
   },
   timezone: {

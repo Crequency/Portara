@@ -693,6 +693,34 @@ export const en = {
     skipExhaustedWindowsLabel: 'Skip accounts with any filled window',
     skipExhaustedWindowsHint:
       'Skip an account when any usage window is filled (>=95%) — a filled window is a hard cap and further requests only return 429/402. Only applies to channels with a balance adapter that can read usage.',
+    routingConcurrency: 'Routing and concurrency',
+    routingConcurrencyHint: 'Cooldown after an upstream concurrency rejection, and how requests queue when every candidate channel is full.',
+    concurrencyCooldownSec: 'Short cooldown after concurrency rejection (seconds)',
+    concurrencyCooldownSecHint:
+      'When upstream reports a concurrency limit, the account cools down for only this long and can then be routed again. Default 20 (1..3600). Larger keeps a rejected account out of the pool longer; smaller brings it back sooner but it may hit the same limit again.',
+    concurrencyQueueTimeoutMs: 'Queue budget when all channels are full (ms)',
+    concurrencyQueueTimeoutMsHint:
+      'How long a request may wait when every candidate channel is at capacity. 0 = do not queue (switch target or return 429 immediately). Default 30000 (0..300000). Larger improves success during peaks but makes clients wait; smaller fails faster.',
+    routingFailover: 'Failover and retries',
+    routingFailoverHint: 'Candidate scope, in-place retries, full-pass retries, and the overall time/attempt budgets.',
+    maxChannelAttempts: 'Max candidate channels',
+    maxChannelAttemptsHint:
+      '0 = all candidate channels (default, 0..50). Larger improves availability, but switching channels loses the upstream prefix cache; smaller saves cache but fails sooner when one channel is unstable.',
+    maxAccountAttempts: 'Max accounts per channel',
+    maxAccountAttemptsHint:
+      '0 = every available account in that channel (default, 0..100). Larger makes it easier to route around bad accounts; smaller saves upstream requests but the whole channel fails sooner when the first accounts are down.',
+    attemptsPerCandidate: 'In-place retries per account',
+    attemptsPerCandidateHint:
+      'Retries for transient failures such as network jitter or reset connections (1..5, default 2). 401/403/400/404 do not consume this count. Larger is steadier on transient errors but slower when upstream is truly down; smaller switches accounts sooner.',
+    maxFailoverPasses: 'Full-pass retries after failure',
+    maxFailoverPassesHint:
+      'How many extra full passes after every candidate failed (1..10, default 3). Larger survives longer outages but increases worst-case latency and upstream requests; smaller returns failures sooner.',
+    failoverBudgetMs: 'Failover time budget (ms)',
+    failoverBudgetMsHint:
+      'Maximum time a single request may spend on failover (0..600000, default 60000). 0 = no full-pass retry. Larger can rescue requests during long outages but raises the first-byte latency ceiling; smaller fails faster.',
+    maxTotalAttempts: 'Total upstream attempts per request',
+    maxTotalAttemptsHint:
+      'Cumulative upstream request cap across channels, accounts and passes (1..200, default 24), preventing hundreds of requests per minute when every upstream fails instantly. Larger retries harder in extreme outages but costs more; smaller stops sooner.',
     logRetentionDays: 'Request log retention (days)',
     logRetentionDaysHint: '0 means keep forever. The service sweeps every 6 hours; use the button to purge now.',
     defaultChannelTimeoutMs: 'Default channel timeout (ms)',

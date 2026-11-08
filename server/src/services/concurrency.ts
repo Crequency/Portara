@@ -14,9 +14,7 @@
  * 槽位带 5 分钟 TTL 兜底：进程崩溃/被 kill 时计数不会永久泄漏（最坏情况是 5 分钟内
  * 略微低估可用并发，之后自动归零）。
  */
-import { env } from '../env.js'
 import { redis } from '../redis.js'
-
 
 export interface SlotResult {
   ok: boolean
@@ -97,9 +95,15 @@ export async function channelInFlight(channelId: string): Promise<number> {
   }
 }
 
-/** 排队等待上限（毫秒）：所有候选渠道都满时最多等这么久 */
-export function queueTimeoutMs(): number {
-  return env.concurrencyQueueTimeoutMs
+/**
+ * 排队等待上限（毫秒）：所有候选渠道都满时最多等这么久。
+ *
+ * 数值由调用方从**路由设置**传入 —— 服务层不读 env、也不查库，
+ * 这样热路径上不会多一次 I/O，这个模块也能脱离配置独立测试。
+ * 传 0（或非法值）= 不排队：满载立刻换路/失败。
+ */
+export function queueTimeoutMs(configuredMs: number): number {
+  return Number.isFinite(configuredMs) && configuredMs > 0 ? Math.floor(configuredMs) : 0
 }
 
 /*

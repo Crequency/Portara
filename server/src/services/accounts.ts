@@ -238,17 +238,6 @@ export async function markAccountSuccess(accountId: string): Promise<void> {
   )
 }
 
-/** 一次请求最多尝试几个账户（故障转移上限） */
-/**
- * 单个渠道内最多尝试几个账户。
- *
- * **0 = 该渠道的所有可用账户都试一遍**（默认）。
- * 早期默认 3，意味着一个渠道有 5 个号时后两个永远轮不到 —— 只要前 3 个
- * 都在抖动/额度用尽，这个渠道就整个"不可用"了。现在默认全试，
- * 由总时间预算（env.failoverBudgetMs）兜住最坏情况。
- */
-export const MAX_ACCOUNT_ATTEMPTS = Math.max(0, Number(process.env.PORTARA_MAX_ACCOUNT_ATTEMPTS ?? 0))
-
 /** 标记一次失败：进冷却并累计失败次数 */
 export async function markAccountFailure(
   accountId: string,
