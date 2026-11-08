@@ -1463,13 +1463,37 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 .toast-host {
   position: fixed;
-  right: 18px;
+  /*
+   * 底部**居中**，不再贴右下角。
+   *
+   * 右下角是各页面「操作按钮列」的位置（渠道详情的添加/编辑/删除、表格行尾操作等），
+   * 提示一旦出现就压在按钮上；即使把容器设成 pointer-events: none，
+   * 提示本体仍然挡在那几秒。居中放置彻底避开右侧按钮列，也符合"全局提示"的语义。
+   */
+  left: 50%;
   bottom: 18px;
+  transform: translateX(-50%);
+  align-items: center;
   display: flex;
   flex-direction: column;
   gap: 9px;
-  z-index: 300;
+  /*
+   * z-index 110：**低于模态遮罩（120）**。
+   *
+   * 之前是 300，提示会盖在弹窗之上，弹窗里的「保存 / 取消」也会被提示挡住。
+   * 现在提示只在页面内容之上、模态之下 —— 打开弹窗时提示让位给弹窗。
+   */
+  z-index: 110;
   max-width: 380px;
+  /*
+   * 整个提示层**不吃点击**，只有 .toast 本体可点。
+   *
+   * 原因：这个容器是 position: fixed 的整块区域（右下角最高约 380×250），
+   * 而渠道详情页右侧的「＋ 添加账户 / 编辑 / 删除」按钮正好落在它覆盖范围内。
+   * 提示一出现（保存成功、刷新失败、查看密钥等），那几秒里点按钮会打在提示上，
+   * 按钮看起来"时好时坏 / 没反应"。加 tag 的指针穿透后，空隙处的点击直达按钮。
+   */
+  pointer-events: none;
 }
 
 .toast {
@@ -1480,6 +1504,10 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   padding: 11px 13px;
   font-size: 13px;
   box-shadow: var(--shadow-sm);
+  /* 提示本体仍可点击（点一下关闭） */
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
 }
 
 .toast-error { border-left-color: var(--danger); }
