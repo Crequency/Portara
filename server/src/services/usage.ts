@@ -245,6 +245,8 @@ export interface UsageSessionEndpoint {
   url: string
   /** 必需端点失败 → 整个快照失败；可选端点失败只记 warning */
   required?: boolean
+  /** 额外的请求头（有些站内接口要求带工作区 id 之类的头） */
+  headers?: Record<string, string>
 }
 
 export interface UsageAdapter {
@@ -745,7 +747,9 @@ const opendesign: UsageAdapter = {
       {
         key: 'codingPlanUsage',
         url: `${OPENDESIGN_API_ORIGIN}/api/v1/workspaces/${encodeURIComponent(ws)}/billing/coding-plan-usage`,
-        required: true
+        required: true,
+        // 官方前端对工作区级接口都要带这个头，否则会当成"没有权限的工作区"
+        headers: { 'x-vela-workspace-id': ws }
       }
     ]
   },

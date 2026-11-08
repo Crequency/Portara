@@ -23,11 +23,11 @@ test('是 IIFE：不往页面全局塞变量', () => {
 })
 
 test('只请求 OpenDesign 自己的 API（唯一允许的网络目标）', () => {
-  assert.match(script, /https:\/\/amr-api\.open-design\.ai\/api/)
-  const urls = [...script.matchAll(/https?:\/\/[^'"\s)]+/g)].map((m) => m[0])
+  assert.match(script, /https:\/\/amr-api\.open-design\.ai/)
+  const urls = [...script.matchAll(/https?:\/\/[^'"\s)`]+/g)].map((m) => m[0])
   assert.ok(urls.length > 0, '脚本里至少要有一个 API 基址')
   for (const u of urls) {
-    assert.equal(u, 'https://amr-api.open-design.ai/api', `出现了不该请求的地址：${u}`)
+    assert.equal(u, 'https://amr-api.open-design.ai', `出现了不该请求的地址：${u}`)
   }
 })
 

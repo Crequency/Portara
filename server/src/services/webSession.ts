@@ -182,7 +182,9 @@ export function parseWebSessionInput(input: string): WebSessionBundle {
             me,
             codingPlanUsage: o.codingPlanUsage ?? null,
             walletBalance: o.walletBalance ?? null,
-            workspaceId: o.workspaceId ?? null
+            workspaceId: o.workspaceId ?? null,
+            /** 脚本自带的接口诊断（状态码/字段名），只用于排查，不参与展示 */
+            diag: o.diag ?? null
           }
           return {
             cookie: cookieRaw ? normalizeCookieInput(cookieRaw) : '',

@@ -139,7 +139,8 @@ test('parseWebSessionInput：控制台快照包 → cookie + me', () => {
     me: bundle.me,
     codingPlanUsage: null,
     walletBalance: null,
-    workspaceId: null
+    workspaceId: null,
+    diag: null
   })
   assert.equal(out.snapshotAt, '2026-11-09T03:20:00.000Z')
 })

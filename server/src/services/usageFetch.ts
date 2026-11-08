@@ -371,7 +371,11 @@ async function fetchAccountSnapshot(
             label: urlOf(ep.url),
             url: urlOf(ep.url),
             required: ep.required === true,
-            headers: { accept: 'application/json', cookie: session.cookie },
+            headers: {
+              accept: 'application/json',
+              cookie: session.cookie,
+              ...(ep.headers ?? {})
+            },
             timeoutMs,
             proxy,
             raws
