@@ -8,6 +8,7 @@ import {
   setSessionExpiredHandler,
   type User
 } from './api'
+import Modal from './components/Modal.vue'
 import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
 import UserMenu from './components/UserMenu.vue'
@@ -272,6 +273,9 @@ window.addEventListener('hashchange', onHash)
  *   - 浮条显示按钮但没弹窗 → 处理函数内部出错（浮条会同时显示异常）
  * 只在带参数时启用，正常访问零开销。
  */
+/** 诊断模式下的"测试弹窗"：用来确认弹窗组件本身在该浏览器能否渲染 */
+const diagModal = ref(false)
+
 function initDiag(): void {
   if (!new URLSearchParams(location.search).has('diag')) return
   enableDiag()
@@ -539,5 +543,14 @@ function go(id: string): void {
     <span class="diag-bar-tag">DIAG</span>
     <span class="diag-bar-text">{{ diagState.line || '等待点击…' }}</span>
     <span v-if="diagState.detail" class="diag-bar-detail">{{ diagState.detail }}</span>
+    <button type="button" class="diag-bar-btn" @click="diagModal = true">测试弹窗</button>
   </div>
+
+  <!-- 诊断测试弹窗：内容与业务无关，只验证 Modal 能否在当前浏览器渲染出来 -->
+  <Modal v-if="diagModal" title="DIAG 测试弹窗" @close="diagModal = false">
+    <p>如果你看到这个弹窗，说明 Modal 组件本身工作正常。</p>
+    <div class="modal-foot">
+      <button type="button" class="btn" @click="diagModal = false">关闭</button>
+    </div>
+  </Modal>
 </template>

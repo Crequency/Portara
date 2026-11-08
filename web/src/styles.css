@@ -1500,6 +1500,17 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   white-space: nowrap;
 }
 
+.diag-bar-btn {
+  pointer-events: auto;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--warn);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
 .diag-bar-detail {
   color: var(--text-faint);
   border-left: 1px solid var(--border);
