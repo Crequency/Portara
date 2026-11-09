@@ -11,6 +11,7 @@ import {
   type StatsHeatmap,
   type User
 } from '../api'
+import { errorText } from '../error'
 import {
   formatCompact,
   formatLatency,
@@ -238,15 +239,47 @@ const topBlocks = computed(() => [
  * 余额快照。**只保留请求成功的** —— 概览是摘要，
  * 失败详情在「余额用量」页看；但失败数量会以一行小字提示，不静默吞掉。
  */
-const usageSnapshots = ref<UsageSnapshot[]>([])
 /**
- * 首次拉取尚未回来。初值必须是 true —— 否则 usageOk 在首帧为空，
- * 会先闪一下「还没有渠道配置余额适配器」再被真实数据替换。
+ * 逐渠道状态（逐卡骨架的数据模型）。
+ *
+ * 为什么不再是一次 `/api/usage` 拿全部：每个渠道要去打各自的上游，
+ * 会话型渠道（要重放网页接口）可能几秒才回来。整块骨架会让用户为一个最慢的
+ * 渠道干等 —— 所以先按渠道清单铺卡片，再各自取数，谁先回来谁先显示。
  */
-const usageLoading = ref(true)
-const usageOk = computed(() => usageSnapshots.value.filter((s) => s.ok))
+interface UsageItem {
+  channelId: string
+  channelName: string
+  adapter: string
+  /** 已取到的快照；null = 还没回来 */
+  snapshot: UsageSnapshot | null
+  loading: boolean
+  /** 请求本身失败（网络/权限）；上游失败在 snapshot.ok=false */
+  error: string
+}
+
+const usageItems = ref<UsageItem[]>([])
+/** 渠道清单还没回来（只读本地表，毫秒级） */
+const usageListLoading = ref(true)
+
+/** 已成功拿到的快照 */
+const usageOk = computed(() =>
+  usageItems.value
+    .map((i) => i.snapshot)
+    .filter((s): s is UsageSnapshot => s !== null && s.ok)
+)
+/** 还没回来的渠道：各自渲染一张骨架卡 */
+const usagePending = computed(() => usageItems.value.filter((i) => i.loading && !i.snapshot))
 const usageFailedCount = computed(
-  () => usageSnapshots.value.length - usageOk.value.length
+  () =>
+    usageItems.value.filter((i) => i.error || (i.snapshot && !i.snapshot.ok)).length
+)
+/** 清单回来了但一个渠道都没配适配器 */
+const usageNotConfigured = computed(
+  () => !usageListLoading.value && usageItems.value.length === 0
+)
+/** 清单没回来时先摆几张占位卡（与真实卡片同构） */
+const usagePlaceholders = computed(() =>
+  usageListLoading.value && usageItems.value.length === 0 ? 3 : 0
 )
 
 /*
@@ -340,22 +373,48 @@ function windowLabel(key: string): string {
   return map[base] ?? base
 }
 
+/** 取单个渠道的余额快照；失败只影响这一张卡 */
+async function loadUsageItem(item: UsageItem): Promise<void> {
+  item.loading = true
+  item.error = ''
+  try {
+    item.snapshot = await api.get<UsageSnapshot>(`/api/channels/${item.channelId}/usage`)
+  } catch (err) {
+    item.error = errorText(err, t('usage.error'))
+  } finally {
+    item.loading = false
+  }
+}
+
+/**
+ * 首屏：先取渠道清单（只读本地表）铺出卡片壳子，再并行取每个渠道的数据。
+ *
+ * 不 await 每个请求的先后 —— 谁先回来谁先渲染，最慢的那张自己继续转圈，
+ * 不拖累已经拿到的卡片。
+ */
 async function loadUsage(): Promise<void> {
   if (!isAdmin.value) {
-    usageLoading.value = false
+    usageListLoading.value = false
     return
   }
-  usageLoading.value = true
+  usageListLoading.value = true
   try {
-    const res = await api.get<{ providers: UsageSnapshot[] }>('/api/usage')
-    usageSnapshots.value = res.providers
+    const res = await api.get<{
+      channels: Array<{ channelId: string; channelName: string; adapter: string }>
+    }>('/api/usage/channels')
+    usageItems.value = res.channels.map((c) => ({
+      ...c,
+      snapshot: null,
+      loading: true,
+      error: ''
+    }))
   } catch {
-    // 概览是次要信息，拿不到就不显示这张卡，不打扰用户
-    usageSnapshots.value = []
+    // 概览是次要信息，清单拿不到就当没有 —— 不打扰用户
+    usageItems.value = []
   } finally {
-    // 成功 / 失败都要收起骨架 —— 失败时展示的是空态而不是永久骨架
-    usageLoading.value = false
+    usageListLoading.value = false
   }
+  await Promise.all(usageItems.value.map((i) => loadUsageItem(i)))
 }
 
 // ---------------------------------------------------------------- Token 总量
@@ -858,38 +917,26 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <button class="btn btn-sm" @click="go('usage')">{{ t('overview.usageMore') }} →</button>
       </div>
 
-      <!-- 加载中：与真实卡片同构的骨架（3 张，名称 / 余额 / 两条窗口） -->
-      <div v-if="usageLoading" class="usage-grid" aria-hidden="true">
-        <div v-for="n in 3" :key="n" class="usage-cell sk-cell">
-          <div class="sk-head">
-            <span class="sk sk-name"></span>
-            <span class="sk sk-tag"></span>
-          </div>
-          <span class="sk sk-balance"></span>
-          <div class="usage-windows sk-windows">
-            <div v-for="w in 2" :key="w" class="sk-window">
-              <div class="sk-window-head">
-                <span class="sk sk-window-label"></span>
-                <span class="sk sk-window-value"></span>
-              </div>
-              <div class="sk sk-window-track"></div>
-            </div>
-          </div>
+      <!--
+        逐卡骨架：先按渠道清单铺出卡片，每个渠道各自取数、各自渲染。
+        清单还没回来时先摆 3 张占位卡（与真实卡片同构），避免整块空白等最慢的那个。
+      -->
+      <div v-if="usageNotConfigured" class="empty">
+        {{ t('overview.usageNone') }}
+        <div class="dim" style="font-size: 12px; margin-top: 6px">
+          {{ t('overview.usageNoneHint') }}
         </div>
       </div>
 
-      <div v-else-if="usageOk.length === 0" class="empty">
-        <template v-if="usageSnapshots.length > 0">{{ t('overview.usageAllFailed') }}</template>
-        <template v-else>
-          {{ t('overview.usageNone') }}
-          <div class="dim" style="font-size: 12px; margin-top: 6px">
-            {{ t('overview.usageNoneHint') }}
-          </div>
-        </template>
+      <div
+        v-else-if="usageOk.length === 0 && usagePending.length === 0 && usageFailedCount > 0"
+        class="empty"
+      >
+        {{ t('overview.usageAllFailed') }}
       </div>
 
       <div v-else class="usage-grid">
-        <!-- 有额度窗口的渠道：各占一张卡 -->
+        <!-- ① 有额度窗口的渠道：各占一张卡 -->
         <div v-for="s in usageWindowed" :key="s.channelId" class="usage-cell">
           <div class="row" style="gap: 7px; min-width: 0">
             <span class="usage-cell-name">{{ s.channelName }}</span>
@@ -953,8 +1000,9 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         </div>
 
         <!--
-          只有金额余额的渠道：**合并成一张卡里的多行**。
+          ② 只有金额余额的渠道：**合并成一张卡里的多行**。
           这类渠道通常有好几个、每张卡只有一个数字，一行一张会把整屏占满。
+          行也是逐条出现的 —— 哪个渠道先回来就先出哪一行。
         -->
         <div v-if="usageBalanceOnly.length" class="usage-cell">
           <div class="row" style="gap: 7px; min-width: 0">
@@ -978,6 +1026,52 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
                 }}
                 <span class="dim">{{ balancesFor(s)[0]!.currency }}</span>
               </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ③ 还没回来的渠道：**每张卡自己的骨架**，带上真实渠道名，减少跳变 -->
+        <div
+          v-for="p in usagePending"
+          :key="'sk-' + p.channelId"
+          class="usage-cell sk-cell"
+          aria-hidden="true"
+        >
+          <div class="row" style="gap: 7px; min-width: 0">
+            <span class="usage-cell-name">{{ p.channelName }}</span>
+            <span class="tag">{{ p.adapter }}</span>
+          </div>
+          <span class="sk sk-balance"></span>
+          <div class="usage-windows sk-windows">
+            <div v-for="w in 2" :key="w" class="sk-window">
+              <div class="sk-window-head">
+                <span class="sk sk-window-label"></span>
+                <span class="sk sk-window-value"></span>
+              </div>
+              <div class="sk sk-window-track"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ④ 渠道清单还没回来：先摆几张同构占位卡 -->
+        <div
+          v-for="n in usagePlaceholders"
+          :key="'ph-' + n"
+          class="usage-cell sk-cell"
+          aria-hidden="true"
+        >
+          <div class="sk-head">
+            <span class="sk sk-name"></span>
+            <span class="sk sk-tag"></span>
+          </div>
+          <span class="sk sk-balance"></span>
+          <div class="usage-windows sk-windows">
+            <div v-for="w in 2" :key="w" class="sk-window">
+              <div class="sk-window-head">
+                <span class="sk sk-window-label"></span>
+                <span class="sk sk-window-value"></span>
+              </div>
+              <div class="sk sk-window-track"></div>
             </div>
           </div>
         </div>
