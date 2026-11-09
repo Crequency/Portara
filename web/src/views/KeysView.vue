@@ -36,6 +36,16 @@ const form = reactive({
   /** 余额读取权限（默认关闭：余额反映账户资金状况） */
   usageAllow: false,
   usageRefresh: false,
+  /**
+   * 可见渠道的两种模式：
+   *   'all'  = 全部渠道（**含以后新增**），提交空数组
+   *   'pick' = 指定渠道，提交显式 id 列表（新渠道不会自动纳入）
+   *
+   * 为什么要有这个开关：旧实现把「全选」写成一串当前 id，
+   * 那其实是"此刻的快照" —— 之后新增的渠道（如 OpenDesign）就永远看不到，
+   * 直到有人再点一次全选。语义必须显式化，不能靠数组是否为空来猜。
+   */
+  usageScope: 'all' as 'all' | 'pick',
   usageChannels: [] as string[],
   rpmLimit: 60,
   quotaTokens: 0,
@@ -122,6 +132,7 @@ function openCreate(): void {
     modelAllowText: '',
     usageAllow: false,
     usageRefresh: false,
+    usageScope: 'all',
     usageChannels: [],
     rpmLimit: keyDefaults.value?.defaultKeyRpmLimit ?? 60,
     quotaTokens: 0,
@@ -142,6 +153,7 @@ function openEdit(k: ApiKey): void {
     modelAllowText: (k.modelAllow ?? []).join('\n'),
     usageAllow: k.usageAllow ?? false,
     usageRefresh: k.usageRefresh ?? false,
+    usageScope: (k.usageChannels ?? []).length === 0 ? 'all' : 'pick',
     usageChannels: [...(k.usageChannels ?? [])],
     rpmLimit: k.rpmLimit,
     quotaTokens: k.quotaTokens,
@@ -178,7 +190,17 @@ async function submit(): Promise<void> {
       body.quotaTokens = Number(form.quotaTokens)
       body.usageAllow = form.usageAllow
       body.usageRefresh = form.usageRefresh
-      body.usageChannels = form.usageChannels
+      /*
+       * 'all' 提交空数组（= 全部渠道，含以后新增）；
+       * 'pick' 提交显式 id 列表 —— 并拦掉"指定但一个都没选"，
+       * 否则会退化成"全部"，与用户意图相反。
+       */
+      if (form.usageAllow && form.usageScope === 'pick' && form.usageChannels.length === 0) {
+        // finally 会收敛 saving，这里直接退出即可
+        toast.error(t('usage.pickChannelsRequired'))
+        return
+      }
+      body.usageChannels = form.usageScope === 'all' ? [] : form.usageChannels
     }
 
     if (editingKeyId.value) {
@@ -498,20 +520,41 @@ onMounted(() => {
           </div>
         </template>
 
-        <!-- 可见渠道列表同样来自管理面接口；操作员只保留默认（空 = 全部）语义 -->
+        <!--
+          可见渠道：**两种模式显式区分**。
+          「全部渠道」= 空数组，含以后新增的渠道；「指定渠道」= 固定白名单。
+          旧实现把全选写成一串当前 id，相当于快照 —— 新增渠道永远看不到。
+        -->
         <div v-if="form.usageAllow && isAdmin()" class="field">
-          <div class="row-between">
-            <label>{{ t('usage.visibleChannels') }}</label>
-            <div class="row">
-              <button class="btn btn-sm" @click="form.usageChannels = channels.map((c) => c.id)">
+          <label>{{ t('usage.visibleChannels') }}</label>
+          <div class="row" style="gap: 16px; align-items: center">
+            <label class="row" style="gap: 6px; display: inline-flex; cursor: pointer">
+              <input v-model="form.usageScope" type="radio" value="all" />
+              {{ t('usage.scopeAll') }}
+            </label>
+            <label class="row" style="gap: 6px; display: inline-flex; cursor: pointer">
+              <input v-model="form.usageScope" type="radio" value="pick" />
+              {{ t('usage.scopePick') }}
+            </label>
+          </div>
+          <span class="hint">
+            {{ form.usageScope === 'all' ? t('usage.scopeAllHint') : t('usage.scopePickHint') }}
+          </span>
+
+          <template v-if="form.usageScope === 'pick'">
+            <div class="row" style="gap: 8px; margin: 8px 0 6px">
+              <button
+                class="btn btn-sm"
+                @click="form.usageChannels = channels.filter((x) => x.usageAdapter).map((c) => c.id)"
+              >
                 {{ t('usage.allChannels') }}
               </button>
               <button class="btn btn-sm" @click="form.usageChannels = []">
                 {{ t('usage.clearChannels') }}
               </button>
             </div>
-          </div>
-          <div class="batch-pick" style="max-height: 180px">
+          </template>
+          <div v-if="form.usageScope === 'pick'" class="batch-pick" style="max-height: 180px">
             <div
               v-for="c in channels.filter((x) => x.usageAdapter)"
               :key="c.id"
@@ -544,7 +587,9 @@ onMounted(() => {
               {{ t('usage.notConfigured') }}
             </div>
           </div>
-          <span class="hint">{{ t('usage.visibleChannelsHint') }}</span>
+          <span v-if="form.usageScope === 'pick'" class="hint">
+            {{ t('usage.visibleChannelsHint') }}
+          </span>
         </div>
 
         <!--
