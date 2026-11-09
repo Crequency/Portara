@@ -1030,25 +1030,28 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
           </div>
         </div>
 
-        <!-- ③ 还没回来的渠道：**每张卡自己的骨架**，带上真实渠道名，减少跳变 -->
-        <div
-          v-for="p in usagePending"
-          :key="'sk-' + p.channelId"
-          class="usage-cell sk-cell"
-          aria-hidden="true"
-        >
+        <!--
+          ③ 还没回来的渠道：**每张卡自己的骨架**，带上真实渠道名，减少跳变。
+          注意：这张卡**不能**整体 aria-hidden —— 渠道名/适配器是有效信息，
+          读屏用户需要知道"哪个渠道还在加载"。只隐藏下面的装饰块。
+        -->
+        <div v-for="p in usagePending" :key="'sk-' + p.channelId" class="usage-cell sk-cell">
           <div class="row" style="gap: 7px; min-width: 0">
             <span class="usage-cell-name">{{ p.channelName }}</span>
             <span class="tag">{{ p.adapter }}</span>
+            <!-- 读屏可感知的加载状态；视觉上不占位 -->
+            <span class="sr-only">{{ t('common.loading') }}</span>
           </div>
-          <span class="sk sk-balance"></span>
-          <div class="usage-windows sk-windows">
-            <div v-for="w in 2" :key="w" class="sk-window">
-              <div class="sk-window-head">
-                <span class="sk sk-window-label"></span>
-                <span class="sk sk-window-value"></span>
+          <div aria-hidden="true">
+            <span class="sk sk-balance"></span>
+            <div class="usage-windows sk-windows">
+              <div v-for="w in 2" :key="w" class="sk-window">
+                <div class="sk-window-head">
+                  <span class="sk sk-window-label"></span>
+                  <span class="sk sk-window-value"></span>
+                </div>
+                <div class="sk sk-window-track"></div>
               </div>
-              <div class="sk sk-window-track"></div>
             </div>
           </div>
         </div>
