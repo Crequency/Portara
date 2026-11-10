@@ -830,6 +830,9 @@ export const es = {
     cacheTtlHint: 'Evita que el origen limite las peticiones por consultar demasiado. Tanto el panel como la API usan esta caché.',
     autoRefreshSec: 'Intervalo de actualización automática de la sesión web (segundos)',
     autoRefreshSecHint: 'Solo se aplica a canales que requieren una sesión de navegador (p. ej. OpenDesign). La actualización periódica renueva el consumo y, de paso, la sesión; 0 lo desactiva. Predeterminado 600 segundos.',
+    maxRetries: 'Reintentos de consultas de consumo',
+    maxRetriesHint:
+      'Intentos adicionales tras fallar una consulta de saldo/consumo. Solo se reintentan errores de red, tiempos de espera, 429 y 5xx; 401/403/404 no. 0 lo desactiva. Predeterminado 3.',
     canRead: 'Puede leer el saldo',
     canReadHint: 'Permite que esta clave lea el saldo mediante /v1/usage. Desactivado por defecto: el saldo refleja la situación financiera de la cuenta.',
     canRefresh: 'Puede forzar la actualización',

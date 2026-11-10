@@ -846,6 +846,9 @@ export const zh = {
     autoRefreshSec: '网页会话自动刷新间隔（秒）',
     autoRefreshSecHint:
       '仅对需要浏览器会话的渠道（如 OpenDesign）生效。定时刷新既更新用量，也顺带续期登录态；填 0 关闭。默认 600 秒。',
+    maxRetries: '用量查询重试次数',
+    maxRetriesHint:
+      '余额/用量请求失败后自动重试的次数（首次之外）。只重试网络错误、超时、429 与 5xx；401/403/404 不重试。填 0 关闭。默认 3。',
     canRead: '可读取余额',
     canReadHint: '允许该密钥通过 /v1/usage 读取余额。默认关闭——余额反映账户资金状况。',
     canRefresh: '可强制刷新',

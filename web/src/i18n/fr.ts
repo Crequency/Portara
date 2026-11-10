@@ -830,6 +830,9 @@ export const fr = {
     cacheTtlHint: 'Évite de marteler l’API amont et ses limites de débit. Le panneau et l’API lisent tous deux ce cache.',
     autoRefreshSec: 'Intervalle d’actualisation automatique de la session web (secondes)',
     autoRefreshSecHint: 'S’applique uniquement aux canaux nécessitant une session navigateur (par ex. OpenDesign). L’actualisation périodique met à jour la consommation et prolonge la connexion ; 0 la désactive. Par défaut 600 secondes.',
+    maxRetries: 'Tentatives des requêtes de consommation',
+    maxRetriesHint:
+      'Tentatives supplémentaires après l’échec d’une requête de solde/consommation. Seuls les erreurs réseau, délais dépassés, 429 et 5xx sont retentés ; 401/403/404 non. 0 désactive. Par défaut 3.',
     canRead: 'Peut lire le solde',
     canReadHint: 'Autorise cette clé à lire les soldes via /v1/usage. Désactivé par défaut — un solde révèle la trésorerie du compte.',
     canRefresh: 'Peut forcer l’actualisation',

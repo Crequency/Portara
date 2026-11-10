@@ -20,6 +20,7 @@ import { tryDecryptKey } from './channels.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
+import { isRetriableUsageStatus, runWithRetry } from './retry.js'
 import {
   loadWebSession,
   loadWebSnapshot,
@@ -112,6 +113,11 @@ export async function getUsageSnapshot(
   }
 
   const ttl = await getSetting('usageCacheTtlSec')
+  /*
+   * 幂等重试次数：在这里读一次往下传，不在 callEndpoint 里反复查库。
+   * 单次刷新内所有端点共享同一份设置，行为才可预期。
+   */
+  const retries = await getSetting('usageMaxRetries')
 
   // 非强制刷新：命中缓存直接返回
   if (!opts.force) {
@@ -137,7 +143,7 @@ export async function getUsageSnapshot(
     // 等不到就自己来（宁可多打一次，也不要一直空着）
   }
 
-  const snapshot = await fetchSnapshot(ch, adapter)
+  const snapshot = await fetchSnapshot(ch, adapter, retries)
 
   try {
     if (snapshot.ok) {
@@ -174,6 +180,19 @@ interface EndpointOutcome {
   body: unknown
   /** 上游返回的 Set-Cookie（会话滚动续期用） */
   setCookies: string[]
+  /** 实际尝试次数（含首次）；1 = 没重试过。用于诊断"到底抖了几次" */
+  attempts: number
+}
+
+/**
+ * 把"打了几次"附到错误里。
+ *
+ * 只在真的重试过时追加 —— 首次即失败的错误看起来应该和以前完全一样，
+ * 否则日志里每条失败都多一段噪音，反而看不出哪次是抖动恢复、哪次是彻底挂。
+ */
+function withAttempts(r: { attempts: number; error: string | null }): string {
+  const msg = r.error ?? '未知错误'
+  return r.attempts > 1 ? msg + '（已尝试 ' + r.attempts + ' 次）' : msg
 }
 
 /** 打一个端点：超时、代理、RAW_LIMIT 与错误归一化全部在这里，两种形态共用 */
@@ -186,12 +205,38 @@ async function callEndpoint(opts: {
   timeoutMs: number
   proxy: Awaited<ReturnType<typeof getProxyTarget>>
   raws: Record<string, string>
+  /** 幂等重试次数（首次之外）；由设置项 usageMaxRetries 传入 */
+  retries: number
 }): Promise<EndpointOutcome> {
   const base: Pick<EndpointOutcome, 'key' | 'label' | 'required'> = {
     key: opts.key,
     label: opts.label,
     required: opts.required
   }
+  const { result, attempts } = await runWithRetry({
+    retries: opts.retries,
+    // GET 查询天然幂等：网络 / 超时 / 429 / 5xx 值得再试，鉴权类一次即止
+    isRetriable: (r) => isRetriableUsageStatus(r.status),
+    isFailure: (r) => r.error !== null,
+    attempt: () => callEndpointOnce(opts, base)
+  })
+  return { ...result, attempts }
+}
+
+/** 打一次端点：成功与失败都归一化成 EndpointOutcome（retries 由外层循环负责） */
+async function callEndpointOnce(
+  opts: {
+    key: string
+    label: string
+    url: string
+    required: boolean
+    headers: Record<string, string>
+    timeoutMs: number
+    proxy: Awaited<ReturnType<typeof getProxyTarget>>
+    raws: Record<string, string>
+  },
+  base: Pick<EndpointOutcome, 'key' | 'label' | 'required'>
+): Promise<Omit<EndpointOutcome, 'attempts'>> {
   try {
     const res = await upstreamFetch(
       opts.url,
@@ -239,7 +284,9 @@ async function callEndpoint(opts: {
 async function fetchAccountSnapshot(
   ch: ChannelRow,
   account: AccountRow,
-  proxy: Awaited<ReturnType<typeof getProxyTarget>>
+  proxy: Awaited<ReturnType<typeof getProxyTarget>>,
+  /** 幂等重试次数（首次之外） */
+  retries: number
 ): Promise<UsageAccountSnapshot> {
   const fail = (error: string, raw?: unknown): UsageAccountSnapshot => ({
     accountId: account.id,
@@ -344,7 +391,8 @@ async function fetchAccountSnapshot(
           headers: { accept: 'application/json', cookie: session.cookie },
           timeoutMs,
           proxy,
-          raws
+          raws,
+          retries
         })
       )
     )
@@ -386,9 +434,9 @@ async function fetchAccountSnapshot(
         await markSessionResult(account.id, false, r.error ?? 'failed').catch(() => undefined)
         const fromSnapshot = parseSnapshot(`${r.label} 拉取失败`)
         if (fromSnapshot) return fromSnapshot
-        return fail(`${r.label} 拉取失败：${r.error}`, raws)
+        return fail(`${r.label} 拉取失败：${withAttempts(r)}`, raws)
       }
-      warnings.push(`${r.label} 拉取失败：${r.error}`)
+      warnings.push(`${r.label} 拉取失败：${withAttempts(r)}`)
     }
 
     /*
@@ -412,7 +460,8 @@ async function fetchAccountSnapshot(
             },
             timeoutMs,
             proxy,
-            raws
+            raws,
+            retries
           })
         )
       )
@@ -424,9 +473,9 @@ async function fetchAccountSnapshot(
         if (r.required) {
           const fromSnapshot = parseSnapshot(`${r.label} 拉取失败`)
           if (fromSnapshot) return fromSnapshot
-          return fail(`${r.label} 拉取失败：${r.error}`, raws)
+          return fail(`${r.label} 拉取失败：${withAttempts(r)}`, raws)
         }
-        warnings.push(`${r.label} 拉取失败：${r.error}`)
+        warnings.push(`${r.label} 拉取失败：${withAttempts(r)}`)
       }
       // 第二轮同样要接住 Set-Cookie（限制窗口接口也会续期），同样跳过失效响应
       if (
@@ -481,7 +530,8 @@ async function fetchAccountSnapshot(
         headers,
         timeoutMs,
         proxy,
-        raws
+        raws,
+        retries
       })
     })
   )
@@ -491,8 +541,8 @@ async function fetchAccountSnapshot(
       responses[r.key] = r.body
       continue
     }
-    if (r.required) return fail(`${r.label} 拉取失败：${r.error}`, raws)
-    warnings.push(`${r.label} 拉取失败：${r.error}`)
+    if (r.required) return fail(`${r.label} 拉取失败：${withAttempts(r)}`, raws)
+    warnings.push(`${r.label} 拉取失败：${withAttempts(r)}`)
   }
 
   try {
@@ -520,12 +570,19 @@ async function fetchAccountSnapshot(
  * 单个账户失败不影响其它账户：它只是在明细里标 `ok:false`，
  * 顶层聚合只统计成功的那些。
  */
-async function fetchSnapshot(ch: ChannelRow, adapter: UsageAdapter): Promise<UsageSnapshot> {
+async function fetchSnapshot(
+  ch: ChannelRow,
+  adapter: UsageAdapter,
+  /** 幂等重试次数（首次之外），由 getUsageSnapshot 读设置后传入 */
+  retries: number
+): Promise<UsageSnapshot> {
   const accounts = await listAccounts(ch.id)
   if (accounts.length === 0) return errorSnapshot(ch, '该渠道没有上游账户')
 
   const proxy = await getProxyTarget(ch.proxy_id)
-  const parts = await Promise.all(accounts.map((a) => fetchAccountSnapshot(ch, a, proxy)))
+  const parts = await Promise.all(
+    accounts.map((a) => fetchAccountSnapshot(ch, a, proxy, retries))
+  )
 
   const okParts = parts.filter((p) => p.ok)
   const agg = aggregateAccountSnapshots(okParts)

@@ -43,6 +43,8 @@ export interface GatewaySettings {
   usageCacheTtlSec: number
   /** 网页会话型渠道的自动刷新间隔（秒）；0 = 关闭 */
   usageAutoRefreshSec: number
+  /** 余额/用量查询的幂等重试次数（首次之外），0 = 关闭 */
+  usageMaxRetries: number
   /**
    * 上游请求失败后的冷却时长（秒）。
    *
@@ -232,6 +234,23 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
   usageAutoRefreshSec: {
     schema: z.coerce.number().int().min(0).max(86_400),
     default: 600,
+    group: 'gateway'
+  },
+  /**
+   * 余额/用量查询的**幂等重试次数**（首次之外再试几次），0 = 关闭重试。
+   *
+   * 为什么可以放心重试：这些都是对上游的 GET，天然幂等、不产生计费与副作用。
+   * 而它们的失败很有价值 —— 网络抖动、上游 429、502/503 都属"下一次可能就好"，
+   * 一次失败就把整张卡标记为失败（要等 5 分钟缓存过期）太浪费。
+   *
+   * 只对**可重试错误**生效：网络错误 / 超时 / 429 / 5xx。
+   * 401/403/404 这类绝不重试 —— 重试只会放大鉴权失败风暴，还可能触发上游风控。
+   *
+   * 默认 3：覆盖常见的瞬时抖动，又不会把一次慢失败拖成十几秒。
+   */
+  usageMaxRetries: {
+    schema: z.coerce.number().int().min(0).max(10),
+    default: 3,
     group: 'gateway'
   },
   accountFailureCooldownSec: {
