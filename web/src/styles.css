@@ -612,6 +612,41 @@ a { color: var(--accent); text-decoration: none; }
   border-color: color-mix(in oklab, var(--danger) 35%, var(--border));
 }
 
+/*
+ * 余额用量卡顶部：余额在左、额度窗口在右。
+ *
+ * 为什么不是简单 grid-auto：余额是固定宽度的小块，窗口条需要横向空间。
+ * 用 minmax(220px, 320px) 让余额窄、窗口吃掉剩余宽度；
+ * 窄屏（< 900px）回退成上下堆叠，否则窗口条会被压成不可读的窄条。
+ */
+.usage-head-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+
+/* 没有余额的渠道（只有窗口）：窗口独占整行，别缩成半宽 */
+.usage-head-grid.is-stacked {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.usage-head-balance .stat + .stat {
+  margin-top: 10px;
+}
+
+.usage-head-windows {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .usage-head-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+
 /* 「余额 API」说明卡：默认折叠，标题行整行可点 */
 .usage-api-head {
   display: flex;

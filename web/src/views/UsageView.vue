@@ -496,24 +496,34 @@ onMounted(() => void load())
       <template v-else>
         <div v-if="item.snapshot!.stale" class="alert">{{ t('usage.stale') }}</div>
 
-        <!-- 金额余额 -->
-        <div v-if="item.snapshot!.balances.length > 0" class="grid grid-3" style="margin-bottom: 14px">
-          <div v-for="b in item.snapshot!.balances" :key="b.currency" class="stat">
-            <div class="stat-label">{{ t('usage.balance') }} · {{ b.currency }}</div>
-            <div class="stat-value">{{ money(b.remaining, b.unit, b.currency) }}</div>
-            <div class="stat-hint">
-              <template v-if="b.granted !== undefined">
-                {{ t('usage.granted') }} {{ formatNumber(b.granted) }}
-              </template>
-              <template v-if="b.toppedUp !== undefined">
-                · {{ t('usage.toppedUp') }} {{ formatNumber(b.toppedUp) }}
-              </template>
+        <!--
+          余额与额度窗口**并排**：余额在左、窗口在右。
+          以前窗口另起一段铺满整行，余额右侧空出 3/4 屏宽，卡还被拉得很高。
+          只有窗口没有余额的渠道（例如按额度计费的订阅型）仍让窗口占满整行 ——
+          is-stacked 类会把它变成单列。
+        -->
+        <div
+          class="usage-head-grid"
+          :class="{ 'is-stacked': item.snapshot!.balances.length === 0 }"
+        >
+          <!-- 金额余额 -->
+          <div v-if="item.snapshot!.balances.length > 0" class="usage-head-balance">
+            <div v-for="b in item.snapshot!.balances" :key="b.currency" class="stat">
+              <div class="stat-label">{{ t('usage.balance') }} · {{ b.currency }}</div>
+              <div class="stat-value">{{ money(b.remaining, b.unit, b.currency) }}</div>
+              <div class="stat-hint">
+                <template v-if="b.granted !== undefined">
+                  {{ t('usage.granted') }} {{ formatNumber(b.granted) }}
+                </template>
+                <template v-if="b.toppedUp !== undefined">
+                  · {{ t('usage.toppedUp') }} {{ formatNumber(b.toppedUp) }}
+                </template>
+              </div>
             </div>
           </div>
-        </div>
 
-        <!-- 额度窗口 -->
-        <div v-if="item.snapshot!.windows.length > 0" style="margin-bottom: 14px">
+          <!-- 额度窗口 -->
+          <div v-if="item.snapshot!.windows.length > 0" class="usage-head-windows" style="margin-bottom: 14px">
           <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
           <div class="form-grid" style="gap: 10px">
             <div v-for="w in item.snapshot!.windows" :key="w.key">
@@ -546,6 +556,7 @@ onMounted(() => void load())
                 />
               </div>
             </div>
+          </div>
           </div>
         </div>
 
