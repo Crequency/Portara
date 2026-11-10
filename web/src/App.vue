@@ -13,7 +13,7 @@ import PSelect from './components/PSelect.vue'
 import ToastHost from './components/ToastHost.vue'
 import UserMenu from './components/UserMenu.vue'
 import { diagState, enableDiag, setDiagDetail, setDiagLine } from './diag'
-import { LOCALES, locale, setLocale, useI18n } from './i18n'
+import { LOCALES, locale, setLocale, useI18n, type Locale } from './i18n'
 import { loadMeta, meta, siteName } from './meta'
 import { setThemeMode, themeMode, type ThemeMode } from './theme'
 import { toast } from './toast'
@@ -355,7 +355,8 @@ onMounted(async () => {
 setSessionExpiredHandler(() => {
   if (user.value) {
     user.value = null
-    toast.error(t('auth.sessionExpired'))
+    // 复用登录页同一条文案（此前写成 auth.*，字典里没有该命名空间）
+    toast.error(t('login.sessionExpired'))
   }
 })
 
@@ -478,7 +479,7 @@ function go(id: string): void {
               :trigger-label="localeShort"
               size="sm"
               align="end"
-              @update:model-value="(v) => setLocale(v as 'zh' | 'en')"
+              @update:model-value="(v) => setLocale(v as Locale)"
             >
               <template #prefix>
                 <svg

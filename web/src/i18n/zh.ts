@@ -4,6 +4,7 @@ export const zh = {
     saving: '保存中…',
     cancel: '取消',
     delete: '删除',
+    deleted: '已删除',
     edit: '编辑',
     create: '创建',
     refresh: '刷新',
@@ -1229,6 +1230,7 @@ export const zh = {
     }
   },
   mapping: {
+    saved: '已保存',
     title: '模型映射',
     sub: '网关受理的模型 id → 上游渠道的模型 id；一个 id 可负载均衡到多个渠道的多个模型',
     empty: '还没有映射。未配映射时，按渠道声明的模型原样直通。',

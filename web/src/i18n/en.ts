@@ -4,6 +4,7 @@ export const en = {
     saving: 'Saving…',
     cancel: 'Cancel',
     delete: 'Delete',
+    deleted: 'Deleted',
     edit: 'Edit',
     create: 'Create',
     refresh: 'Refresh',
@@ -1232,6 +1233,7 @@ export const en = {
     }
   },
   mapping: {
+    saved: 'Saved',
     title: 'Model mapping',
     sub: 'Gateway-facing model id → upstream channel model id; one id can load-balance across channels and models',
     empty: 'No mappings yet. Without a mapping, the channel-declared model is passed through as-is.',

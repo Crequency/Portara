@@ -1,28 +1,73 @@
 import { computed, ref } from 'vue'
 import { en } from './en'
+import { es } from './es'
+import { fr } from './fr'
+import { ja } from './ja'
+import { ko } from './ko'
+import { th } from './th'
 import { zh } from './zh'
 
-export type Locale = 'zh' | 'en'
+/**
+ * 支持的语言。
+ *
+ * 新增一种语言要同时做三件事：
+ *   ① 加一个 `<locale>.ts`（键集合必须与 zh.ts 完全一致，`web/tests/i18n.test.mjs` 会钉死）
+ *   ② 在下面 `LOCALES` 里登记（label 用该语言自己的写法，short 是下拉里的短标识）
+ *   ③ 在 `LANG_ATTR` 里给出写进 <html lang> 的 BCP-47 值
+ * 漏任何一步，类型检查或测试会立刻失败。
+ */
+export type Locale = 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'th'
 
 export const LOCALES: { value: Locale; label: string; short: string }[] = [
   { value: 'zh', label: '中文', short: '中文' },
-  { value: 'en', label: 'English', short: 'EN' }
+  { value: 'en', label: 'English', short: 'EN' },
+  { value: 'ja', label: '日本語', short: 'JA' },
+  { value: 'ko', label: '한국어', short: 'KO' },
+  { value: 'es', label: 'Español', short: 'ES' },
+  { value: 'fr', label: 'Français', short: 'FR' },
+  { value: 'th', label: 'ไทย', short: 'TH' }
 ]
 
 const STORAGE_KEY = 'portara.locale'
 
+/** 写进 <html lang> 的 BCP-47 值 */
+const LANG_ATTR: Record<Locale, string> = {
+  zh: 'zh-CN',
+  en: 'en',
+  ja: 'ja',
+  ko: 'ko',
+  es: 'es',
+  fr: 'fr',
+  th: 'th'
+}
+
 type Dict = Record<string, unknown>
 
-const catalogs: Record<Locale, Dict> = { zh, en }
+const catalogs: Record<Locale, Dict> = { zh, en, ja, ko, es, fr, th }
 
+function isLocale(v: unknown): v is Locale {
+  return typeof v === 'string' && LOCALES.some((l) => l.value === v)
+}
+
+/**
+ * 首次访问时按浏览器语言挑一个。
+ *
+ * 只做前缀匹配：zh-CN → zh、ja-JP → ja、es-419 → es、pt-BR → 不匹配回落英文。
+ * 匹配不到时用英文而不是中文 —— 非中文用户不该被默认丢进中文界面。
+ */
 function detect(): Locale {
   try {
     const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved === 'zh' || saved === 'en') return saved
+    if (isLocale(saved)) return saved
   } catch {
     /* 隐私模式下 localStorage 可能不可用 */
   }
-  return navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+  const nav = (navigator.language ?? '').toLowerCase()
+  for (const l of LOCALES) {
+    if (l.value !== 'zh' && nav.startsWith(l.value)) return l.value
+  }
+  if (nav.startsWith('zh')) return 'zh'
+  return 'en'
 }
 
 export const locale = ref<Locale>(detect())
@@ -34,7 +79,7 @@ export function setLocale(next: Locale): void {
   } catch {
     /* 忽略 */
   }
-  document.documentElement.setAttribute('lang', next === 'zh' ? 'zh-CN' : 'en')
+  document.documentElement.setAttribute('lang', LANG_ATTR[next] ?? next)
 }
 
 /** 按 "a.b.c" 取值；缺失时回退到中文，再回退到键名本身（便于发现漏翻） */
