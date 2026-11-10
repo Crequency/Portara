@@ -848,6 +848,9 @@ export const en = {
     autoRefreshSec: 'Web-session auto refresh (seconds)',
     autoRefreshSecHint:
       'Only applies to channels that need a browser session (e.g. OpenDesign). Each refresh updates usage and extends the session; 0 disables it. Default 600s.',
+    maxRetries: 'Usage query retries',
+    maxRetriesHint:
+      'Extra attempts after a failed balance/usage request. Only network errors, timeouts, 429 and 5xx are retried; 401/403/404 are not. 0 disables. Default 3.',
     canRead: 'Can read balance',
     canReadHint: 'Lets this key read balances via /v1/usage. Off by default — balances reveal account funds.',
     canRefresh: 'Can force refresh',

@@ -292,6 +292,8 @@ export interface GatewaySettings {
   usageCacheTtlSec: number
   /** 网页会话型渠道的自动刷新间隔（秒）；0 = 关闭 */
   usageAutoRefreshSec: number
+  /** 余额/用量查询的幂等重试次数（首次之外），0 = 关闭 */
+  usageMaxRetries: number
   /** 上游失败后的冷却时长（秒）：这段时间内不再路由到该 (渠道, 账户) */
   accountFailureCooldownSec: number
   /** 是否跳过「任意用量窗口已打满」的账户 */

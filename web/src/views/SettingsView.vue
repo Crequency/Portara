@@ -41,6 +41,7 @@ const form = ref<GatewaySettings>({
   timezone: 'UTC',
   usageCacheTtlSec: 300,
   usageAutoRefreshSec: 600,
+  usageMaxRetries: 3,
   accountFailureCooldownSec: 3600,
   skipExhaustedWindows: true,
   concurrencyCooldownSec: 20,
@@ -225,6 +226,12 @@ onMounted(load)
             step="60"
           />
           <span class="hint">{{ t('usage.autoRefreshSecHint') }}</span>
+        </div>
+
+        <div class="field">
+          <label>{{ t('usage.maxRetries') }}</label>
+          <input v-model.number="form.usageMaxRetries" type="number" min="0" max="10" />
+          <span class="hint">{{ t('usage.maxRetriesHint') }}</span>
         </div>
 
         <!-- 路由策略：失败冷却 + 打满窗口跳过 -->
