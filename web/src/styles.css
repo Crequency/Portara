@@ -623,7 +623,8 @@ a { color: var(--accent); text-decoration: none; }
   display: grid;
   grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  /* stretch：让左右两块**等高**，视觉上像一对并列的卡 */
+  align-items: stretch;
   margin-bottom: 14px;
 }
 
@@ -632,12 +633,29 @@ a { color: var(--accent); text-decoration: none; }
   grid-template-columns: minmax(0, 1fr);
 }
 
-.usage-head-balance .stat + .stat {
-  margin-top: 10px;
+/* 余额块：小卡撑满整行高度，与右侧窗口卡等高 */
+.usage-head-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
 }
 
+.usage-head-balance .stat {
+  flex: 1;
+  height: 100%;
+}
+
+/* 窗口块：与左侧小卡同样的卡片外观（底色 / 边框 / 圆角 / 内边距） */
 .usage-head-windows {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   min-width: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 15px 16px;
 }
 
 @media (max-width: 900px) {
