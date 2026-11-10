@@ -828,6 +828,9 @@ export const es = {
     adapterHint: 'Una vez elegido, Portara consultará periódicamente el saldo y la cuota de ese canal; vacío = no se ofrece.',
     urlField: 'Anulación de la URL de la API de consumo',
     urlFieldHint: 'Si se deja vacío, se compone la ruta del adaptador con el dominio de la Base URL; solo hay que rellenarlo si la API está en otro dominio (p. ej. un servicio de facturación independiente).',
+    balanceOnlyTitle: 'Canales solo con saldo',
+    balanceOnlyHint:
+      'Estos canales tienen saldo pero no ventanas de cuota; se agrupan aquí',
     failedGroup: 'Error al obtener: {n} canales',
     failedGroupHint:
       'Estos canales fallaron por completo. Expande para ver el motivo y reintentar uno por uno.',

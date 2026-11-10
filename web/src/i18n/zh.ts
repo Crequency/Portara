@@ -843,6 +843,9 @@ export const zh = {
     adapterHint: '选定后 Portara 会定期拉取该渠道的余额/额度；留空则不提供。',
     urlField: '用量接口地址覆盖',
     urlFieldHint: '留空则按 Base URL 的域名拼适配器路径；接口在别的域名（如独立的 billing 服务）时才需要填。',
+    balanceOnlyTitle: '仅余额渠道',
+    balanceOnlyHint:
+      '这些渠道只有金额余额、没有额度窗口，合并在这里展示',
     failedGroup: '获取失败 {n} 个渠道',
     failedGroupHint:
       '这些渠道整卡取数失败，展开可查看具体原因并单独重试。',

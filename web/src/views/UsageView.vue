@@ -94,6 +94,24 @@ const doneItems = computed(() => items.value.filter((i) => !isFailed(i)))
 const failedItems = computed(() => items.value.filter((i) => isFailed(i)))
 
 /**
+ * 「只看余额」的渠道：有金额、没有额度窗口，也没有账期 / 套餐数据。
+ *
+ * 这类卡每张只有一个数字（DeepSeek / Kimi 这种充值型），一卡一张会把页面拉得很长，
+ * 信息密度极低 —— 合并成一张卡里的多行更好读（与概览页同一套规则）。
+ * 判定必须同时排除 windows / period / plan，否则会把有真实额度信息的渠道误归进来。
+ */
+function isBalanceOnly(item: UsageItem): boolean {
+  const s = item.snapshot
+  if (!s || !s.ok) return false
+  return s.balances.length > 0 && s.windows.length === 0 && !s.period && !s.plan
+}
+
+/** 逐卡渲染的渠道（有额度窗口 / 账期 / 套餐，或还在加载） */
+const cardItems = computed(() => doneItems.value.filter((i) => !isBalanceOnly(i)))
+/** 合并成一张卡的纯余额渠道 */
+const balanceOnlyItems = computed(() => doneItems.value.filter((i) => isBalanceOnly(i)))
+
+/**
  * 折叠区是否展开。
  *
  * 放在模块作用域而不是组件 ref：用户在余额页展开看错误、
@@ -364,7 +382,7 @@ onMounted(() => void load())
       卡片壳子来自只读本地表的渠道清单（毫秒级），数据各自去取，
       谁先回来谁先显示 —— 不再为一个慢渠道拖住整页。
     -->
-    <div v-for="item in doneItems" :key="item.channelId" class="card">
+    <div v-for="item in cardItems" :key="item.channelId" class="card">
       <div class="card-head">
         <div>
           <div class="card-title row" style="gap: 8px">
@@ -538,6 +556,46 @@ onMounted(() => void load())
       以前它们是若干条占满整屏的红条，把正常渠道挤到下面；
       现在只留一行摘要，需要追因时手动展开。
     -->
+    <!--
+      纯余额渠道（有金额、无额度窗口 / 账期 / 套餐）：合并成一张卡里的多行。
+      这类渠道每个只有一个数字，一卡一张会把页面拉得很长，读起来反而更累。
+      每行保留自己的刷新入口，单独刷新不影响其它行。
+    -->
+    <div v-if="balanceOnlyItems.length > 0" class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">{{ t('usage.balanceOnlyTitle') }}</div>
+          <div class="dim" style="font-size: 12px">{{ t('usage.balanceOnlyHint') }}</div>
+        </div>
+      </div>
+
+      <div class="usage-balance-list">
+        <div v-for="item in balanceOnlyItems" :key="item.channelId" class="usage-balance-row">
+          <span class="row" style="gap: 6px; min-width: 0">
+            <span class="usage-cell-name">{{ item.channelName }}</span>
+            <span class="tag">{{ item.snapshot!.adapter || item.adapter }}</span>
+            <span v-if="item.snapshot!.cached" class="badge badge-off">{{ t('usage.cached') }}</span>
+          </span>
+          <span class="row" style="gap: 10px">
+            <span
+              v-for="b in item.snapshot!.balances"
+              :key="b.currency"
+              class="mono usage-balance-amount"
+            >
+              {{ money(b.remaining, b.unit, b.currency) }}
+            </span>
+            <span class="dim" style="font-size: 11px">{{ formatTime(item.snapshot!.fetchedAt) }}</span>
+            <button class="btn btn-ghost btn-sm" :disabled="item.loading" @click="refreshOne(item)">
+              {{ item.loading ? t('common.loading') : t('common.refresh') }}
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="openRaw(item.snapshot!)">
+              {{ t('usage.viewRaw') }}
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+
     <div v-if="failedItems.length > 0" class="card usage-failed">
       <button
         class="usage-failed-head"

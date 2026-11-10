@@ -827,6 +827,9 @@ export const ja = {
     adapterHint: '選択すると Portara が定期的にそのチャネルの残高 / クォータを取得します。空欄なら提供しません。',
     urlField: '使用量 API の URL 上書き',
     urlFieldHint: '空欄の場合は Base URL のドメインにアダプターのパスを結合します。API が別ドメイン（独立した billing サービスなど）にある場合にのみ入力が必要です。',
+    balanceOnlyTitle: '残高のみのチャネル',
+    balanceOnlyHint:
+      '残高のみで利用枠がないチャネルをここにまとめて表示しています',
     failedGroup: '取得に失敗したチャネル {n} 件',
     failedGroupHint:
       'これらのチャネルは取得に完全に失敗しました。展開すると原因の確認と個別の再試行ができます。',
