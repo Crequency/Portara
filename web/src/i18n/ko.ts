@@ -30,7 +30,9 @@ export const ko = {
     note: '메모',
     yes: '예',
     no: '아니오',
-    new: '새로 만들기'
+    new: '새로 만들기',
+    expand: '펼치기',
+    collapse: '접기'
   },
   nav: {
     appName: 'Portara',
@@ -845,6 +847,9 @@ export const ko = {
     adapterHint: '선택하면 Portara가 주기적으로 해당 채널의 잔액/할당량을 가져옵니다. 비워 두면 제공하지 않습니다.',
     urlField: '사용량 API 주소 재정의',
     urlFieldHint: '비워 두면 Base URL의 도메인을 기준으로 어댑터 경로를 조합합니다. API가 다른 도메인(예: 별도의 billing 서비스)에 있을 때만 입력하세요.',
+    failedGroup: '가져오기 실패: 채널 {n}개',
+    failedGroupHint:
+      '이 채널들은 전체 조회에 실패했습니다. 펼치면 원인을 확인하고 개별적으로 재시도할 수 있습니다.',
     cacheTtl: '잔액 캐시 시간(초)',
     cacheTtlHint: '업스트림 API를 너무 자주 호출해 속도 제한을 받지 않도록 합니다. 패널과 API 모두 이 캐시를 사용합니다.',
     autoRefreshSec: '웹 세션 자동 새로고침 간격(초)',

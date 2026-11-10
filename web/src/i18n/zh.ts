@@ -26,7 +26,9 @@ export const zh = {
     note: '备注',
     yes: '是',
     no: '否',
-    new: '新建'
+    new: '新建',
+    expand: '展开',
+    collapse: '折叠'
   },
   nav: {
     appName: 'Portara',
@@ -841,6 +843,9 @@ export const zh = {
     adapterHint: '选定后 Portara 会定期拉取该渠道的余额/额度；留空则不提供。',
     urlField: '用量接口地址覆盖',
     urlFieldHint: '留空则按 Base URL 的域名拼适配器路径；接口在别的域名（如独立的 billing 服务）时才需要填。',
+    failedGroup: '获取失败 {n} 个渠道',
+    failedGroupHint:
+      '这些渠道整卡取数失败，展开可查看具体原因并单独重试。',
     cacheTtl: '余额缓存时长（秒）',
     cacheTtlHint: '避免频繁打上游接口被限频。面板与 API 都走这份缓存。',
     autoRefreshSec: '网页会话自动刷新间隔（秒）',

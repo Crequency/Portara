@@ -30,7 +30,9 @@ export const ja = {
     note: 'メモ',
     yes: 'はい',
     no: 'いいえ',
-    new: '新規'
+    new: '新規',
+    expand: '展開',
+    collapse: '折りたたむ'
   },
   nav: {
     appName: 'Portara',
@@ -825,6 +827,9 @@ export const ja = {
     adapterHint: '選択すると Portara が定期的にそのチャネルの残高 / クォータを取得します。空欄なら提供しません。',
     urlField: '使用量 API の URL 上書き',
     urlFieldHint: '空欄の場合は Base URL のドメインにアダプターのパスを結合します。API が別ドメイン（独立した billing サービスなど）にある場合にのみ入力が必要です。',
+    failedGroup: '取得に失敗したチャネル {n} 件',
+    failedGroupHint:
+      'これらのチャネルは取得に完全に失敗しました。展開すると原因の確認と個別の再試行ができます。',
     cacheTtl: '残高キャッシュ時間（秒）',
     cacheTtlHint: '上流 API を頻繁に叩いてレート制限されるのを避けます。パネルと API はどちらもこのキャッシュを使用します。',
     autoRefreshSec: 'ウェブセッションの自動更新間隔（秒）',

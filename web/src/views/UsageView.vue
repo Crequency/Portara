@@ -1,3 +1,14 @@
+<script lang="ts">
+/**
+ * 失败渠道折叠区的展开状态。
+ *
+ * **必须放在普通 <script> 里**：`<script setup>` 的顶层变量属于每个组件实例，
+ * 组件卸载（切走页面）就丢了。放模块作用域才能做到"这次会话里展开过一次就记住"。
+ * 不写 localStorage —— 下次打开面板重新折叠，避免错误被永久藏起来。
+ */
+let usageFailedExpanded = false
+</script>
+
 <script setup lang="ts">
 /**
  * 余额用量页（仅管理员）。
@@ -6,7 +17,7 @@
  * 服务端已归一化成统一快照，这里只负责呈现。
  */
 import { errorText, toastError } from '../error'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api, type UsageSnapshot, type User } from '../api'
 import AccountUsage from '../components/AccountUsage.vue'
 import Modal from '../components/Modal.vue'
@@ -65,6 +76,34 @@ const summaryPending = computed(
 
 const rawOpen = ref(false)
 const rawTarget = ref<UsageSnapshot | null>(null)
+
+/**
+ * 「整卡失败」= 这个渠道的所有账户都没取到数。
+ *
+ * 判据：请求本身抛错，或快照明确 ok=false。
+ * **部分账户失败**（part && ok）不算 —— 卡上还有真实数据，留在主区域并照旧显示 warnings。
+ */
+function isFailed(item: UsageItem): boolean {
+  if (item.error) return true
+  return item.snapshot !== null && !item.snapshot.ok
+}
+
+/** 主区域：正常渠道 + 还在加载的骨架卡 */
+const doneItems = computed(() => items.value.filter((i) => !isFailed(i)))
+/** 折叠区：整卡失败的渠道 */
+const failedItems = computed(() => items.value.filter((i) => isFailed(i)))
+
+/**
+ * 折叠区是否展开。
+ *
+ * 放在模块作用域而不是组件 ref：用户在余额页展开看错误、
+ * 切去别的页面再回来，不该被重置成折叠（"我刚才明明展开了"的困惑）。
+ * 但也不写 localStorage —— 下次打开面板重新折叠，避免错误被永久藏起来。
+ */
+const failedExpanded = ref(usageFailedExpanded)
+watch(failedExpanded, (v) => {
+  usageFailedExpanded = v
+})
 
 /** 页内概览：按币种汇总金额余额 + 汇总窗口超限数 */
 const summary = computed(() => {
@@ -325,7 +364,7 @@ onMounted(() => void load())
       卡片壳子来自只读本地表的渠道清单（毫秒级），数据各自去取，
       谁先回来谁先显示 —— 不再为一个慢渠道拖住整页。
     -->
-    <div v-for="item in items" :key="item.channelId" class="card">
+    <div v-for="item in doneItems" :key="item.channelId" class="card">
       <div class="card-head">
         <div>
           <div class="card-title row" style="gap: 8px">
@@ -494,6 +533,58 @@ onMounted(() => void load())
       </template>
     </div>
   </div>
+
+    <!--
+      整卡失败的渠道：收拢到一处、默认折叠。
+      以前它们是若干条占满整屏的红条，把正常渠道挤到下面；
+      现在只留一行摘要，需要追因时手动展开。
+    -->
+    <div v-if="failedItems.length > 0" class="card usage-failed">
+      <button
+        class="usage-failed-head"
+        type="button"
+        :aria-expanded="failedExpanded"
+        @click="failedExpanded = !failedExpanded"
+      >
+        <span class="usage-failed-chevron" :class="{ on: failedExpanded }" aria-hidden="true">▸</span>
+        <span class="usage-failed-title">
+          {{ t('usage.failedGroup', { n: failedItems.length }) }}
+        </span>
+        <span class="usage-failed-names">
+          {{ failedItems.map((i) => i.channelName).join(' · ') }}
+        </span>
+        <span class="spacer" />
+        <span class="dim nowrap" style="font-size: 11.5px">
+          {{ failedExpanded ? t('common.collapse') : t('common.expand') }}
+        </span>
+      </button>
+
+      <div v-if="failedExpanded" class="usage-failed-body">
+        <div class="dim" style="font-size: 12px; margin-bottom: 10px">
+          {{ t('usage.failedGroupHint') }}
+        </div>
+        <div v-for="item in failedItems" :key="item.channelId" class="usage-failed-item">
+          <div class="row" style="gap: 8px; min-width: 0">
+            <span class="usage-cell-name">{{ item.channelName }}</span>
+            <span class="tag">{{ item.snapshot?.adapter || item.adapter }}</span>
+            <span class="spacer" />
+            <button class="btn btn-sm" :disabled="item.loading" @click="refreshOne(item)">
+              {{ item.loading ? t('common.loading') : t('common.refresh') }}
+            </button>
+            <button
+              v-if="item.snapshot"
+              class="btn btn-ghost btn-sm"
+              @click="openRaw(item.snapshot!)"
+            >
+              {{ t('usage.viewRaw') }}
+            </button>
+          </div>
+          <div class="alert" style="margin-top: 8px">
+            {{ item.error || item.snapshot?.error || t('usage.error') }}
+          </div>
+        </div>
+      </div>
+    </div>
 
   <Modal v-if="rawOpen && rawTarget" :title="t('usage.rawTitle')" wide @close="rawOpen = false">
     <div class="dim" style="font-size: 12px; margin-bottom: 8px">

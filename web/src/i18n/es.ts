@@ -30,7 +30,9 @@ export const es = {
     note: 'Nota',
     yes: 'Sí',
     no: 'No',
-    new: 'Nuevo'
+    new: 'Nuevo',
+    expand: 'Expandir',
+    collapse: 'Contraer'
   },
   nav: {
     appName: 'Portara',
@@ -826,6 +828,9 @@ export const es = {
     adapterHint: 'Una vez elegido, Portara consultará periódicamente el saldo y la cuota de ese canal; vacío = no se ofrece.',
     urlField: 'Anulación de la URL de la API de consumo',
     urlFieldHint: 'Si se deja vacío, se compone la ruta del adaptador con el dominio de la Base URL; solo hay que rellenarlo si la API está en otro dominio (p. ej. un servicio de facturación independiente).',
+    failedGroup: 'Error al obtener: {n} canales',
+    failedGroupHint:
+      'Estos canales fallaron por completo. Expande para ver el motivo y reintentar uno por uno.',
     cacheTtl: 'Duración de la caché de saldo (segundos)',
     cacheTtlHint: 'Evita que el origen limite las peticiones por consultar demasiado. Tanto el panel como la API usan esta caché.',
     autoRefreshSec: 'Intervalo de actualización automática de la sesión web (segundos)',
