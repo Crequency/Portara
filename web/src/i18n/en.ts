@@ -845,6 +845,9 @@ export const en = {
     adapterHint: 'Once set, Portara periodically fetches this channel\'s balance/quota. Leave empty to skip.',
     urlField: 'Usage endpoint override',
     urlFieldHint: 'Leave empty to build the adapter path on the Base URL host; fill it when the API lives on another domain (e.g. a billing service).',
+    balanceOnlyTitle: 'Balance-only channels',
+    balanceOnlyHint:
+      'These channels have a balance but no quota windows, grouped here for a compact view',
     failedGroup: 'Failed to fetch: {n} channels',
     failedGroupHint:
       'These channels failed entirely. Expand to see why and retry individually.',

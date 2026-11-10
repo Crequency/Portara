@@ -847,6 +847,9 @@ export const ko = {
     adapterHint: '선택하면 Portara가 주기적으로 해당 채널의 잔액/할당량을 가져옵니다. 비워 두면 제공하지 않습니다.',
     urlField: '사용량 API 주소 재정의',
     urlFieldHint: '비워 두면 Base URL의 도메인을 기준으로 어댑터 경로를 조합합니다. API가 다른 도메인(예: 별도의 billing 서비스)에 있을 때만 입력하세요.',
+    balanceOnlyTitle: '잔액 전용 채널',
+    balanceOnlyHint:
+      '잔액만 있고 할당량 창이 없는 채널을 여기에 모아 표시합니다',
     failedGroup: '가져오기 실패: 채널 {n}개',
     failedGroupHint:
       '이 채널들은 전체 조회에 실패했습니다. 펼치면 원인을 확인하고 개별적으로 재시도할 수 있습니다.',
