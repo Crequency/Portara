@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License"></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/version-0.6.4-informational.svg" alt="Version"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/version-0.6.5-informational.svg" alt="Version"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg" alt="Node"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/pnpm-11-orange.svg" alt="pnpm"></a>
   <a href="https://github.com/Crequency/Portara/actions/workflows/ci.yml"><img src="https://github.com/Crequency/Portara/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -95,10 +95,10 @@ same migration. Destructive steps need a snapshot; tests always use their own sc
 
 **Docker** — `docker compose --profile app up -d --build` builds `Dockerfile.caddy` (Caddy +
 console + Node) and publishes it on `${PORTARA_HTTP_PORT:-52740}`; or pull
-`ghcr.io/crequency/portara:0.6.4`.
+`ghcr.io/crequency/portara:0.6.5`.
 
 **CI** — pushes to `main` and PRs run `verify` (typecheck → build → test → smoke); a `vX.Y.Z`
-tag also builds `Dockerfile.caddy` and pushes it to GHCR with semver tags (`0.6.4`, `0.6`, `0`).
+tag also builds `Dockerfile.caddy` and pushes it to GHCR with semver tags (`0.6.5`, `0.6`, `0`).
 
 ## Architecture
 
