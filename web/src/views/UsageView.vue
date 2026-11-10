@@ -523,7 +523,7 @@ onMounted(() => void load())
           </div>
 
           <!-- 额度窗口 -->
-          <div v-if="item.snapshot!.windows.length > 0" class="usage-head-windows" style="margin-bottom: 14px">
+          <div v-if="item.snapshot!.windows.length > 0" class="usage-head-windows">
           <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
           <div class="form-grid" style="gap: 10px">
             <div v-for="w in item.snapshot!.windows" :key="w.key">
