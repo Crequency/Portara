@@ -612,6 +612,34 @@ a { color: var(--accent); text-decoration: none; }
   border-color: color-mix(in oklab, var(--danger) 35%, var(--border));
 }
 
+/* 「余额 API」说明卡：默认折叠，标题行整行可点 */
+.usage-api-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.usage-api-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.usage-api-head .usage-failed-chevron {
+  color: var(--text-dim);
+}
+
 .usage-failed-head {
   display: flex;
   align-items: center;
