@@ -456,9 +456,19 @@ onMounted(() => void load())
             <template v-else>{{ t('common.loading') }}</template>
           </div>
         </div>
-        <button class="btn btn-sm" :disabled="item.loading" @click="refreshOne(item)">
-          {{ item.loading ? t('common.loading') : t('common.refresh') }}
-        </button>
+        <div class="row" style="gap: 8px">
+          <!-- 原始响应放刷新左边：先看数据、再决定要不要刷 -->
+          <button
+            v-if="item.snapshot"
+            class="btn btn-ghost btn-sm"
+            @click="openRaw(item.snapshot!)"
+          >
+            {{ t('usage.viewRaw') }}
+          </button>
+          <button class="btn btn-sm" :disabled="item.loading" @click="refreshOne(item)">
+            {{ item.loading ? t('common.loading') : t('common.refresh') }}
+          </button>
+        </div>
       </div>
 
       <!-- 该卡自己的骨架：数据回来就换成真内容，不等别的卡 -->
@@ -615,9 +625,6 @@ onMounted(() => void load())
           </div>
         </div>
 
-        <div style="margin-top: 10px">
-          <button class="btn btn-ghost btn-sm" @click="openRaw(item.snapshot!)">{{ t('usage.viewRaw') }}</button>
-        </div>
       </template>
     </div>
 
