@@ -31,6 +31,7 @@ export const en = {
     collapse: 'Collapse'
   },
   nav: {
+    buildCommit: 'Open the commit behind this build ({id})',
     appName: 'Portara',
     appSub: 'AI Gateway Console',
     overview: 'Overview',

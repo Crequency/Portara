@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue'
 import type { Component } from 'vue'
-import { Contrast, FileText, Github, Moon, Sun } from 'lucide-vue-next'
+import { Contrast, FileText, Github, GitCommit, Moon, Sun } from 'lucide-vue-next'
 import {
   api,
   cancelScheduledRefresh,
@@ -190,6 +190,14 @@ const buildId = __BUILD_ID__
  */
 const REPO_URL = 'https://github.com/Crequency/Portara'
 const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`
+/**
+ * 构建指纹对应的 commit 页。
+ *
+ * 为什么要做成链接：页脚显示的短哈希只在本地有意义 —— 点进去要能看到
+ * 那次构建的完整 diff。前提是它**已经推送到远端**，否则 404；
+ * 所以构建指纹取自 HEAD 的同时，提交必须推上去。
+ */
+const COMMIT_URL = computed(() => `${REPO_URL}/commit/${buildId}`)
 
 /*
  * 全屏「关于」页。
@@ -447,9 +455,21 @@ function go(id: string): void {
           <Github :size="12" :stroke-width="1.7" aria-hidden="true" />
           <span class="nav-foot-text">
             {{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template>
-            <!-- 构建指纹：排查"改了没生效"时一眼确认浏览器是否还在跑旧产物 -->
-            <span class="nav-foot-build" :title="'build ' + buildId"> · {{ buildId }}</span>
           </span>
+        </a>
+        <!--
+          构建指纹独立成链接：点进去看这次构建对应的完整 commit。
+          它必须真的推到了远端，否则远端 404 —— 见 COMMIT_URL 的注释。
+        -->
+        <a
+          class="nav-foot-link nav-foot-link--build"
+          :href="COMMIT_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+          :title="t('nav.buildCommit', { id: buildId })"
+        >
+          <GitCommit :size="12" :stroke-width="1.7" aria-hidden="true" />
+          <span class="nav-foot-build">{{ buildId }}</span>
         </a>
         <a
           class="nav-foot-link"

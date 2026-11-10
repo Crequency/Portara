@@ -35,6 +35,7 @@ export const ja = {
     collapse: '折りたたむ'
   },
   nav: {
+    buildCommit: 'このビルドのコミット {id} を開く',
     appName: 'Portara',
     appSub: 'AI ゲートウェイコンソール',
     overview: '概要',

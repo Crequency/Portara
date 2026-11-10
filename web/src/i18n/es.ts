@@ -35,6 +35,7 @@ export const es = {
     collapse: 'Contraer'
   },
   nav: {
+    buildCommit: 'Ver el commit de esta compilación ({id})',
     appName: 'Portara',
     appSub: 'Consola de puerta de enlace de IA',
     overview: 'Resumen',

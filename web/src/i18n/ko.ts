@@ -35,6 +35,7 @@ export const ko = {
     collapse: '접기'
   },
   nav: {
+    buildCommit: '이 빌드의 커밋 {id} 열기',
     appName: 'Portara',
     appSub: 'AI 게이트웨이 콘솔',
     overview: '개요',

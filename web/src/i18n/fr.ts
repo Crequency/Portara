@@ -36,6 +36,7 @@ export const fr = {
     collapse: 'Réduire'
   },
   nav: {
+    buildCommit: 'Ouvrir le commit de cette compilation ({id})',
     appName: 'Portara',
     appSub: 'Console de passerelle IA',
     overview: 'Vue d’ensemble',

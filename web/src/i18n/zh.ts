@@ -31,6 +31,7 @@ export const zh = {
     collapse: '折叠'
   },
   nav: {
+    buildCommit: '查看构建对应的 commit {id}',
     appName: 'Portara',
     appSub: 'AI 网关控制台',
     overview: '概览',

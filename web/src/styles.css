@@ -315,6 +315,13 @@ a { color: var(--accent); text-decoration: none; }
   color: var(--text-dim);
 }
 
+/* 构建指纹那一行：与上一行同级、同字号，只是图标更轻 */
+.nav-foot-link--build {
+  margin-top: -1px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
 .nav-foot-link:hover .nav-foot-text {
   text-decoration: underline;
   text-underline-offset: 2px;

@@ -34,6 +34,7 @@ export const th = {
     collapse: 'ย่อ'
   },
   nav: {
+    buildCommit: 'เปิดคอมมิตที่ใช้สร้างบิลด์นี้ ({id})',
     appName: 'Portara',
     appSub: 'คอนโซลควบคุม AI Gateway',
     overview: 'ภาพรวม',
