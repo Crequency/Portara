@@ -532,7 +532,6 @@ onMounted(() => void load())
         </div>
       </template>
     </div>
-  </div>
 
     <!--
       整卡失败的渠道：收拢到一处、默认折叠。
@@ -585,6 +584,7 @@ onMounted(() => void load())
         </div>
       </div>
     </div>
+  </div>
 
   <Modal v-if="rawOpen && rawTarget" :title="t('usage.rawTitle')" wide @close="rawOpen = false">
     <div class="dim" style="font-size: 12px; margin-bottom: 8px">
