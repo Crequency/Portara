@@ -78,6 +78,14 @@ const rawOpen = ref(false)
 const rawTarget = ref<UsageSnapshot | null>(null)
 
 /**
+ * 「余额 API」说明卡的展开态。
+ *
+ * 默认折叠：这是给程序调用者看的接口说明，日常查余额时不需要它占首屏；
+ * 但它必须易发现 —— 标题与「展开」都在第一屏顶部。
+ */
+const apiExpanded = ref(false)
+
+/**
  * 「整卡失败」= 这个渠道的所有账户都没取到数。
  *
  * 判据：请求本身抛错，或快照明确 ok=false。
@@ -275,17 +283,27 @@ onMounted(() => void load())
 
 <template>
   <div class="stack">
-    <!-- 网关自身的余额 API（供程序调用） -->
-    <div class="card">
-      <div class="card-head">
-        <div>
-          <div class="card-title">{{ t('usage.apiTitle') }}</div>
-          <div class="dim" style="font-size: 12px">{{ t('usage.apiHint') }}</div>
-        </div>
-        <span class="dim" style="font-size: 11.5px">{{ t('usage.apiAuthHint') }}</span>
-      </div>
+    <!--
+      网关自身的余额 API（供程序调用）。
+      默认折叠：这是「给程序用」的说明，日常看余额时并不需要它占据首屏。
+    -->
+    <div class="card usage-api">
+      <button
+        class="usage-api-head"
+        type="button"
+        :aria-expanded="apiExpanded"
+        @click="apiExpanded = !apiExpanded"
+      >
+        <span class="usage-failed-chevron" :class="{ on: apiExpanded }" aria-hidden="true">▸</span>
+        <span class="card-title">{{ t('usage.apiTitle') }}</span>
+        <span class="usage-api-hint">{{ t('usage.apiHint') }}</span>
+        <span class="spacer" />
+        <span class="dim nowrap" style="font-size: 11.5px">
+          {{ apiExpanded ? t('common.collapse') : t('common.expand') }}
+        </span>
+      </button>
 
-      <div class="form-grid" style="gap: 8px">
+      <div v-if="apiExpanded" class="form-grid" style="gap: 8px; margin-top: 14px">
         <div class="row" style="gap: 8px">
           <span class="tag" style="min-width: 74px; justify-content: center">GET</span>
           <span class="dim" style="font-size: 12px; min-width: 72px">{{ t('usage.apiList') }}</span>
@@ -376,6 +394,47 @@ onMounted(() => void load())
         {{ t('usage.notConfiguredHint') }}
       </div>
     </div>
+
+    <!--
+      纯余额渠道（有金额、无额度窗口 / 账期 / 套餐）：合并成一张卡里的多行。
+      这类渠道每个只有一个数字，一卡一张会把页面拉得很长，读起来反而更累。
+      每行保留自己的刷新入口，单独刷新不影响其它行。
+    -->
+    <div v-if="balanceOnlyItems.length > 0" class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">{{ t('usage.balanceOnlyTitle') }}</div>
+          <div class="dim" style="font-size: 12px">{{ t('usage.balanceOnlyHint') }}</div>
+        </div>
+      </div>
+
+      <div class="usage-balance-list">
+        <div v-for="item in balanceOnlyItems" :key="item.channelId" class="usage-balance-row">
+          <span class="row" style="gap: 6px; min-width: 0">
+            <span class="usage-cell-name">{{ item.channelName }}</span>
+            <span class="tag">{{ item.snapshot!.adapter || item.adapter }}</span>
+            <span v-if="item.snapshot!.cached" class="badge badge-off">{{ t('usage.cached') }}</span>
+          </span>
+          <span class="row" style="gap: 10px">
+            <span
+              v-for="b in item.snapshot!.balances"
+              :key="b.currency"
+              class="mono usage-balance-amount"
+            >
+              {{ money(b.remaining, b.unit, b.currency) }}
+            </span>
+            <span class="dim" style="font-size: 11px">{{ formatTime(item.snapshot!.fetchedAt) }}</span>
+            <button class="btn btn-ghost btn-sm" :disabled="item.loading" @click="refreshOne(item)">
+              {{ item.loading ? t('common.loading') : t('common.refresh') }}
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="openRaw(item.snapshot!)">
+              {{ t('usage.viewRaw') }}
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+
 
     <!--
       每个渠道一张卡：**各自加载、各自渲染**。
@@ -556,46 +615,6 @@ onMounted(() => void load())
       以前它们是若干条占满整屏的红条，把正常渠道挤到下面；
       现在只留一行摘要，需要追因时手动展开。
     -->
-    <!--
-      纯余额渠道（有金额、无额度窗口 / 账期 / 套餐）：合并成一张卡里的多行。
-      这类渠道每个只有一个数字，一卡一张会把页面拉得很长，读起来反而更累。
-      每行保留自己的刷新入口，单独刷新不影响其它行。
-    -->
-    <div v-if="balanceOnlyItems.length > 0" class="card">
-      <div class="card-head">
-        <div>
-          <div class="card-title">{{ t('usage.balanceOnlyTitle') }}</div>
-          <div class="dim" style="font-size: 12px">{{ t('usage.balanceOnlyHint') }}</div>
-        </div>
-      </div>
-
-      <div class="usage-balance-list">
-        <div v-for="item in balanceOnlyItems" :key="item.channelId" class="usage-balance-row">
-          <span class="row" style="gap: 6px; min-width: 0">
-            <span class="usage-cell-name">{{ item.channelName }}</span>
-            <span class="tag">{{ item.snapshot!.adapter || item.adapter }}</span>
-            <span v-if="item.snapshot!.cached" class="badge badge-off">{{ t('usage.cached') }}</span>
-          </span>
-          <span class="row" style="gap: 10px">
-            <span
-              v-for="b in item.snapshot!.balances"
-              :key="b.currency"
-              class="mono usage-balance-amount"
-            >
-              {{ money(b.remaining, b.unit, b.currency) }}
-            </span>
-            <span class="dim" style="font-size: 11px">{{ formatTime(item.snapshot!.fetchedAt) }}</span>
-            <button class="btn btn-ghost btn-sm" :disabled="item.loading" @click="refreshOne(item)">
-              {{ item.loading ? t('common.loading') : t('common.refresh') }}
-            </button>
-            <button class="btn btn-ghost btn-sm" @click="openRaw(item.snapshot!)">
-              {{ t('usage.viewRaw') }}
-            </button>
-          </span>
-        </div>
-      </div>
-    </div>
-
     <div v-if="failedItems.length > 0" class="card usage-failed">
       <button
         class="usage-failed-head"
