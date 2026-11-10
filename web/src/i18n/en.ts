@@ -26,7 +26,9 @@ export const en = {
     note: 'Note',
     yes: 'Yes',
     no: 'No',
-    new: 'New'
+    new: 'New',
+    expand: 'Expand',
+    collapse: 'Collapse'
   },
   nav: {
     appName: 'Portara',
@@ -843,6 +845,9 @@ export const en = {
     adapterHint: 'Once set, Portara periodically fetches this channel\'s balance/quota. Leave empty to skip.',
     urlField: 'Usage endpoint override',
     urlFieldHint: 'Leave empty to build the adapter path on the Base URL host; fill it when the API lives on another domain (e.g. a billing service).',
+    failedGroup: 'Failed to fetch: {n} channels',
+    failedGroupHint:
+      'These channels failed entirely. Expand to see why and retry individually.',
     cacheTtl: 'Balance cache TTL (seconds)',
     cacheTtlHint: 'Prevents hammering upstream rate limits. Both the panel and the API read this cache.',
     autoRefreshSec: 'Web-session auto refresh (seconds)',

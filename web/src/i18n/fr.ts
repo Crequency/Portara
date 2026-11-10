@@ -31,7 +31,9 @@ export const fr = {
     note: 'Remarque',
     yes: 'Oui',
     no: 'Non',
-    new: 'Nouveau'
+    new: 'Nouveau',
+    expand: 'Développer',
+    collapse: 'Réduire'
   },
   nav: {
     appName: 'Portara',
@@ -826,6 +828,9 @@ export const fr = {
     adapterHint: 'Une fois défini, Portara récupère périodiquement le solde/quota de ce canal ; laisser vide pour ne rien fournir.',
     urlField: 'Surcharge de l’adresse de l’API d’usage',
     urlFieldHint: 'Laisser vide pour construire le chemin de l’adaptateur sur le domaine de la Base URL ; à remplir si l’API vit sur un autre domaine (par ex. un service de facturation).',
+    failedGroup: 'Échec de récupération : {n} canaux',
+    failedGroupHint:
+      'Ces canaux ont entièrement échoué. Développez pour voir la cause et réessayer individuellement.',
     cacheTtl: 'Durée du cache de solde (secondes)',
     cacheTtlHint: 'Évite de marteler l’API amont et ses limites de débit. Le panneau et l’API lisent tous deux ce cache.',
     autoRefreshSec: 'Intervalle d’actualisation automatique de la session web (secondes)',

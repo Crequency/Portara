@@ -602,6 +602,65 @@ a { color: var(--accent); text-decoration: none; }
  * 但底色换成 --bg-elev：真实卡片本身是 --bg-elev-2，若骨架块也用同色，
  * 浅色主题下几乎看不见；这样 .sk 的 --bg-elev-2 才有对比。
  */
+/*
+ * 余额页「整卡失败」折叠区。
+ *
+ * 这些卡以前是若干条占满整屏的红条，把正常渠道挤到下面。
+ * 现在收成一行摘要，需要追因时再手动展开。
+ */
+.usage-failed {
+  border-color: color-mix(in oklab, var(--danger) 35%, var(--border));
+}
+
+.usage-failed-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.usage-failed-chevron {
+  display: inline-block;
+  color: var(--danger);
+  transition: transform 0.15s ease;
+}
+
+.usage-failed-chevron.on {
+  transform: rotate(90deg);
+}
+
+.usage-failed-title {
+  font-weight: 600;
+  color: var(--danger);
+  white-space: nowrap;
+}
+
+.usage-failed-names {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.usage-failed-body {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+
+.usage-failed-item + .usage-failed-item {
+  margin-top: 14px;
+}
+
 .usage-cell.sk-cell { background: var(--bg-elev); }
 
 /* 各块尺寸对齐真实结构：渠道名行 22、余额行 23、每条窗口 27 */
