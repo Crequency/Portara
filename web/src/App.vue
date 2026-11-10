@@ -446,31 +446,33 @@ function go(id: string): void {
       <div class="nav-spacer" />
 
       <div class="nav-foot">
-        <a
-          class="nav-foot-link"
-          :href="REPO_URL"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Github :size="12" :stroke-width="1.7" aria-hidden="true" />
-          <span class="nav-foot-text">
-            {{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template>
-          </span>
-        </a>
         <!--
-          构建指纹独立成链接：点进去看这次构建对应的完整 commit。
-          它必须真的推到了远端，否则远端 404 —— 见 COMMIT_URL 的注释。
+          仓库与构建指纹**同一行**两个独立链接：
+          左边点进仓库、右边点进这次构建的 commit。排版与此前一致（一行）。
         -->
-        <a
-          class="nav-foot-link nav-foot-link--build"
-          :href="COMMIT_URL"
-          target="_blank"
-          rel="noopener noreferrer"
-          :title="t('nav.buildCommit', { id: buildId })"
-        >
-          <GitCommit :size="12" :stroke-width="1.7" aria-hidden="true" />
-          <span class="nav-foot-build">{{ buildId }}</span>
-        </a>
+        <div class="nav-foot-row">
+          <a
+            class="nav-foot-link"
+            :href="REPO_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Github :size="12" :stroke-width="1.7" aria-hidden="true" />
+            <span class="nav-foot-text">
+              {{ meta.productName }}<template v-if="meta.version"> v{{ meta.version }}</template>
+            </span>
+          </a>
+          <a
+            class="nav-foot-link nav-foot-link--build"
+            :href="COMMIT_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            :title="t('nav.buildCommit', { id: buildId })"
+          >
+            <GitCommit :size="12" :stroke-width="1.7" aria-hidden="true" />
+            <span class="nav-foot-build">{{ buildId }}</span>
+          </a>
+        </div>
         <a
           class="nav-foot-link"
           :href="LICENSE_URL"

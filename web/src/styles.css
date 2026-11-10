@@ -315,11 +315,33 @@ a { color: var(--accent); text-decoration: none; }
   color: var(--text-dim);
 }
 
-/* 构建指纹那一行：与上一行同级、同字号，只是图标更轻 */
+/*
+ * 页脚第一行：仓库 + 构建指纹并排（两个独立链接，排版仍是一行）。
+ * 用 flex + 省略号：窄侧栏时渠道名不会把哈希挤出可视区。
+ */
+.nav-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+}
+
+.nav-foot-row .nav-foot-link {
+  min-width: 0;
+}
+
+/* 构建指纹：比左边版本号小一号，图标更轻 */
 .nav-foot-link--build {
-  margin-top: -1px;
+  flex: 0 0 auto;
   font-size: 10.5px;
   letter-spacing: 0.02em;
+}
+
+.nav-foot-row .nav-foot-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-foot-link:hover .nav-foot-text {
