@@ -603,6 +603,17 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   let frozenRetryAtMs: number | null = null
 
   /**
+   * 本轮是否有候选渠道**卡在并发闸门**（而不是冻结）。
+   *
+   * 为什么必须分开记：并发满载 ≠ 额度用尽。前者是「稍后会空出来」，
+   * 后者是「等到某个时间点才有额度」。混在一起的后果是用户看到
+   * 「所有上游额度均已用尽」这种**误导性**报错 —— 实测踩过：
+   * 一个渠道额度冻结、另一个只是并发满了，客户端 5 次重试全部收到
+   * 「额度用尽」，而实际上并发槽位几秒后就会释放。
+   */
+  let sawConcurrencyBlock = false
+
+  /**
    * 当前持有的并发槽位（渠道 + 上限）。
    *
    * `release` 必须是幂等的：流式响应会在 flush 与 cancel 两条路径上各调一次，
@@ -833,6 +844,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       const got = await acquireForChannel(channel.id, concLimit)
       if (!got) {
         lastFailure = `渠道「${channel.name}」并发已满（上限 ${concLimit}）`
+        sawConcurrencyBlock = true
         if (targetIndex < channelLimit - 1) {
           // 还有别的候选渠道：它的并发可能没满，先去看它
           continue
@@ -1202,7 +1214,17 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
      * "所有上游都不可能继续"。此时给 429 + Retry-After，比让客户端等满
      * 60s 预算再收到一个 504 有用得多。
      */
-    if (!res && attemptNo === attemptsAtPassStart && frozenRetryAtMs !== null) {
+    /*
+     * 只有**纯额度冻结**（这一轮一次上游都没打、且没有渠道卡在并发上）才快速 429。
+     * 只要有一家是"并发满了"，正确语义就是「稍后重试」而不是「额度用尽」——
+     * 交给后面的通用失败处理，避免误导客户端停发/长退避。
+     */
+    if (
+      !res &&
+      attemptNo === attemptsAtPassStart &&
+      frozenRetryAtMs !== null &&
+      !sawConcurrencyBlock
+    ) {
       const retryAfterSec = Math.max(
         1,
         Math.min(86400, Math.ceil((frozenRetryAtMs - Date.now()) / 1000))
