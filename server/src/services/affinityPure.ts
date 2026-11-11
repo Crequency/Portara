@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto'
 import type { AccountState } from './accountState.js'
 
 /** 会话键来源 —— 排查"为什么这个会话被判定成另一个"时需要 */
-export type SessionKeySource = 'prompt_cache_key' | 'context' | 'none'
+export type SessionKeySource = 'prompt_cache_key' | 'client' | 'context' | 'none'
 
 /** 一次亲和记录：这个会话上一次落在哪个渠道的哪个账户上 */
 export interface AffinityPin {

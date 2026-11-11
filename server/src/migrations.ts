@@ -808,5 +808,21 @@ export const migrations: { id: string; sql: string }[] = [
       alter table account_web_sessions
         add column if not exists snapshot_at timestamptz;
     `
+  },
+  {
+    id: '030_lb_events_session_index',
+    sql: `
+      -- 按会话查「最近路由到哪」的索引。
+      --
+      -- 背景：/v1/route-info 要给客户端插件回「这个会话最近落在哪个渠道/账户、
+      -- 重试过程中切换过几次」。lb_events 原本只有 (ts) 与 (alias, ts) 索引，
+      -- 按 session_hash 查会退化成全表扫 —— 窗口一长就很慢。
+      --
+      -- 只对非空 session_hash 建部分索引：没有会话键的行（多数直接调用）
+      -- 永远不会被这条查询命中，没必要占索引空间。
+      create index if not exists idx_lb_events_session_ts
+        on lb_events (session_hash, ts desc)
+        where session_hash <> '';
+    `
   }
 ]
