@@ -67,10 +67,10 @@ function windowLabel(key: string): string {
             >
               {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
               ({{ quotaPercent(w.used, w.total) }}%)
-              <span v-if="w.startAt" class="dim">
+              <span v-if="w.startAt" class="dim acct-win-meta">
                 · {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
               </span>
-              <span v-if="w.resetAt" class="dim">
+              <span v-if="w.resetAt" class="dim acct-win-meta">
                 · {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
               </span>
             </span>
