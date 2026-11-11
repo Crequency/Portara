@@ -2175,33 +2175,84 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .acct-usage-balance { display: inline-flex; align-items: baseline; gap: 4px; }
 
 .acct-usage-windows { display: flex; flex-direction: column; gap: 7px; }
-.acct-usage-win-head { font-size: 11.5px; gap: 8px; }
 
 /*
- * 窗口行的「值区」：用量 + 时间信息。
+ * 一条额度窗口行（UsageWindowRow 组件）。
  *
- * 不写死"时间一定在下面"或"一定在右边" —— 交给浏览器**实测宽度**：
- *   放得下 → 时间跟在百分比后面，同一行（信息密度最高）
- *   放不下 → flex-wrap 自动把时间折到下一行，右对齐，且不横向溢出
+ * 时间信息的位置由组件**实测**决定：
+ *   放得下 → 与用量同一行（信息密度最高）
+ *   放不下 → 移到进度条下方（而不是在标签行里硬折行）
  * 不同语言、不同账号数、不同窗口数都会改变可用宽度，固定布局必然有场景翻车。
  */
-.acct-usage-win-head,
-.usage-win-head {
+.win-row {
+  position: relative;
+  min-width: 0;
+}
+
+.win-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 4px 8px;
-  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.win-label {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .win-values {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   align-items: baseline;
   gap: 2px 10px;
   margin-left: auto;
   min-width: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.win-usage {
+  white-space: nowrap;
+}
+
+.win-track {
+  height: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 3px;
+  margin-top: 5px;
+}
+
+/*
+ * 隐藏测量层：量"内联需要多宽"。不参与布局、不可见、读屏忽略。
+ *
+ * 关键：外层 wrap 用 overflow:hidden 把它裁掉。
+ * 否则绝对定位的 ghost 会撑大祖先的 scrollWidth —— 面板上会出现
+ * "明明没有视觉溢出，却检测到 overflow" 的假阳性（排查时很误导人）。
+ */
+.win-ghost-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.win-ghost {
+  display: flex;
+  align-items: baseline;
+  gap: 2px 10px;
+  white-space: nowrap;
+  width: max-content;
+}
+
+/* ghost 内部不换行：它量的就是"同一行放得下吗" */
+.win-ghost .win-times {
+  flex-wrap: nowrap;
 }
 
 .win-times {
@@ -2210,6 +2261,12 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   gap: 2px 10px;
   font-size: 11px;
   color: var(--text-faint);
+}
+
+/* 放不下时：时间信息独占进度条下方一行，右对齐 */
+.win-times--below {
+  margin-top: 4px;
+  justify-content: flex-end;
 }
 .acct-usage-track {
   height: 5px;

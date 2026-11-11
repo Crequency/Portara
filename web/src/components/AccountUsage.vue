@@ -9,6 +9,7 @@ import type { UsageAccountSnapshot } from '../api'
 import { formatNumber, formatTime, quotaColor, quotaPercent } from '../format'
 import { useI18n } from '../i18n'
 import PInfo from './PInfo.vue'
+import UsageWindowRow from './UsageWindowRow.vue'
 
 defineProps<{
   account: UsageAccountSnapshot
@@ -61,44 +62,20 @@ function windowLabel(key: string): string {
             以前「用量 + 开始 + 重置」挤在同一行且 nowrap —— 账户一多，
             每张卡变窄，右侧文字直接顶出卡片被裁切。
           -->
-          <div class="acct-usage-win-head">
-            <span class="nowrap">
+          <UsageWindowRow
+            :usage-text="formatNumber(Math.round(w.used)) + ' / ' + formatNumber(Math.round(w.total)) + ' (' + quotaPercent(w.used, w.total) + '%)'"
+            :usage-color="quotaColor(quotaPercent(w.used, w.total), w.exceeded)"
+            :exceeded="w.exceeded"
+            :percent="quotaPercent(w.used, w.total)"
+            :bar-color="quotaColor(quotaPercent(w.used, w.total), w.exceeded)"
+            :start-text="w.startAt ? t('usage.startAt') + ' ' + formatTime(w.startAt) : undefined"
+            :reset-text="w.resetAt ? t('usage.resetAt') + ' ' + formatTime(w.resetAt) : undefined"
+          >
+            <template #label>
               {{ windowLabel(w.key) }}
               <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
-            </span>
-            <!--
-              用量与时间放在同一个「值区」里：
-              宽度够时同一行（时间紧跟百分比），不够时**由浏览器实测**自动折到下一行。
-              这比固定布局更准 —— 不同语言、不同账号数、不同窗口数都会改变可用宽度。
-            -->
-            <span class="win-values">
-              <span
-                class="nowrap win-usage"
-                :style="{ color: quotaColor(quotaPercent(w.used, w.total), w.exceeded) }"
-              >
-                {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
-                ({{ quotaPercent(w.used, w.total) }}%)
-              </span>
-              <span v-if="w.startAt || w.resetAt" class="win-times">
-                <span v-if="w.startAt">
-                  {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
-                </span>
-                <span v-if="w.resetAt">
-                  {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
-                </span>
-              </span>
-            </span>
-          </div>
-          <div class="acct-usage-track">
-            <div
-              :style="{
-                width: quotaPercent(w.used, w.total) + '%',
-                height: '100%',
-                background: quotaColor(quotaPercent(w.used, w.total), w.exceeded),
-                borderRadius: '3px'
-              }"
-            />
-          </div>
+            </template>
+          </UsageWindowRow>
         </div>
       </div>
     </template>
