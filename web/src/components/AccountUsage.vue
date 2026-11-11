@@ -56,6 +56,11 @@ function windowLabel(key: string): string {
 
       <div v-if="account.windows.length > 0" class="acct-usage-windows">
         <div v-for="w in account.windows" :key="w.key">
+          <!--
+            窗口行分三层：标签 + 用量 / 进度条 / 时间信息。
+            以前「用量 + 开始 + 重置」挤在同一行且 nowrap —— 账户一多，
+            每张卡变窄，右侧文字直接顶出卡片被裁切。
+          -->
           <div class="row-between acct-usage-win-head">
             <span class="nowrap">
               {{ windowLabel(w.key) }}
@@ -67,12 +72,6 @@ function windowLabel(key: string): string {
             >
               {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
               ({{ quotaPercent(w.used, w.total) }}%)
-              <span v-if="w.startAt" class="dim acct-win-meta">
-                · {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
-              </span>
-              <span v-if="w.resetAt" class="dim acct-win-meta">
-                · {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
-              </span>
             </span>
           </div>
           <div class="acct-usage-track">
@@ -84,6 +83,15 @@ function windowLabel(key: string): string {
                 borderRadius: '3px'
               }"
             />
+          </div>
+          <!-- 时间信息独占一行并允许换行：窄卡也完整可见 -->
+          <div v-if="w.startAt || w.resetAt" class="acct-win-times">
+            <span v-if="w.startAt" class="dim">
+              {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
+            </span>
+            <span v-if="w.resetAt" class="dim">
+              {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
+            </span>
           </div>
         </div>
       </div>
