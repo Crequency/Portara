@@ -3,6 +3,8 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { query } from '../db.js'
 import { clientIp, openaiError } from '../lib/http.js'
+import { orderByAdaptiveScore } from '../services/adaptive.js'
+import { getAdaptiveStats } from '../services/adaptiveStats.js'
 import { apiKeyAuth } from '../middleware/auth.js'
 import { redis } from '../redis.js'
 import { fireAndForgetLog, loadKeyUsage } from '../services/logger.js'
@@ -683,7 +685,27 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     passNo++
     /** 本轮开始时的尝试计数：用于判断"这一轮到底有没有真的打过上游" */
     const attemptsAtPassStart = attemptNo
-    const candidateOrder = pick.targets.slice(0, channelLimit)
+    /*
+     * 自适应选路：按近期请求结果重排候选渠道。
+     *
+     * 开关关闭（默认）时完全不查统计，行为与之前一致。
+     * 打开后只重排**同一映射内的候选**，不跨路由、不改可用性判定 ——
+     * 冻结的账户、冷却中的渠道该跳过还是跳过。
+     */
+    let candidateOrder = pick.targets.slice(0, channelLimit)
+    if (routing.adaptiveRouting) {
+      try {
+        const stats = await getAdaptiveStats(routing.adaptiveWindowSec)
+        candidateOrder = orderByAdaptiveScore(
+          candidateOrder,
+          (t) => t.channel.id,
+          stats,
+          routing.adaptiveMinSamples
+        )
+      } catch {
+        // 统计不可用（PG 抖动等）时退回配置顺序，绝不让观测数据成为单点故障
+      }
+    }
     let orderIndex = 0
     while (orderIndex < candidateOrder.length) {
     const target = candidateOrder[orderIndex]
