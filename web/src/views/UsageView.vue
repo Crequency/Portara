@@ -537,7 +537,7 @@ onMounted(() => void load())
           <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
           <div class="form-grid" style="gap: 10px">
             <div v-for="w in item.snapshot!.windows" :key="w.key">
-              <div class="row-between usage-win-head" style="font-size: 12.5px">
+              <div class="usage-win-head" style="font-size: 12.5px">
                 <span class="row" style="gap: 5px">
                   {{ windowLabel(w.key) }}
                   <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
@@ -545,13 +545,24 @@ onMounted(() => void load())
                     {{ t('usage.inferred') }}
                   </span>
                 </span>
-                <span class="nowrap" :class="{ 'delta-slow': w.exceeded }">
-                  {{ t('usage.used') }} {{ formatNumber(Math.round(w.used)) }} /
-                  {{ formatNumber(Math.round(w.total)) }}
-                  <span :style="{ color: quotaColor(windowPercent(w), w.exceeded) }">
-                    ({{ windowPercent(w) }}%)
+                <!-- 值区：宽度够时用量与时间同一行，不够时浏览器实测后自动折行 -->
+                <span class="win-values" style="font-size: 12.5px">
+                  <span class="nowrap" :class="{ 'delta-slow': w.exceeded }">
+                    {{ t('usage.used') }} {{ formatNumber(Math.round(w.used)) }} /
+                    {{ formatNumber(Math.round(w.total)) }}
+                    <span :style="{ color: quotaColor(windowPercent(w), w.exceeded) }">
+                      ({{ windowPercent(w) }}%)
+                    </span>
+                    <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
                   </span>
-                  <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
+                  <span v-if="w.startAt || w.resetAt" class="win-times">
+                    <span v-if="w.startAt">
+                      {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
+                    </span>
+                    <span v-if="w.resetAt">
+                      {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
+                    </span>
+                  </span>
                 </span>
               </div>
               <div style="height: 5px; background: var(--bg-elev-2); border-radius: 3px; margin-top: 5px">
@@ -563,15 +574,6 @@ onMounted(() => void load())
                     borderRadius: '3px'
                   }"
                 />
-              </div>
-              <!-- 时间信息独占一行并允许换行：窄屏也不横向溢出 -->
-              <div v-if="w.startAt || w.resetAt" class="usage-win-times">
-                <span v-if="w.startAt" class="dim">
-                  {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
-                </span>
-                <span v-if="w.resetAt" class="dim">
-                  {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
-                </span>
               </div>
             </div>
           </div>
