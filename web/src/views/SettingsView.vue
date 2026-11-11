@@ -42,6 +42,9 @@ const form = ref<GatewaySettings>({
   usageCacheTtlSec: 300,
   usageAutoRefreshSec: 600,
   usageMaxRetries: 3,
+  adaptiveRouting: false,
+  adaptiveWindowSec: 300,
+  adaptiveMinSamples: 10,
   accountFailureCooldownSec: 3600,
   skipExhaustedWindows: true,
   concurrencyCooldownSec: 20,
@@ -232,6 +235,39 @@ onMounted(load)
           <label>{{ t('usage.maxRetries') }}</label>
           <input v-model.number="form.usageMaxRetries" type="number" min="0" max="10" />
           <span class="hint">{{ t('usage.maxRetriesHint') }}</span>
+        </div>
+
+        <!-- 自适应选路：按近期请求结果重排候选渠道（默认关闭） -->
+        <div class="field">
+          <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
+            <PCheckbox v-model="form.adaptiveRouting" />
+            {{ t('settings.adaptiveRouting') }}
+          </label>
+          <span class="hint">{{ t('settings.adaptiveRoutingHint') }}</span>
+        </div>
+
+        <div v-if="form.adaptiveRouting" class="grid grid-2">
+          <div class="field">
+            <label>{{ t('settings.adaptiveWindowSec') }}</label>
+            <input
+              v-model.number="form.adaptiveWindowSec"
+              type="number"
+              min="30"
+              max="3600"
+              step="30"
+            />
+            <span class="hint">{{ t('settings.adaptiveWindowSecHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.adaptiveMinSamples') }}</label>
+            <input
+              v-model.number="form.adaptiveMinSamples"
+              type="number"
+              min="1"
+              max="1000"
+            />
+            <span class="hint">{{ t('settings.adaptiveMinSamplesHint') }}</span>
+          </div>
         </div>
 
         <!-- 路由策略：失败冷却 + 打满窗口跳过 -->

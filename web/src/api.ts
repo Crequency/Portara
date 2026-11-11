@@ -296,6 +296,12 @@ export interface GatewaySettings {
   usageAutoRefreshSec: number
   /** 余额/用量查询的幂等重试次数（首次之外），0 = 关闭 */
   usageMaxRetries: number
+  /** 按近期请求结果自适应重排候选渠道（默认关闭） */
+  adaptiveRouting: boolean
+  /** 自适应评分窗口（秒） */
+  adaptiveWindowSec: number
+  /** 参与排序所需的最小样本数 */
+  adaptiveMinSamples: number
   /** 上游失败后的冷却时长（秒）：这段时间内不再路由到该 (渠道, 账户) */
   accountFailureCooldownSec: number
   /** 是否跳过「任意用量窗口已打满」的账户 */

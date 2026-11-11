@@ -692,6 +692,12 @@ export const en = {
     timezoneInvalid: 'Not a valid IANA timezone name',
     allowDirectChannelTest: 'Allow direct upstream tests',
     allowDirectChannelTestHint: 'When off, the direct mode of the chat playground is disabled. That mode bypasses gateway auth, rate limits and quotas by calling the upstream with the channel key.',
+    adaptiveRouting: 'Adaptive routing by recent performance',
+    adaptiveRoutingHint: 'Reorders candidate channels using recent success rate, P95 latency and current concurrency pressure. Off by default; when on it only changes order, never availability.',
+    adaptiveWindowSec: 'Scoring window (seconds)',
+    adaptiveWindowSecHint: 'How many seconds of recent results feed the score. Default 300.',
+    adaptiveMinSamples: 'Minimum samples',
+    adaptiveMinSamplesHint: 'Channels with fewer requests in the window keep their configured order (prevents starving cold channels). Default 10.',
     accountFailureCooldownSec: 'Cooldown after failure (seconds)',
     accountFailureCooldownSecHint:
       'The (channel, account) that last failed is not routed to during this window. Defaults to 3600 (1 hour). A Retry-After from upstream or a credential failure (401/403) wins when longer.',
