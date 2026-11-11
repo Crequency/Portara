@@ -17,12 +17,59 @@ export interface ClassifiableAccount {
   window_exhausted: boolean
   quota_cooldown_until: Date | string | null
   cooldown_until: Date | string | null
+  /** 上一次「额度快照」判定 quota_exhausted 的时刻 */
+  quota_checked_at?: Date | string | null
+  /** 上一次「窗口快照」判定 window_exhausted 的时刻 */
+  window_checked_at?: Date | string | null
 }
+
+/**
+ * 用量标记（quota_exhausted / window_exhausted）的**有效期**。
+ *
+ * 这两个标记来自上一次余额快照，而 http 型渠道的余额快照只在有人打开面板、
+ * 或定时自动刷新（默认 10 分钟，且只覆盖会话型渠道）时才会更新。
+ * 一旦把它们当成**永久事实**，某次快照说了"打满"，该账户就再也不会被尝试：
+ * 实测踩到 —— CommandCode 两个号带着两三天前的标记一直被判定"全池冻结"，
+ * 而它们账上明明有余额，客户端于是持续收到 429「所有上游额度已用尽」。
+ *
+ * 1 小时：足够覆盖自动刷新周期，又能让过期标记自然失效，
+ * 由**真实请求**重新裁决（成功了就清标记，失败了会重新冷冻）。
+ */
+export const USAGE_FLAG_TTL_MS = 60 * 60 * 1000
 
 function future(value: Date | string | null, now: number): boolean {
   if (!value) return false
   const ms = new Date(value).getTime()
   return Number.isFinite(ms) && ms > now
+}
+
+/** 标记是否仍然新鲜（在 TTL 内）。没有时间戳 = 不知道 → 视为过期。 */
+function fresh(value: Date | string | null | undefined, now: number): boolean {
+  if (!value) return false
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) && now - ms <= USAGE_FLAG_TTL_MS
+}
+
+/**
+ * 「硬限额」事实是否仍然成立。
+ *
+ * 采信条件：有未到期的额度冷却，或快照是新鲜的（TTL 内）。
+ * 其余情况**一律不再采信** —— 过期标记交给真实请求重新裁决。
+ *
+ * 为什么必须设有效期：quota_exhausted 要等下一次余额快照才会被清除，
+ * 而 http 型渠道的快照可能几天不更新。不失效时，一次误判（或充值后）
+ * 会把账户永久排除在负载均衡之外，表现就是「明明有上游却一直 429」。
+ */
+function hardLimited(account: ClassifiableAccount, now: number): boolean {
+  if (!account.quota_exhausted) return false
+  if (future(account.quota_cooldown_until, now)) return true
+  return fresh(account.quota_checked_at, now)
+}
+
+/** 窗口打满同理：只有新鲜快照 + 明确的 window_exhausted 才算硬事实 */
+function windowLimited(account: ClassifiableAccount, now: number): boolean {
+  if (account.window_exhausted !== true) return false
+  return fresh(account.window_checked_at, now)
 }
 
 /**
@@ -43,7 +90,7 @@ export function classifyAccountState(
   now: number,
   skipWindows: boolean
 ): AccountState {
-  if (account.quota_exhausted || (skipWindows && account.window_exhausted === true)) {
+  if (hardLimited(account, now) || (skipWindows && windowLimited(account, now))) {
     return 'usageLimited'
   }
   if (future(account.quota_cooldown_until, now)) return 'quotaCooling'
