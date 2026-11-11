@@ -61,17 +61,32 @@ function windowLabel(key: string): string {
             以前「用量 + 开始 + 重置」挤在同一行且 nowrap —— 账户一多，
             每张卡变窄，右侧文字直接顶出卡片被裁切。
           -->
-          <div class="row-between acct-usage-win-head">
+          <div class="acct-usage-win-head">
             <span class="nowrap">
               {{ windowLabel(w.key) }}
               <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
             </span>
-            <span
-              class="nowrap"
-              :style="{ color: quotaColor(quotaPercent(w.used, w.total), w.exceeded) }"
-            >
-              {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
-              ({{ quotaPercent(w.used, w.total) }}%)
+            <!--
+              用量与时间放在同一个「值区」里：
+              宽度够时同一行（时间紧跟百分比），不够时**由浏览器实测**自动折到下一行。
+              这比固定布局更准 —— 不同语言、不同账号数、不同窗口数都会改变可用宽度。
+            -->
+            <span class="win-values">
+              <span
+                class="nowrap win-usage"
+                :style="{ color: quotaColor(quotaPercent(w.used, w.total), w.exceeded) }"
+              >
+                {{ formatNumber(Math.round(w.used)) }} / {{ formatNumber(Math.round(w.total)) }}
+                ({{ quotaPercent(w.used, w.total) }}%)
+              </span>
+              <span v-if="w.startAt || w.resetAt" class="win-times">
+                <span v-if="w.startAt">
+                  {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
+                </span>
+                <span v-if="w.resetAt">
+                  {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
+                </span>
+              </span>
             </span>
           </div>
           <div class="acct-usage-track">
@@ -83,15 +98,6 @@ function windowLabel(key: string): string {
                 borderRadius: '3px'
               }"
             />
-          </div>
-          <!-- 时间信息独占一行并允许换行：窄卡也完整可见 -->
-          <div v-if="w.startAt || w.resetAt" class="acct-win-times">
-            <span v-if="w.startAt" class="dim">
-              {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
-            </span>
-            <span v-if="w.resetAt" class="dim">
-              {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
-            </span>
           </div>
         </div>
       </div>

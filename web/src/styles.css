@@ -2178,26 +2178,38 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .acct-usage-win-head { font-size: 11.5px; gap: 8px; }
 
 /*
- * 窗口时间信息（开始 / 重置）独占一行。
+ * 窗口行的「值区」：用量 + 时间信息。
  *
- * 以前和「已用 x / y」挤在同一个 nowrap 行里 —— 账户一多、卡片变窄，
- * 右侧文字就会顶出卡片边界被裁切。现在改为进度条下方的一行，
- * 允许换行，窄卡也不会溢出。
+ * 不写死"时间一定在下面"或"一定在右边" —— 交给浏览器**实测宽度**：
+ *   放得下 → 时间跟在百分比后面，同一行（信息密度最高）
+ *   放不下 → flex-wrap 自动把时间折到下一行，右对齐，且不横向溢出
+ * 不同语言、不同账号数、不同窗口数都会改变可用宽度，固定布局必然有场景翻车。
  */
-.acct-win-times,
-.usage-win-times {
+.acct-usage-win-head,
+.usage-win-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+}
+
+.win-values {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.win-times {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 10px;
-  margin-top: 4px;
   font-size: 11px;
   color: var(--text-faint);
-}
-
-/* 主卡窗口行：窄屏时标签与用量允许换行，避免溢出 */
-.usage-win-head {
-  flex-wrap: wrap;
-  row-gap: 3px;
 }
 .acct-usage-track {
   height: 5px;
