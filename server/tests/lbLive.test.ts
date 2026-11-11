@@ -17,6 +17,8 @@ import {
 const NOW = Date.UTC(2026, 10, 7, 12, 0, 0)
 const FUTURE = new Date(NOW + 60_000)
 const PAST = new Date(NOW - 60_000)
+/** 用量标记同样受 TTL 约束：夹具默认给"刚刚检查过" */
+const FRESH = new Date(NOW - 5 * 60_000)
 
 function acct(patch: Partial<LiveAccount> = {}): LiveAccount {
   return {
@@ -30,6 +32,8 @@ function acct(patch: Partial<LiveAccount> = {}): LiveAccount {
     cooldown_until: null,
     quota_exhausted: false,
     window_exhausted: false,
+    quota_checked_at: FRESH,
+    window_checked_at: FRESH,
     ...patch
   }
 }
