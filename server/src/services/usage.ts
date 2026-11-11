@@ -27,6 +27,14 @@ export interface UsageWindow {
   remaining: number
   /** 窗口重置时刻（ISO） */
   resetAt?: string
+  /**
+   * 窗口开始时刻（ISO）。
+   *
+   * 上游给的是「这个窗口从哪一刻起算」—— 与 resetAt 一起才能算出
+   * "已经过去多少 / 还剩多少"，排查"5 小时窗口打满但重置还很远"时有决定性作用。
+   * 多数适配器没有这个字段，故可选。
+   */
+  startAt?: string
   exceeded?: boolean
   /** 该窗口的上限是**推算**出来的（上游没有这个窗口对象） */
   inferred?: boolean
@@ -139,7 +147,13 @@ export function aggregateAccountSnapshots(accounts: UsageAccountSnapshot[]): {
       cur.remaining += w.remaining
       if (w.exceeded) cur.exceeded = true
       if (w.inferred) cur.inferred = true
+      /*
+       * 聚合两个时间的方向**相反**：
+       *   resetAt 取最早 —— 最早的"额度恢复"决定这批账户什么时候才有余量；
+       *   startAt 取最晚 —— 最晚开始的窗口才覆盖所有账户，用最早的会虚报已用时长。
+       */
       if (w.resetAt && (!cur.resetAt || w.resetAt < cur.resetAt)) cur.resetAt = w.resetAt
+      if (w.startAt && (!cur.startAt || w.startAt > cur.startAt)) cur.startAt = w.startAt
     }
   }
 
@@ -876,6 +890,8 @@ const opendesign: UsageAdapter = {
         total: limit,
         remaining,
         resetAt: toIso(item.resetsAt) ?? undefined,
+        // 窗口起点：上游字段就叫 windowStart（实测 2026-11-11 的 coding-plan-usage）
+        startAt: toIso(item.windowStart) ?? toIso(item.startsAt) ?? undefined,
         exceeded: remaining <= 0
       })
     }

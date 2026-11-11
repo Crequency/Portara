@@ -170,6 +170,8 @@ export interface UsageWindow {
   total: number
   remaining: number
   resetAt?: string
+  /** 窗口开始时刻（ISO）；多数上游没有此字段 */
+  startAt?: string
   exceeded?: boolean
   /** 上限是推算出来的（上游没有这个窗口对象） */
   inferred?: boolean

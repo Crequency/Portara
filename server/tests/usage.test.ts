@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  aggregateAccountSnapshots,
   endpointUrl,
   getUsageAdapter,
   originOf,
@@ -526,9 +527,49 @@ test('opendesign：wallet.balanceUsd → USD 余额，designPlanWindows → 窗�
   assert.equal(w.weekly!.total, 100)
   assert.equal(w.weekly!.remaining, 40)
   assert.equal(w.weekly!.resetAt, '2026-11-10T00:00:00.000Z')
+  // 窗口起点也要保留：排查"打满但重置还很远"时必须能看到它从何时起算
+  assert.equal(w.weekly!.startAt, '2026-11-03T00:00:00.000Z')
+  assert.equal(w.daily!.startAt, '2026-11-08T00:00:00.000Z')
   assert.equal(w.weekly!.exceeded, false)
   // 真实窗口不是推算的
   assert.equal(w.weekly!.inferred, undefined)
+})
+
+test('aggregate：resetAt 取最早、startAt 取最晚（两个方向相反）', () => {
+  const mk = (id: string, startAt: string, resetAt: string) => ({
+    accountId: id,
+    accountName: id,
+    adapter: 'opendesign',
+    ok: true,
+    warnings: [],
+    balances: [],
+    windows: [{ key: 'weekly', used: 10, total: 100, remaining: 90, startAt, resetAt }]
+  })
+  const agg = aggregateAccountSnapshots([
+    mk('a', '2026-11-01T00:00:00.000Z', '2026-11-10T00:00:00.000Z'),
+    mk('b', '2026-11-05T00:00:00.000Z', '2026-11-12T00:00:00.000Z')
+  ])
+  const w = agg.windows[0]!
+  assert.equal(w.used, 20)
+  assert.equal(w.total, 200)
+  // 最早的重置时间：这批账户里最先恢复的那个
+  assert.equal(w.resetAt, '2026-11-10T00:00:00.000Z')
+  // 最晚的开始时间：用最早的会虚报"已过去多久"
+  assert.equal(w.startAt, '2026-11-05T00:00:00.000Z')
+})
+
+test('aggregate：只有部分账户带 startAt 时，仍取其中最大的', () => {
+  const mk = (id: string, startAt?: string) => ({
+    accountId: id,
+    accountName: id,
+    adapter: 'x',
+    ok: true,
+    warnings: [],
+    balances: [],
+    windows: [{ key: 'weekly', used: 1, total: 2, remaining: 1, startAt }]
+  })
+  const agg = aggregateAccountSnapshots([mk('a'), mk('b', '2026-11-05T00:00:00.000Z')])
+  assert.equal(agg.windows[0]!.startAt, '2026-11-05T00:00:00.000Z')
 })
 
 test('opendesign：remainingCredits=0 → exceeded', () => {

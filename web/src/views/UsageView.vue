@@ -552,6 +552,8 @@ onMounted(() => void load())
                     ({{ windowPercent(w) }}%)
                   </span>
                   <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
+                  <!-- 开始时间：上游给了才显示（OpenDesign 这类带 windowStart 的渠道） -->
+                  <span v-if="w.startAt" class="dim">· {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}</span>
                   <span v-if="w.resetAt" class="dim">· {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}</span>
                 </span>
               </div>

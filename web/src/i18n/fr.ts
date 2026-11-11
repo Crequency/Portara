@@ -798,6 +798,7 @@ export const fr = {
     windowMonthly: 'Par mois',
     windowInterval: 'Période actuelle',
     used: 'Utilisé',
+    startAt: 'Début',
     resetAt: 'Réinitialisation',
     exceeded: 'Dépassé',
     inferred: 'Déduit du forfait',

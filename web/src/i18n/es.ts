@@ -798,6 +798,7 @@ export const es = {
     windowMonthly: 'Mensual',
     windowInterval: 'Ciclo actual',
     used: 'Usado',
+    startAt: 'Inicio',
     resetAt: 'Restablecer',
     exceeded: 'Superado',
     inferred: 'Estimado según el plan',
