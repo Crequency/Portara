@@ -816,6 +816,7 @@ export const th = {
     windowMonthly: 'รายเดือน',
     windowInterval: 'รอบปัจจุบัน',
     used: 'ใช้ไป',
+    startAt: 'เริ่ม',
     resetAt: 'รีเซ็ต',
     exceeded: 'เกินขีดจำกัดแล้ว',
     inferred: 'ประมาณจากแพ็กเกจ',

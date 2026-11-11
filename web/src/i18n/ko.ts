@@ -817,6 +817,7 @@ export const ko = {
     windowMonthly: '월간',
     windowInterval: '현재 주기',
     used: '사용됨',
+    startAt: '시작',
     resetAt: '초기화',
     exceeded: '초과됨',
     inferred: '요금제로 추산',

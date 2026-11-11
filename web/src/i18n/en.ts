@@ -815,6 +815,7 @@ export const en = {
     windowMonthly: 'Monthly',
     windowInterval: 'Interval',
     used: 'Used',
+    startAt: 'Started',
     resetAt: 'Resets',
     exceeded: 'Exceeded',
     inferred: 'Inferred from plan',
