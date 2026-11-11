@@ -39,6 +39,12 @@ export interface RoutingSettings {
   maxTotalAttempts: number
   /** 单个渠道内最多尝试几个账户；0 = 该渠道全部可用账户 */
   maxAccountAttempts: number
+  /** 按近期请求结果动态重排候选渠道（默认关闭） */
+  adaptiveRouting: boolean
+  /** 自适应评分窗口（秒） */
+  adaptiveWindowSec: number
+  /** 参与排序所需的最小样本数 */
+  adaptiveMinSamples: number
 }
 
 /** 缓存里可能是旧版本写入的形状，逐项校验后再用，避免把 undefined 带进热路径 */
@@ -46,6 +52,8 @@ function isRoutingSettings(value: unknown): value is RoutingSettings {
   if (!value || typeof value !== 'object') return false
   const v = value as Record<string, unknown>
   if (typeof v.skipExhaustedWindows !== 'boolean') return false
+  // 自适应相关字段是新加的：旧缓存里没有这些键时整体判为不合法，回落到 re-read
+  if (typeof v.adaptiveRouting !== 'boolean') return false
   const numericKeys = [
     'accountFailureCooldownSec',
     'concurrencyCooldownSec',
@@ -55,7 +63,9 @@ function isRoutingSettings(value: unknown): value is RoutingSettings {
     'maxFailoverPasses',
     'failoverBudgetMs',
     'maxTotalAttempts',
-    'maxAccountAttempts'
+    'maxAccountAttempts',
+    'adaptiveWindowSec',
+    'adaptiveMinSamples'
   ] as const
   return numericKeys.every(
     (key) => typeof v[key] === 'number' && Number.isFinite(v[key] as number)
@@ -86,7 +96,10 @@ export async function getRoutingSettings(): Promise<RoutingSettings> {
     maxFailoverPasses: settings.maxFailoverPasses,
     failoverBudgetMs: settings.failoverBudgetMs,
     maxTotalAttempts: settings.maxTotalAttempts,
-    maxAccountAttempts: settings.maxAccountAttempts
+    maxAccountAttempts: settings.maxAccountAttempts,
+    adaptiveRouting: settings.adaptiveRouting,
+    adaptiveWindowSec: settings.adaptiveWindowSec,
+    adaptiveMinSamples: settings.adaptiveMinSamples
   }
   try {
     await redis.set(ROUTING_CACHE_KEY, JSON.stringify(value), 'EX', ROUTING_CACHE_TTL_SEC)

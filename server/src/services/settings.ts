@@ -45,6 +45,12 @@ export interface GatewaySettings {
   usageAutoRefreshSec: number
   /** 余额/用量查询的幂等重试次数（首次之外），0 = 关闭 */
   usageMaxRetries: number
+  /** 自适应选路开关（默认关闭） */
+  adaptiveRouting: boolean
+  /** 自适应评分窗口（秒） */
+  adaptiveWindowSec: number
+  /** 参与排序所需的最小样本数 */
+  adaptiveMinSamples: number
   /**
    * 上游请求失败后的冷却时长（秒）。
    *
@@ -251,6 +257,29 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
   usageMaxRetries: {
     schema: z.coerce.number().int().min(0).max(10),
     default: 3,
+    group: 'gateway'
+  },
+  /**
+   * 自适应选路：按**近期请求结果**动态调整候选渠道顺序。
+   *
+   * 默认**关闭** —— 它改变的是选路行为，必须先由人确认再打开。
+   * 打开后只在同一优先级层内重排（配置里的优先级/权重仍是硬约束）。
+   */
+  adaptiveRouting: {
+    schema: z.boolean(),
+    default: false,
+    group: 'gateway'
+  },
+  /** 自适应评分的时间窗口（秒） */
+  adaptiveWindowSec: {
+    schema: z.coerce.number().int().min(30).max(3600),
+    default: 300,
+    group: 'gateway'
+  },
+  /** 参与排序所需的最小样本数；不足的渠道保持原位置 */
+  adaptiveMinSamples: {
+    schema: z.coerce.number().int().min(1).max(1000),
+    default: 10,
     group: 'gateway'
   },
   accountFailureCooldownSec: {
