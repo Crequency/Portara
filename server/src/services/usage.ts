@@ -219,11 +219,19 @@ export function isAccountExhausted(
 export function hasExhaustedWindow(s: UsageAccountSnapshot): boolean {
   return s.windows.some(
     (w) =>
-      // 推算窗口（inferred）不参与：它是按社区逆向的套餐表算出来的，
-      // 不是上游给的硬事实。拿它做「不路由」判据会误杀健康账户 ——
-      // 实测踩过：CommandCode 的月窗被推算成 70/70，整条渠道的账户全被跳过。
+      /*
+       * 只认**真正打满**：上游明确标记 exceeded，或 used 已达上限。
+       *
+       * 曾经用 >=95% 作为"接近打满"的门槛，实测证明太激进：
+       * CommandCode 的每周窗口到 96%（还剩 1.3/35 credits）就被判"打满"，
+       * 整个渠道的账户全被跳过，于是并发全压到另一家、又撞出 429。
+       * 还剩额度就说明上游允许继续发 —— 真正的上限交给上游客（429/402）裁决。
+       *
+       * 推算窗口（inferred）仍然排除：它按逆向套餐表算出来，不是上游硬事实，
+       * 拿它做"不路由"判据会误杀健康账户（历史上把月窗推算成 70/70 踩过）。
+       */
       !w.inferred &&
-      (w.exceeded === true || (w.total > 0 && w.used / w.total >= 0.95))
+      (w.exceeded === true || (w.total > 0 && w.used >= w.total))
   )
 }
 

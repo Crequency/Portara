@@ -345,12 +345,23 @@ test('hasExhaustedWindow：任一窗口打满即 true，与 limit_priority 无�
   }
   assert.equal(hasExhaustedWindow(filled), true)
 
-  // 接近打满（>=95%）也算
+  /*
+   * 接近打满（96%，还剩 4）**不算**打满：还剩额度就说明上游允许继续发。
+   * 历史上用 >=95% 判"打满"，实测把 CommandCode 每周窗口 96% 的账户整条跳过，
+   * 并发全压到另一家、又撞出 429 —— 阈值必须落在"真的一点不剩"。
+   */
   const nearFull = {
     ...base,
     windows: [{ key: 'weekly', used: 96, total: 100, remaining: 4 }]
   }
-  assert.equal(hasExhaustedWindow(nearFull), true)
+  assert.equal(hasExhaustedWindow(nearFull), false)
+
+  // 真正用尽（used 等于上限）→ true
+  const exactlyFull = {
+    ...base,
+    windows: [{ key: 'weekly', used: 100, total: 100, remaining: 0 }]
+  }
+  assert.equal(hasExhaustedWindow(exactlyFull), true)
 
   // 都没满 → false
   const healthy = {
