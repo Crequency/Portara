@@ -45,6 +45,12 @@ export interface RoutingSettings {
   adaptiveWindowSec: number
   /** 参与排序所需的最小样本数 */
   adaptiveMinSamples: number
+  /** 是否向调用方暴露路由信息（渠道/账户/上游模型） */
+  exposeRoutingInfo: boolean
+  /** 路由信息详细档位 */
+  exposeRoutingDetail: 'off' | 'alias' | 'channel'
+  /** /v1/route-info 回溯窗口（分钟） */
+  routeInfoWindowMin: number
 }
 
 /** 缓存里可能是旧版本写入的形状，逐项校验后再用，避免把 undefined 带进热路径 */
@@ -54,6 +60,10 @@ function isRoutingSettings(value: unknown): value is RoutingSettings {
   if (typeof v.skipExhaustedWindows !== 'boolean') return false
   // 自适应相关字段是新加的：旧缓存里没有这些键时整体判为不合法，回落到 re-read
   if (typeof v.adaptiveRouting !== 'boolean') return false
+  if (typeof v.exposeRoutingInfo !== 'boolean') return false
+  if (v.exposeRoutingDetail !== 'off' && v.exposeRoutingDetail !== 'alias' && v.exposeRoutingDetail !== 'channel') {
+    return false
+  }
   const numericKeys = [
     'accountFailureCooldownSec',
     'concurrencyCooldownSec',
@@ -65,7 +75,8 @@ function isRoutingSettings(value: unknown): value is RoutingSettings {
     'maxTotalAttempts',
     'maxAccountAttempts',
     'adaptiveWindowSec',
-    'adaptiveMinSamples'
+    'adaptiveMinSamples',
+    'routeInfoWindowMin'
   ] as const
   return numericKeys.every(
     (key) => typeof v[key] === 'number' && Number.isFinite(v[key] as number)
@@ -99,7 +110,10 @@ export async function getRoutingSettings(): Promise<RoutingSettings> {
     maxAccountAttempts: settings.maxAccountAttempts,
     adaptiveRouting: settings.adaptiveRouting,
     adaptiveWindowSec: settings.adaptiveWindowSec,
-    adaptiveMinSamples: settings.adaptiveMinSamples
+    adaptiveMinSamples: settings.adaptiveMinSamples,
+    exposeRoutingInfo: settings.exposeRoutingInfo,
+    exposeRoutingDetail: settings.exposeRoutingDetail,
+    routeInfoWindowMin: settings.routeInfoWindowMin
   }
   try {
     await redis.set(ROUTING_CACHE_KEY, JSON.stringify(value), 'EX', ROUTING_CACHE_TTL_SEC)

@@ -3,6 +3,13 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { query } from '../db.js'
 import { clientIp, openaiError } from '../lib/http.js'
+import {
+  redactRouteInfo,
+  routeHeadersOf,
+  type RouteInfoResponse
+} from '../services/routingInfo.js'
+import { listSessionLbEvents } from '../services/lbEvents.js'
+import { getSessionRoute, setSessionRoute } from '../services/routeCache.js'
 import { orderByAdaptiveScore } from '../services/adaptive.js'
 import { getAdaptiveStats } from '../services/adaptiveStats.js'
 import { apiKeyAuth } from '../middleware/auth.js'
@@ -59,6 +66,7 @@ import {
   type ResolvedTarget
 } from '../services/router.js'
 import {
+  hashSessionKey,
   nextAffinityPin,
   sessionKeyOf,
   shortSessionHash,
@@ -193,16 +201,51 @@ function concurrencyHeadersOf(waitMs: number): Record<string, string> {
  * flush（正常读完）与 cancel（客户端断开）各释放一次，靠调用方的幂等标记去重。
  */
 function wrapStreamWithRelease(body: ReadableStream, release: () => void): ReadableStream {
-  return body.pipeThrough(
-    new TransformStream({
-      flush() {
-        release()
-      },
-      cancel() {
-        release()
+  /*
+   * 为什么不用 `pipeThrough(new TransformStream({flush, cancel}))`：
+   *
+   *   `cancel` **不是** TransformStream 的合法钩子 —— 规范里 transformer 只有
+   *   start/transform/flush。客户端中途断开时，取消从可读侧向上游传播，
+   *   flush 根本不会被调用 → **槽位永远不归还**。
+   *
+   * 实测症状：并发计数卡在上限（例如 32/32）不再下降，随后所有请求
+   * 都被判「渠道并发已满」并返回 429，而实际上没有任何在途请求。
+   * 这是我们自己的客户端（长会话里频繁取消/中断）最容易触发的路径。
+   *
+   * 现在显式接管拉取：正常结束、读错误、被取消三条路径都归还名额，
+   * 且 release 本身幂等，重复调用无害。
+   */
+  const reader = body.getReader()
+  let finished = false
+  const finish = (): void => {
+    if (finished) return
+    finished = true
+    release()
+  }
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          finish()
+          controller.close()
+          return
+        }
+        controller.enqueue(value)
+      } catch (error) {
+        finish()
+        controller.error(error)
       }
-    })
-  )
+    },
+    async cancel(reason) {
+      finish()
+      try {
+        await reader.cancel(reason)
+      } catch {
+        /* 上游已经坏了；这里只为归还名额，错误无意义 */
+      }
+    }
+  })
 }
 
 /**
@@ -267,7 +310,21 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    * 否则退回「system + 首条 user」的上下文指纹。两者都拿不到就**不做亲和** ——
    * 靠猜的亲和只会把并发堆到一个渠道上。
    */
-  const session = sessionKeyOf(payload, { allowContext: env.affinityContext })
+  /*
+   * 会话键取值优先级（高 → 低）：
+   *   ① `x-portara-client-session` —— 我们约定的显式会话键
+   *   ② `x-deepseek-harness-session-id` —— DSH 适配器默认就会发
+   *   ③ 请求体 `prompt_cache_key` / 上下文指纹（原有逻辑）
+   *
+   * 为什么让 header 优先：客户端发来的会话 id 比"猜上下文"更准，
+   * 而且 /v1/route-info 要按同一个键回查，两边必须一致。
+   */
+  const explicitSession =
+    (c.req.header('x-portara-client-session') ?? '').trim() ||
+    (c.req.header('x-deepseek-harness-session-id') ?? '').trim()
+  const session = explicitSession
+    ? { hash: hashSessionKey('client:' + explicitSession.slice(0, 256)), source: 'client' as const }
+    : sessionKeyOf(payload, { allowContext: env.affinityContext })
   const sessionHash = shortSessionHash(session.hash)
 
   /**
@@ -532,6 +589,11 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
    * 与「第几个账户」不同 —— 换渠道后账户序号会重置，但一次请求的尝试总数不会。
    */
   let attemptNo = 0
+  /** 最后一次成功路由到的渠道/账户名（供响应头回显；失败时保持最后一次尝试的值） */
+  let channelNameForRoute: string | undefined
+  let accountNameForRoute: string | undefined
+  /** 本次请求发生过的切换原因（响应头用）；没有切换则为空串 */
+  let switchReason = ''
   /**
    * 上一次失败的账户 —— 最终成功时用它写 failover_success 的 prev_*。
    * 只在真正打过上游且失败时赋值；首击成功保持 null，不产生任何事件。
@@ -1102,6 +1164,20 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           latencyMs: attemptLatencyMs
         })
 
+        /*
+         * 记录"为什么切换"：响应头会带出去，客户端就能说清
+         * 「ChannelA/Acc1 额度用尽 → 已切到 ChannelB/Acc2」。
+         * 只记第一次原因（最有解释力的那个），后续失败不覆盖。
+         */
+        if (!switchReason) {
+          if (quotaEntered) switchReason = 'quota'
+          else if (concurrencyHit) switchReason = 'concurrency'
+          else if (attempt.status === 401 || attempt.status === 403) switchReason = 'auth'
+          else if (attempt.status >= 500) switchReason = 'upstream'
+          else if (attempt.status === 429) switchReason = 'rate_limit'
+          else switchReason = 'error'
+        }
+
         // 额度用尽额外一条：页面据此解释「这个账户为什么随后进入了冷冻」
         if (quotaEntered) {
           const untilIso = new Date(Date.now() + quotaEntered.secs * 1000).toISOString()
@@ -1294,6 +1370,32 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
     await clearAffinity(model, session.hash)
   }
 
+  /*
+   * 记录"最终落到哪"，供响应头回显。
+   * attemptNo > 1 说明前面失败过——把最近一次的失败原因带出去，
+   * 客户端就能说清"因为 X 切到了 Y"。
+   */
+  channelNameForRoute = channel.name
+  accountNameForRoute = account?.name ?? ''
+  if (attemptNo > 1 && !switchReason) switchReason = 'retry'
+
+  /*
+   * 成功路由写进 Redis（短 TTL），供 /v1/route-info 立刻查到。
+   *
+   * 为什么不只靠 lb_events：那张表**只在失败/切换时写**，
+   * 首击成功的请求在里面没有痕迹，客户端会看到"空历史"。
+   */
+  if (sessionHash) {
+    void setSessionRoute(sessionHash, {
+      alias: model,
+      channel: channel.name,
+      account: account?.name ?? '',
+      upstreamModel,
+      attempts: attemptNo,
+      switchReason
+    })
+  }
+
   const logCtx = {
     ...baseLog,
     channelId: channel.id,
@@ -1333,6 +1435,33 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
 
   const sessionEcho = sessionEchoOf(upstreamHeaders?.session ?? null)
 
+  /*
+   * 路由信息头（对外展示"这次落到哪"）。
+   *
+   * 需要三个前置：设置开关、脱敏档位，以及此刻已经选定的 channel/account。
+   * 这里做成一个惰性函数：只有真正要返回响应时才计算，
+   * 避免在"还没选到渠道就早退"的分支上读到 undefined。
+   */
+  const routeHeaders = (): Record<string, string> => {
+    // 任何情况下都回 request-id：它不含拓扑信息，却是排查的锚点
+    if (!routing.exposeRoutingInfo) return { 'x-portara-request-id': requestId }
+    const detail = routing.exposeRoutingDetail
+    return {
+      'x-portara-request-id': requestId,
+      ...routeHeadersOf(
+        {
+          alias: model,
+          upstreamModel: upstreamModel || model,
+          channel: detail === 'channel' ? (channelNameForRoute ?? '') : '',
+          account: detail === 'channel' ? (accountNameForRoute ?? '') : '',
+          attempts: attemptNo,
+          switchReason: switchReason
+        },
+        detail
+      )
+    }
+  }
+
   const contentType = res.headers.get('content-type') ?? 'application/json'
   const isStream = contentType.includes('text/event-stream') || (streamFlag && res.ok)
 
@@ -1367,6 +1496,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
           'x-accel-buffering': 'no',
           'x-portara-channel': channel.name,
           'x-portara-protocol': 'anthropic',
+          ...routeHeaders(),
           ...concurrencyHeaders(),
           ...sessionEcho
         }
@@ -1424,6 +1554,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         'content-type': 'application/json',
         'x-portara-channel': channel.name,
         'x-portara-protocol': 'anthropic',
+        ...routeHeaders(),
         ...concurrencyHeaders(),
         ...sessionEcho
       }
@@ -1459,7 +1590,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
         'content-type': contentType,
         'x-portara-channel': channel.name,
         ...concurrencyHeaders(),
-        ...sessionEcho
+        ...sessionEcho,
+        ...routeHeaders()
       }
     })
   }
@@ -1514,7 +1646,8 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       'x-accel-buffering': 'no',
       'x-portara-channel': channel.name,
       ...concurrencyHeaders(),
-      ...sessionEcho
+      ...sessionEcho,
+      ...routeHeaders()
     }
   })
 }
@@ -1571,6 +1704,77 @@ function decorateModel(
  *   ① 模型映射的别名（网关受理的 id），元信息取该别名首个目标的渠道配置
  *   ② 各启用渠道声明的模型（未配映射时的直通 id）
  */
+/**
+ * 路由信息查询（给客户端插件用，**不是**管理面）。
+ *
+ * 返回某个会话最近被负载均衡路由到哪，以及重试过程中的切换历史。
+ * 会话键的取值与 /v1/chat/completions 完全一致（同一个 header 优先级），
+ * 所以客户端只要在两次请求里带同一个会话头，就能对上号。
+ *
+ * 隐私：按设置项脱敏。默认 `exposeRoutingInfo=false` 时只回会话键与空路由 ——
+ * 不泄露任何上游拓扑。
+ */
+v1Routes.get('/route-info', async (c) => {
+  const key = c.get('apiKey') as ApiKeyRow
+  if (!key) return openaiError(c, 401, '需要 API Key', 'authentication_error', 'missing_key')
+
+  const routing = await getRoutingSettings()
+  const headerSession = (c.req.header('x-portara-client-session') ?? '').trim()
+  const harnessSession = (c.req.header('x-deepseek-harness-session-id') ?? '').trim()
+  const explicit = headerSession || harnessSession
+  const sessionHash = explicit ? shortSessionHash(hashSessionKey('client:' + explicit.slice(0, 256))) : ''
+
+  const empty: RouteInfoResponse = {
+    object: 'route.info',
+    sessionKey: sessionHash,
+    updatedAt: null,
+    route: { alias: null, channel: null, account: null, upstreamModel: null },
+    history: []
+  }
+
+  if (!routing.exposeRoutingInfo || !sessionHash) {
+    // 未开启或没给会话键：结构一致但内容为空，客户端不用写两套分支
+    return c.json(redactRouteInfo(empty, routing.exposeRoutingDetail))
+  }
+
+  /*
+   * 两路数据合并：
+   *   ① Redis 的"当前路由" —— 包含**首击成功**（lb_events 里没有这条）
+   *   ② lb_events 的切换历史 —— 解释"为什么切了"
+   */
+  const [cached, events] = await Promise.all([
+    getSessionRoute(sessionHash),
+    listSessionLbEvents(sessionHash, routing.routeInfoWindowMin)
+  ])
+
+  if (!cached && events.length === 0) {
+    return c.json(redactRouteInfo(empty, routing.exposeRoutingDetail))
+  }
+
+  const lastEvent = events.length > 0 ? events[events.length - 1]! : null
+  const full: RouteInfoResponse = {
+    object: 'route.info',
+    sessionKey: sessionHash,
+    updatedAt: cached?.at ?? lastEvent?.at ?? null,
+    route: {
+      alias: cached?.alias ?? lastEvent?.alias ?? null,
+      channel: (cached?.channel || lastEvent?.channelName) ?? null,
+      account: (cached?.account || lastEvent?.accountName) ?? null,
+      upstreamModel: cached?.upstreamModel ?? null
+    },
+    history: events.map((e) => ({
+      attempt: e.attempt,
+      channel: e.channelName || null,
+      account: e.accountName || null,
+      outcome: e.outcome,
+      statusCode: e.statusCode,
+      reason: e.reason,
+      at: e.at
+    }))
+  }
+  return c.json(redactRouteInfo(full, routing.exposeRoutingDetail))
+})
+
 v1Routes.get('/models', async (c) => {
   const key = c.get('apiKey') as ApiKeyRow
 

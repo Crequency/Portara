@@ -31,6 +31,59 @@ export interface LbEventInput {
   latencyMs?: number | null
 }
 
+/**
+ * 查一个会话最近的路由事件（供 /v1/route-info 使用）。
+ *
+ * 只取**会话键匹配**的行，按时间正序返回，便于客户端自行折叠"尝试了几次、切到哪"。
+ * 上限 50 条：再多对"当前路由"没有信息增量，只会把响应撑大。
+ */
+export async function listSessionLbEvents(
+  sessionHash: string,
+  minutes: number
+): Promise<
+  Array<{
+    attempt: number
+    channelName: string
+    accountName: string
+    outcome: string
+    statusCode: number | null
+    reason: string
+    at: string
+    alias: string
+  }>
+> {
+  if (!sessionHash) return []
+  const rows = await query<{
+    attempt: number
+    channel_name: string
+    account_name: string
+    outcome: string
+    status_code: number | null
+    reason: string
+    at: string
+    alias: string
+  }>(
+    `select attempt, channel_name, account_name, outcome, status_code, reason,
+            to_char(ts, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at, alias
+       from lb_events
+      where session_hash = $1
+        and ts > now() - make_interval(secs => $2)
+      order by ts asc
+      limit 50`,
+    [sessionHash, Math.max(60, Math.min(86_400, Math.round(minutes * 60)))]
+  )
+  return rows.map((r) => ({
+    attempt: r.attempt,
+    channelName: r.channel_name,
+    accountName: r.account_name,
+    outcome: r.outcome,
+    statusCode: r.status_code,
+    reason: r.reason ?? '',
+    at: r.at,
+    alias: r.alias
+  }))
+}
+
 /** 保留期：7 天。清理放在写入路径里，概率约 1/200。 */
 const RETENTION_DAYS = 7
 const PURGE_PROBABILITY = 1 / 200

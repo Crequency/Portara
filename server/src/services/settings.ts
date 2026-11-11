@@ -51,6 +51,12 @@ export interface GatewaySettings {
   adaptiveWindowSec: number
   /** 参与排序所需的最小样本数 */
   adaptiveMinSamples: number
+  /** 是否向调用方暴露路由信息 */
+  exposeRoutingInfo: boolean
+  /** 路由信息详细档位 */
+  exposeRoutingDetail: 'off' | 'alias' | 'channel'
+  /** /v1/route-info 回溯窗口（分钟） */
+  routeInfoWindowMin: number
   /**
    * 上游请求失败后的冷却时长（秒）。
    *
@@ -280,6 +286,34 @@ export const SETTING_DEFS: { [K in keyof GatewaySettings]: SettingDef<K> } = {
   adaptiveMinSamples: {
     schema: z.coerce.number().int().min(1).max(1000),
     default: 10,
+    group: 'gateway'
+  },
+  /**
+   * 是否向调用方暴露**路由信息**（渠道 / 账户 / 上游模型）。
+   *
+   * 默认关闭：渠道名与上游账户属于拓扑信息，默认不该给所有 API Key 持有者。
+   * 关闭时响应头只含模型别名与「有没有切换过」。
+   */
+  exposeRoutingInfo: {
+    schema: z.boolean(),
+    default: false,
+    group: 'gateway'
+  },
+  /**
+   * 路由信息的详细档位：
+   *   off     —— 只回别名 + 是否切换
+   *   alias   —— 加回上游模型
+   *   channel —— 再回渠道名与账户名（最详细）
+   */
+  exposeRoutingDetail: {
+    schema: z.enum(['off', 'alias', 'channel']),
+    default: 'alias',
+    group: 'gateway'
+  },
+  /** /v1/route-info 的回溯窗口（分钟） */
+  routeInfoWindowMin: {
+    schema: z.coerce.number().int().min(1).max(1440),
+    default: 60,
     group: 'gateway'
   },
   accountFailureCooldownSec: {
