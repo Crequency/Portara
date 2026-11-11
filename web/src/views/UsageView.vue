@@ -537,7 +537,7 @@ onMounted(() => void load())
           <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
           <div class="form-grid" style="gap: 10px">
             <div v-for="w in item.snapshot!.windows" :key="w.key">
-              <div class="row-between" style="font-size: 12.5px">
+              <div class="row-between usage-win-head" style="font-size: 12.5px">
                 <span class="row" style="gap: 5px">
                   {{ windowLabel(w.key) }}
                   <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
@@ -552,13 +552,6 @@ onMounted(() => void load())
                     ({{ windowPercent(w) }}%)
                   </span>
                   <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
-                  <!-- 开始时间：上游给了才显示（OpenDesign 这类带 windowStart 的渠道） -->
-                  <span v-if="w.startAt" class="dim usage-win-meta">
-                    · {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
-                  </span>
-                  <span v-if="w.resetAt" class="dim usage-win-meta">
-                    · {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
-                  </span>
                 </span>
               </div>
               <div style="height: 5px; background: var(--bg-elev-2); border-radius: 3px; margin-top: 5px">
@@ -570,6 +563,15 @@ onMounted(() => void load())
                     borderRadius: '3px'
                   }"
                 />
+              </div>
+              <!-- 时间信息独占一行并允许换行：窄屏也不横向溢出 -->
+              <div v-if="w.startAt || w.resetAt" class="usage-win-times">
+                <span v-if="w.startAt" class="dim">
+                  {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
+                </span>
+                <span v-if="w.resetAt" class="dim">
+                  {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
+                </span>
               </div>
             </div>
           </div>
