@@ -690,6 +690,12 @@ export const zh = {
     timezoneInvalid: '不是合法的 IANA 时区名',
     allowDirectChannelTest: '允许「上游渠道测试」直连',
     allowDirectChannelTestHint: '关闭后对话测试页的直连模式会被禁用。该模式绕过网关的鉴权、限流与配额，直接用渠道密钥请求上游。',
+    adaptiveRouting: '按近期表现自适应选路',
+    adaptiveRoutingHint: '根据最近一段时间的成功率、P95 延迟与当前并发压力，动态调整候选渠道顺序。默认关闭；开启后只影响顺序，不改变可用性判定。',
+    adaptiveWindowSec: '评分时间窗口（秒）',
+    adaptiveWindowSecHint: '统计最近多少秒的请求结果。太短会被个别抖动带偏，太长反应迟钝。默认 300 秒。',
+    adaptiveMinSamples: '最小样本数',
+    adaptiveMinSamplesHint: '窗口内请求数不足该值的渠道不参与重排，保持配置顺序（避免冷启动渠道被饿死）。默认 10。',
     accountFailureCooldownSec: '失败后的冷却时长（秒）',
     accountFailureCooldownSecHint:
       '最近一次请求失败的「渠道 + 账户」在这段时间内不再被路由过去。默认 3600 秒（1 小时）。上游给了 Retry-After 或凭据失效（401/403）时取两者中更长的那个。',

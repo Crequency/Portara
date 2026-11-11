@@ -694,6 +694,12 @@ export const ko = {
     timezoneInvalid: '유효한 IANA 시간대 이름이 아닙니다',
     allowDirectChannelTest: '“업스트림 채널 테스트” 직접 연결 허용',
     allowDirectChannelTestHint: '끄면 채팅 테스트 페이지의 직접 연결 모드가 비활성화됩니다. 이 모드는 게이트웨이의 인증, 속도 제한, 할당량을 우회하고 채널 키로 업스트림에 직접 요청합니다.',
+    adaptiveRouting: '최근 성과 기반 자동 경로 조정',
+    adaptiveRoutingHint: '최근 성공률, P95 지연, 현재 동시성 압박을 사용해 후보 채널 순서를 재배치합니다. 기본 비활성. 켜도 순서만 바뀌고 가용성 판정은 그대로입니다.',
+    adaptiveWindowSec: '평가 구간(초)',
+    adaptiveWindowSecHint: '최근 몇 초의 요청 결과를 집계할지. 기본 300초.',
+    adaptiveMinSamples: '최소 표본 수',
+    adaptiveMinSamplesHint: '구간 내 요청 수가 이보다 적은 채널은 재배치에서 제외되어 설정 순서를 유지합니다. 기본 10.',
     accountFailureCooldownSec: '실패 후 쿨다운 시간(초)',
     accountFailureCooldownSecHint:
       '최근 요청에 실패한 “채널 + 계정”은 이 시간 동안 라우팅 대상에서 제외됩니다. 기본값 3600초(1시간). 업스트림이 Retry-After를 주거나 자격 증명이 만료된 경우(401/403)에는 둘 중 더 긴 쪽을 사용합니다.',
