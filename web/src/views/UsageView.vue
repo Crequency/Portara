@@ -22,6 +22,7 @@ import { api, type UsageSnapshot, type User } from '../api'
 import AccountUsage from '../components/AccountUsage.vue'
 import Modal from '../components/Modal.vue'
 import PInfo from '../components/PInfo.vue'
+import UsageWindowRow from '../components/UsageWindowRow.vue'
 import {
   formatCompact,
   formatNumber,
@@ -536,46 +537,31 @@ onMounted(() => void load())
           <div v-if="item.snapshot!.windows.length > 0" class="usage-head-windows">
           <div class="dim" style="font-size: 12px; margin-bottom: 8px">{{ t('usage.windows') }}</div>
           <div class="form-grid" style="gap: 10px">
-            <div v-for="w in item.snapshot!.windows" :key="w.key">
-              <div class="usage-win-head" style="font-size: 12.5px">
-                <span class="row" style="gap: 5px">
+            <UsageWindowRow
+              v-for="w in item.snapshot!.windows"
+              :key="w.key"
+              :usage-text="
+                t('usage.used') + ' ' + formatNumber(Math.round(w.used)) + ' / ' +
+                formatNumber(Math.round(w.total)) + ' (' + windowPercent(w) + '%)' +
+                (w.exceeded ? ' · ' + t('usage.exceeded') : '')
+              "
+              :usage-color="quotaColor(windowPercent(w), w.exceeded)"
+              :exceeded="w.exceeded"
+              :percent="windowPercent(w)"
+              :bar-color="quotaColor(windowPercent(w), w.exceeded)"
+              :start-text="w.startAt ? t('usage.startAt') + ' ' + formatTime(w.startAt) : undefined"
+              :reset-text="w.resetAt ? t('usage.resetAt') + ' ' + formatTime(w.resetAt) : undefined"
+            >
+              <template #label>
+                <span class="row" style="gap: 5px; font-size: 12.5px">
                   {{ windowLabel(w.key) }}
                   <PInfo v-if="w.inferred" :text="t('usage.inferredHint')" />
                   <span v-if="w.inferred" class="tag" style="color: var(--warn)">
                     {{ t('usage.inferred') }}
                   </span>
                 </span>
-                <!-- 值区：宽度够时用量与时间同一行，不够时浏览器实测后自动折行 -->
-                <span class="win-values" style="font-size: 12.5px">
-                  <span class="nowrap" :class="{ 'delta-slow': w.exceeded }">
-                    {{ t('usage.used') }} {{ formatNumber(Math.round(w.used)) }} /
-                    {{ formatNumber(Math.round(w.total)) }}
-                    <span :style="{ color: quotaColor(windowPercent(w), w.exceeded) }">
-                      ({{ windowPercent(w) }}%)
-                    </span>
-                    <span v-if="w.exceeded">· {{ t('usage.exceeded') }}</span>
-                  </span>
-                  <span v-if="w.startAt || w.resetAt" class="win-times">
-                    <span v-if="w.startAt">
-                      {{ t('usage.startAt') }} {{ formatTime(w.startAt) }}
-                    </span>
-                    <span v-if="w.resetAt">
-                      {{ t('usage.resetAt') }} {{ formatTime(w.resetAt) }}
-                    </span>
-                  </span>
-                </span>
-              </div>
-              <div style="height: 5px; background: var(--bg-elev-2); border-radius: 3px; margin-top: 5px">
-                <div
-                  :style="{
-                    width: windowPercent(w) + '%',
-                    height: '100%',
-                    background: quotaColor(windowPercent(w), w.exceeded),
-                    borderRadius: '3px'
-                  }"
-                />
-              </div>
-            </div>
+              </template>
+            </UsageWindowRow>
           </div>
           </div>
         </div>
