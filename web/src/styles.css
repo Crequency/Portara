@@ -280,6 +280,17 @@ a { color: var(--accent); text-decoration: none; }
   letter-spacing: 0.02em;
 }
 
+/*
+ * 窗口行的"开始 / 重置"时间片段。
+ *
+ * 两个片段相邻，行内空白会被模板压掉，于是时间戳和下一个「·」贴在一起
+ * （"07:44:31· 重置"）。用左外边距而不是空格字符：不依赖空白折叠规则。
+ */
+.usage-win-meta,
+.acct-win-meta {
+  margin-left: 6px;
+}
+
 .nav-foot {
   border-top: 1px solid var(--border);
   padding: 10px 8px 0;
