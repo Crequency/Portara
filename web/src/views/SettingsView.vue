@@ -13,6 +13,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, type GatewaySettings } from '../api'
 import PCheckbox from '../components/PCheckbox.vue'
 import PCombobox from '../components/PCombobox.vue'
+import PSelect from '../components/PSelect.vue'
 import { CLIENT_TZ, timeZoneOptions } from '../time'
 import { loadMeta } from '../meta'
 import { toast } from '../toast'
@@ -45,6 +46,9 @@ const form = ref<GatewaySettings>({
   adaptiveRouting: false,
   adaptiveWindowSec: 300,
   adaptiveMinSamples: 10,
+  exposeRoutingInfo: false,
+  exposeRoutingDetail: 'alias',
+  routeInfoWindowMin: 60,
   accountFailureCooldownSec: 3600,
   skipExhaustedWindows: true,
   concurrencyCooldownSec: 20,
@@ -67,6 +71,18 @@ const dirty = computed(() => {
 
 /** 名称留空时的实际展示名 —— 让用户清楚「空」意味着什么 */
 const effectiveName = computed(() => form.value.gatewayName.trim() || 'Portara')
+
+/**
+ * 路由信息档位。
+ *
+ * 用 PSelect 而不是原生 select：与页面其他下拉一致（Teleport 弹层、键盘可达）。
+ * 选项文案走 i18n，值保持英文枚举 —— 存库与接口都用这套字面量。
+ */
+const routingDetailOptions = computed(() => [
+  { value: 'off', label: t('settings.exposeRoutingDetailOff') },
+  { value: 'alias', label: t('settings.exposeRoutingDetailAlias') },
+  { value: 'channel', label: t('settings.exposeRoutingDetailChannel') }
+])
 
 async function load(): Promise<void> {
   loading.value = true
@@ -267,6 +283,37 @@ onMounted(load)
               max="1000"
             />
             <span class="hint">{{ t('settings.adaptiveMinSamplesHint') }}</span>
+          </div>
+        </div>
+
+        <!--
+          路由信息对外暴露：客户端（如 DSH 插件）据此展示「本次落到哪个渠道/账户」。
+          默认关闭 —— 渠道名与上游账户属于拓扑信息，不该默认给所有 API Key 持有者。
+        -->
+        <div class="field">
+          <label class="row" style="gap: 8px; display: inline-flex; cursor: pointer">
+            <PCheckbox v-model="form.exposeRoutingInfo" />
+            {{ t('settings.exposeRoutingInfo') }}
+          </label>
+          <span class="hint">{{ t('settings.exposeRoutingInfoHint') }}</span>
+        </div>
+
+        <div v-if="form.exposeRoutingInfo" class="grid grid-2">
+          <div class="field">
+            <label>{{ t('settings.exposeRoutingDetail') }}</label>
+            <PSelect v-model="form.exposeRoutingDetail" :options="routingDetailOptions" />
+            <span class="hint">{{ t('settings.exposeRoutingDetailHint') }}</span>
+          </div>
+          <div class="field">
+            <label>{{ t('settings.routeInfoWindowMin') }}</label>
+            <input
+              v-model.number="form.routeInfoWindowMin"
+              type="number"
+              min="1"
+              max="1440"
+              step="1"
+            />
+            <span class="hint">{{ t('settings.routeInfoWindowMinHint') }}</span>
           </div>
         </div>
 
