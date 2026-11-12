@@ -302,6 +302,12 @@ export interface GatewaySettings {
   adaptiveWindowSec: number
   /** 参与排序所需的最小样本数 */
   adaptiveMinSamples: number
+  /** 是否向调用方暴露路由信息（渠道/账户/上游模型）；默认关闭 */
+  exposeRoutingInfo: boolean
+  /** 路由信息详细档位：off | alias | channel */
+  exposeRoutingDetail: 'off' | 'alias' | 'channel'
+  /** /v1/route-info 回溯窗口（分钟） */
+  routeInfoWindowMin: number
   /** 上游失败后的冷却时长（秒）：这段时间内不再路由到该 (渠道, 账户) */
   accountFailureCooldownSec: number
   /** 是否跳过「任意用量窗口已打满」的账户 */
