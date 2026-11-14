@@ -30,6 +30,11 @@ export const th = {
     yes: 'ใช่',
     no: 'ไม่',
     new: 'สร้างใหม่',
+    moreResultsHint: "…ยังมีอีก พิมพ์เพื่อกรอง",
+    noMatch: "ไม่พบรายการที่ตรงกัน",
+    requestFailed: "คำขอล้มเหลว (HTTP {status})",
+    headerLineMissingColon: "ไม่มีเครื่องหมายโคลอน: {line}",
+    headerNameEmpty: "ชื่อส่วนหัวว่าง: {line}",
     expand: 'ขยาย',
     collapse: 'ย่อ'
   },

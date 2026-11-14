@@ -31,6 +31,11 @@ export const ja = {
     yes: 'はい',
     no: 'いいえ',
     new: '新規',
+    moreResultsHint: "…他にもあります。入力して絞り込んでください",
+    noMatch: "一致する項目がありません",
+    requestFailed: "リクエストに失敗しました（HTTP {status}）",
+    headerLineMissingColon: "コロンがありません：{line}",
+    headerNameEmpty: "ヘッダー名が空です：{line}",
     expand: '展開',
     collapse: '折りたたむ'
   },

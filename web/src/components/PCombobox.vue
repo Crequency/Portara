@@ -11,6 +11,13 @@
  *   - 可测、可键盘操作、可控制滚动与避让
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from '../i18n'
+
+/*
+ * 文案走 i18n：这个组件被设置页（时区，600+ 项）、聊天页（模型）、余额映射复用，
+ * 以前三处提示是写死的中文 —— 英文界面下会直接漏出中文。
+ */
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -199,7 +206,7 @@ onBeforeUnmount(() => {
         type="button"
         class="pcombo-toggle"
         :disabled="disabled"
-        :aria-label="open ? '收起' : '展开'"
+        :aria-label="open ? t('common.collapse') : t('common.expand')"
         @click="open ? close() : (inputEl?.focus(), openMenu())"
       >
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
@@ -229,7 +236,7 @@ onBeforeUnmount(() => {
         }"
       >
         <div v-if="visible.length === 0" class="psel-option psel-option-disabled">
-          {{ placeholder || '无匹配项' }}
+          {{ placeholder || t('common.noMatch') }}
         </div>
         <div
           v-for="(option, i) in visible"
@@ -264,7 +271,7 @@ onBeforeUnmount(() => {
           </svg>
         </div>
         <div v-if="truncated" class="psel-option psel-option-disabled">
-          …还有更多，输入关键字以过滤
+          {{ t('common.moreResultsHint') }}
         </div>
       </div>
     </Teleport>

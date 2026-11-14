@@ -32,6 +32,11 @@ export const fr = {
     yes: 'Oui',
     no: 'Non',
     new: 'Nouveau',
+    moreResultsHint: "…d’autres résultats ; saisissez pour filtrer",
+    noMatch: "Aucun résultat",
+    requestFailed: "Échec de la requête (HTTP {status})",
+    headerLineMissingColon: "Deux-points manquant : {line}",
+    headerNameEmpty: "Nom d’en-tête vide : {line}",
     expand: 'Développer',
     collapse: 'Réduire'
   },

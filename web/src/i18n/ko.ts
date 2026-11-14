@@ -31,6 +31,11 @@ export const ko = {
     yes: '예',
     no: '아니오',
     new: '새로 만들기',
+    moreResultsHint: "…더 있습니다. 입력하여 필터링하세요",
+    noMatch: "일치하는 항목 없음",
+    requestFailed: "요청 실패(HTTP {status})",
+    headerLineMissingColon: "콜론이 없습니다: {line}",
+    headerNameEmpty: "헤더 이름이 비어 있습니다: {line}",
     expand: '펼치기',
     collapse: '접기'
   },

@@ -1,3 +1,4 @@
+import { translate } from './i18n'
 import { formatInTimeZone } from './time'
 
 /**
@@ -82,13 +83,13 @@ export function parseHeaderLines(text: string): {
 
     const idx = line.indexOf(':')
     if (idx <= 0) {
-      errors.push(`缺少冒号：${line}`)
+      errors.push(translate('common.headerLineMissingColon', { line }))
       continue
     }
     const name = line.slice(0, idx).trim()
     const value = line.slice(idx + 1).trim()
     if (!name) {
-      errors.push(`请求头名称为空：${line}`)
+      errors.push(translate('common.headerNameEmpty', { line }))
       continue
     }
     headers[name] = value

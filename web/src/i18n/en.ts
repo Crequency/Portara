@@ -27,6 +27,11 @@ export const en = {
     yes: 'Yes',
     no: 'No',
     new: 'New',
+    moreResultsHint: "…more results — type to filter",
+    noMatch: "No matches",
+    requestFailed: "Request failed (HTTP {status})",
+    headerLineMissingColon: "Missing colon: {line}",
+    headerNameEmpty: "Empty header name: {line}",
     expand: 'Expand',
     collapse: 'Collapse'
   },
