@@ -402,6 +402,7 @@ export const ja = {
     webSessionCookieRequired: '先に Cookie を貼り付けてください'
   },
   keys: {
+    sub: '管理者は全キーを管理でき、オペレーターは自分のキーのみ表示されます',
     subAdmin: '管理者はすべてのキーを閲覧できます',
     subSelf: '自分の所有するキーのみ表示します',
     subSuffix: '呼び出し元は Authorization: Bearer <key> で /v1 にアクセスします',
@@ -441,7 +442,7 @@ export const ja = {
     issueTitle: 'キーを発行',
     editTitle: 'キーを編集',
     saveTitle: 'キーをすぐに保存してください',
-    onlyOnce: '「{name}」の平文キーは今回のみ表示されます。閉じると再度表示できません。紛失した場合はローテーションしてください。',
+    issuedKeyHint: '「{name}」の平文キーは以下のとおりです。後からキー一覧の「表示」で再取得できます（表示のたびに監査ログに記録されます）。漏えいが疑われる場合はすぐにローテーションしてください。',
     iSaved: '保存しました。閉じる',
     modelAllow: '許可するモデル',
     modelAllowHint: '空欄 = 制限なし。',

@@ -409,6 +409,7 @@ export const en = {
     webSessionCookieRequired: 'Paste a cookie first'
   },
   keys: {
+    sub: 'Admins manage every key; operators see only their own',
     subAdmin: 'Admins can see every key',
     subSelf: 'Showing only keys you own',
     subSuffix: 'Callers use Authorization: Bearer <key> against /v1',
@@ -448,7 +449,7 @@ export const en = {
     issueTitle: 'Issue key',
     editTitle: 'Edit key',
     saveTitle: 'Save this key now',
-    onlyOnce: 'The plaintext key for "{name}" is shown only once. Rotate if you lose it.',
+    issuedKeyHint: 'The plaintext key for "{name}" is below. You can retrieve it again later with "Reveal" in the key list — every reveal is written to the audit log. If you suspect a leak, rotate it now.',
     iSaved: "I've saved it, close",
     modelAllow: 'Allowed models',
     modelAllowHint: 'Empty = no restriction.',

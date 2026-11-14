@@ -411,6 +411,7 @@ export const ko = {
     webSessionCookieRequired: '먼저 Cookie를 붙여 넣으세요'
   },
   keys: {
+    sub: '관리자는 모든 키를 관리하고 운영자는 자신의 키만 봅니다',
     subAdmin: '관리자는 모든 키를 볼 수 있습니다',
     subSelf: '내 소유의 키만 표시됩니다',
     subSuffix: '호출자는 Authorization: Bearer <key>로 /v1에 접근합니다',
@@ -450,7 +451,7 @@ export const ko = {
     issueTitle: '키 발급',
     editTitle: '키 편집',
     saveTitle: '키를 즉시 저장하세요',
-    onlyOnce: '“{name}”의 평문 키는 이번 한 번만 표시되며, 닫은 뒤에는 다시 볼 수 없습니다. 분실하면 교체하세요.',
+    issuedKeyHint: '“{name}”의 평문 키는 아래와 같습니다. 나중에 키 목록의 「보기」로 다시 확인할 수 있으며, 확인할 때마다 감사 로그에 기록됩니다. 유출이 의심되면 즉시 교체하세요.',
     iSaved: '저장했습니다. 닫기',
     modelAllow: '허용 모델',
     modelAllowHint: '비워 두면 = 제한 없음.',
