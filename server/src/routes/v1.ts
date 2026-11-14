@@ -1427,10 +1427,10 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
       estimated: false,
       latencyMs: Date.now() - startedAt,
       ttftMs: null,
-      error: lastFailure || '上游不可达'
+      error: lastFailure || 'upstream_unreachable'
     })
     if (clientGone) return new Response(null, { status: 499 })
-    return openaiError(c, 504, lastFailure || '上游不可达', 'api_error', 'upstream_unreachable')
+    return openaiError(c, 504, lastFailure || 'upstream_unreachable', 'api_error', 'upstream_unreachable')
   }
 
   const sessionEcho = sessionEchoOf(upstreamHeaders?.session ?? null)
@@ -1601,7 +1601,7 @@ async function handleProxy(c: Context, restPath: string, opts: ProxyOptions) {
   if (!upstreamBody) {
     releaseSlotNow()
     void releaseReservationOnce()
-    return openaiError(c, 502, '上游返回了空的流式响应', 'api_error', 'empty_stream')
+    return openaiError(c, 502, 'upstream_empty_stream', 'api_error', 'empty_stream')
   }
 
   const [clientStream, scanStream] = upstreamBody.tee()
@@ -1716,7 +1716,7 @@ function decorateModel(
  */
 v1Routes.get('/route-info', async (c) => {
   const key = c.get('apiKey') as ApiKeyRow
-  if (!key) return openaiError(c, 401, '需要 API Key', 'authentication_error', 'missing_key')
+  if (!key) return openaiError(c, 401, 'api_key_required', 'authentication_error', 'missing_key')
 
   const routing = await getRoutingSettings()
   const headerSession = (c.req.header('x-portara-client-session') ?? '').trim()

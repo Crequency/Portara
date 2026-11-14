@@ -4,6 +4,7 @@ import { query } from './db.js'
 import { env } from './env.js'
 import { getSettings } from './services/settings.js'
 import { ApiError, errorResponse, openaiError } from './lib/http.js'
+import { defaultMessageOf } from './lib/errorCodes.js'
 import { redis } from './redis.js'
 import { auditRoutes } from './routes/audit.js'
 import { authRoutes } from './routes/auth.js'
@@ -44,14 +45,14 @@ export function createApp(): Hono {
     if (err instanceof HTTPException) {
       const status = err.status
       return isV1
-        ? openaiError(c, status, err.message || '请求失败', 'invalid_request_error', null)
-        : errorResponse(c, status, 'http_error', err.message || '请求失败')
+        ? openaiError(c, status, err.message || 'request_failed', 'invalid_request_error', null)
+        : errorResponse(c, status, 'http_error', err.message || 'request_failed')
     }
 
     console.error('[portara][error]', err)
     return isV1
-      ? openaiError(c, 500, '网关内部错误', 'api_error', 'internal_error')
-      : errorResponse(c, 500, 'internal_error', '服务器内部错误')
+      ? openaiError(c, 500, 'internal_error', 'api_error', 'internal_error')
+      : errorResponse(c, 500, 'internal_error', defaultMessageOf('internal_error'))
   })
 
   app.notFound((c) => {
@@ -59,7 +60,7 @@ export function createApp(): Hono {
       return openaiError(
         c,
         404,
-        `未知端点：${c.req.path}`,
+        'unknown_endpoint',
         'invalid_request_error',
         'unknown_endpoint'
       )

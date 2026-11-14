@@ -9,6 +9,7 @@
  * 一个账户最多一份会话（主键就是 account_id），账户被删时级联删除。
  */
 import { decryptSecret, encryptSecret } from '../lib/crypto.js'
+import type { ErrorCode } from '../lib/errorCodes.js'
 import { env } from '../env.js'
 import { one, query } from '../db.js'
 
@@ -108,23 +109,35 @@ export function normalizeCookieInput(input: string): string {
  *
  * 返回 `null` 表示通过，否则返回给人看的错误原因。
  */
-export function validateCookieText(cookieText: string): string | null {
+/**
+ * 校验粘贴进来的 Cookie 文本。
+ *
+ * 返回**结构化问题**（错误码 + 参数）而不是拼好的中文句子 —— 文案由前端按 code 查 i18n。
+ */
+export interface CookieTextProblem {
+  code: ErrorCode
+  params?: Record<string, string | number>
+}
+
+export function validateCookieText(cookieText: string): CookieTextProblem | null {
   const text = cookieText.trim()
-  if (text === '') return 'Cookie 不能为空'
+  if (text === '') return { code: 'cookie_text_empty' }
   if (text.length > MAX_COOKIE_TEXT) {
-    return `Cookie 太长（${text.length} 字符，上限 ${MAX_COOKIE_TEXT}）`
+    return { code: 'cookie_text_too_long', params: { length: text.length, max: MAX_COOKIE_TEXT } }
   }
   const parts = text.split(/[;\n\r]+/).map((s) => s.trim()).filter(Boolean)
-  if (parts.length === 0) return 'Cookie 不能为空'
+  if (parts.length === 0) return { code: 'cookie_text_empty' }
   for (const part of parts) {
     const eq = part.indexOf('=')
-    if (eq <= 0) return `Cookie 条目不是 name=value 形式：${part.slice(0, 40)}`
+    if (eq <= 0) return { code: 'cookie_entry_not_pair', params: { entry: part.slice(0, 40) } }
     const name = part.slice(0, eq).trim()
     if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
-      return `Cookie 名不合法：${name.slice(0, 40)}`
+      return { code: 'cookie_name_invalid', params: { name: name.slice(0, 40) } }
     }
     // 值里允许出现 =（base64 padding），但必须非空
-    if (part.slice(eq + 1).trim() === '') return `Cookie 条目「${name}」的值为空`
+    if (part.slice(eq + 1).trim() === '') {
+      return { code: 'cookie_value_empty', params: { name } }
+    }
   }
   return null
 }

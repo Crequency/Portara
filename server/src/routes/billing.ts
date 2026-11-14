@@ -47,7 +47,7 @@ billingRoutes.use('*', requireAuth)
 
 const uuidSchema = z
   .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, '非法 ID')
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'invalid_id')
 
 const planCreateSchema = z.object({
   name: z.string().trim().min(1, '套餐名不能为空').max(64),
@@ -201,7 +201,7 @@ billingRoutes.get('/plans', requireAdmin, async (c) => {
 billingRoutes.post('/plans', requireAdmin, async (c) => {
   const body = await parseJson(c, planCreateSchema)
   const exists = await one('select id from billing_plans where name = $1', [body.name])
-  if (exists) throw badRequest('套餐名已存在')
+  if (exists) throw badRequest('plan_name_taken')
 
   const row = await one<PlanRow>(
     `insert into billing_plans
@@ -230,14 +230,14 @@ billingRoutes.patch('/plans/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const body = await parseJson(c, planUpdateSchema)
   const target = await one<PlanRow>('select * from billing_plans where id = $1', [id])
-  if (!target) throw notFound('套餐不存在')
+  if (!target) throw notFound('plan_not_found')
 
   if (body.name && body.name !== target.name) {
     const dup = await one('select id from billing_plans where name = $1 and id <> $2', [
       body.name,
       id
     ])
-    if (dup) throw badRequest('套餐名已存在')
+    if (dup) throw badRequest('plan_name_taken')
   }
 
   const row = await one<PlanRow>(
@@ -271,10 +271,10 @@ billingRoutes.patch('/plans/:id', requireAdmin, async (c) => {
 billingRoutes.delete('/plans/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const target = await one<PlanRow>('select * from billing_plans where id = $1', [id])
-  if (!target) throw notFound('套餐不存在')
+  if (!target) throw notFound('plan_not_found')
   // 内置套餐由系统维护（Infinity / Free / Standard），删除会让语义与绑定关系失去锚点。
   if (target.built_in) {
-    throw new ApiError(409, 'built_in_plan', '内置套餐不允许删除')
+    throw new ApiError(409, 'built_in_plan', 'builtin_plan_undeletable')
   }
   // 先失效缓存再删：删除后 user_billing.plan_id 被置空，查不到绑定关系
   await invalidateUsersByPlan(id)
@@ -307,7 +307,7 @@ billingRoutes.put('/rates', requireAdmin, async (c) => {
 
   if (channelId) {
     const channel = await one('select id from channels where id = $1', [channelId])
-    if (!channel) throw badRequest('指定的渠道不存在')
+    if (!channel) throw badRequest('channel_referenced_missing')
   }
 
   /*
@@ -434,7 +434,7 @@ billingRoutes.get('/alias-rates', requireAdmin, async (c) => {
 billingRoutes.put('/alias-rates', requireAdmin, async (c) => {
   const body = await parseJson(c, aliasRateBodySchema)
   const exists = await one('select 1 from model_routes where alias = $1 limit 1', [body.alias])
-  if (!exists) throw badRequest('该别名在复杂均衡规则里不存在')
+  if (!exists) throw badRequest('lb_rule_alias_missing')
 
   const row = await one<AliasRateRow>(
     `insert into alias_rates (alias, currency, input_per_mtok, output_per_mtok, per_request, status, note)
@@ -472,7 +472,7 @@ billingRoutes.put('/alias-rates', requireAdmin, async (c) => {
 billingRoutes.delete('/alias-rates/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const target = await one<AliasRateRow>('select * from alias_rates where id = $1', [id])
-  if (!target) throw notFound('别名费率不存在')
+  if (!target) throw notFound('alias_rate_not_found')
   await query('delete from alias_rates where id = $1', [id])
   await bumpRateCacheVersion()
   await recordAudit(c, 'billing.alias_rate.delete', { type: 'alias_rate', id }, {
@@ -491,7 +491,7 @@ billingRoutes.post('/templates', requireAdmin, async (c) => {
   const body = await parseJson(c, templateCreateSchema)
   if (body.ownerUserId) {
     const owner = await one('select id from users where id = $1', [body.ownerUserId])
-    if (!owner) throw badRequest('指定模板归属的用户不存在')
+    if (!owner) throw badRequest('template_owner_missing')
   }
   const rules = uniqueRules(body.rules)
 
@@ -532,10 +532,10 @@ billingRoutes.patch('/templates/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const body = await parseJson(c, templateUpdateSchema)
   const target = await one<TemplateRow>('select * from limit_templates where id = $1', [id])
-  if (!target) throw notFound('模板不存在')
+  if (!target) throw notFound('template_not_found')
   if (body.ownerUserId) {
     const owner = await one('select id from users where id = $1', [body.ownerUserId])
-    if (!owner) throw badRequest('指定模板归属的用户不存在')
+    if (!owner) throw badRequest('template_owner_missing')
   }
 
   const client = await pool.connect()
@@ -587,7 +587,7 @@ billingRoutes.patch('/templates/:id', requireAdmin, async (c) => {
 billingRoutes.delete('/templates/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const target = await one<TemplateRow>('select * from limit_templates where id = $1', [id])
-  if (!target) throw notFound('模板不存在')
+  if (!target) throw notFound('template_not_found')
   // 先失效缓存再删：cascade 会把 user_limit_templates 一起清掉
   await invalidateUsersByTemplate(id)
   await query('delete from limit_templates where id = $1', [id])
@@ -662,7 +662,7 @@ billingRoutes.post('/my/templates', async (c) => {
     'select id from limit_templates where owner_user_id = $1 and name = $2',
     [user.id, body.name]
   )
-  if (dup) throw new ApiError(409, 'conflict', '模板名已存在')
+  if (dup) throw new ApiError(409, 'conflict', 'template_name_taken')
 
   const rules = uniqueRules(body.rules)
   const client = await pool.connect()
@@ -707,14 +707,14 @@ billingRoutes.patch('/my/templates/:id', async (c) => {
 
   const target = await one<TemplateRow>('select * from limit_templates where id = $1', [id])
   // 越权一律 404（不区分「不存在」与「别人的」），避免探测他人模板 id
-  if (!target || target.owner_user_id !== user.id) throw notFound('模板不存在')
+  if (!target || target.owner_user_id !== user.id) throw notFound('template_not_found')
 
   if (body.name && body.name !== target.name) {
     const dup = await one(
       'select id from limit_templates where owner_user_id = $1 and name = $2 and id <> $3',
       [user.id, body.name, id]
     )
-    if (dup) throw new ApiError(409, 'conflict', '模板名已存在')
+    if (dup) throw new ApiError(409, 'conflict', 'template_name_taken')
   }
 
   const client = await pool.connect()
@@ -758,7 +758,7 @@ billingRoutes.delete('/my/templates/:id', async (c) => {
   const user = c.get('user')
   const id = uuidSchema.parse(c.req.param('id'))
   const target = await one<TemplateRow>('select * from limit_templates where id = $1', [id])
-  if (!target || target.owner_user_id !== user.id) throw notFound('模板不存在')
+  if (!target || target.owner_user_id !== user.id) throw notFound('template_not_found')
 
   // 先失效缓存再删：cascade 会把 user_limit_templates 一起清掉
   await invalidateUsersByTemplate(id)
@@ -788,9 +788,9 @@ billingRoutes.put('/my/limits', async (c) => {
       'select id, owner_user_id from limit_templates where id = any($1::uuid[])',
       [ids]
     )
-    if (found.length !== ids.length) throw badRequest('存在无效的模板 id')
+    if (found.length !== ids.length) throw badRequest('invalid_template_ids')
     if (found.some((t) => t.owner_user_id !== null && t.owner_user_id !== user.id)) {
-      throw badRequest('只能套用自己的模板或全局模板')
+      throw badRequest('template_scope_forbidden')
     }
   }
 
@@ -841,7 +841,7 @@ billingRoutes.post('/users/:id/templates', requireAdmin, async (c) => {
     z.object({ templateIds: z.array(uuidSchema).default([]) })
   )
   const user = await one('select id from users where id = $1', [userId])
-  if (!user) throw notFound('用户不存在')
+  if (!user) throw notFound('user_not_found')
 
   const ids = [...new Set(body.templateIds)]
   if (ids.length > 0) {
@@ -849,7 +849,7 @@ billingRoutes.post('/users/:id/templates', requireAdmin, async (c) => {
       'select id from limit_templates where id = any($1::uuid[])',
       [ids]
     )
-    if (found.length !== ids.length) throw badRequest('存在无效的模板 id')
+    if (found.length !== ids.length) throw badRequest('invalid_template_ids')
   }
 
   const client = await pool.connect()
@@ -896,7 +896,7 @@ billingRoutes.post('/users/bind-default', requireAdmin, async (c) => {
     `select * from billing_plans where name = 'Free' and status = 'active'`
   )
   if (!plan) {
-    throw badRequest('内置 Free 套餐不存在或已停用，请先执行迁移 024')
+    throw badRequest('builtin_free_plan_missing')
   }
 
   const targets = await query<{ id: string }>(
@@ -1015,16 +1015,16 @@ billingRoutes.patch('/users/:id', requireAdmin, async (c) => {
     })
   )
   if (body.planId === undefined && !body.adjust) {
-    throw badRequest('至少提供 planId 或 adjust')
+    throw badRequest('plan_or_adjust_required')
   }
 
   const user = await one<UserRow>('select * from users where id = $1', [userId])
-  if (!user) throw notFound('用户不存在')
+  if (!user) throw notFound('user_not_found')
 
   if (body.planId !== undefined) {
     if (body.planId) {
       const plan = await one('select id from billing_plans where id = $1', [body.planId])
-      if (!plan) throw badRequest('指定的套餐不存在')
+      if (!plan) throw badRequest('plan_referenced_missing')
     }
     await setUserPlan(userId, body.planId)
     await recordAudit(c, 'billing.user.plan', { type: 'user', id: userId }, {

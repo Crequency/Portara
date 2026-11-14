@@ -105,7 +105,7 @@ export async function getUsageSnapshot(
   opts: { force?: boolean } = {}
 ): Promise<UsageSnapshot> {
   const ch = await one<ChannelRow>('select * from channels where id = $1', [channelId])
-  if (!ch) throw new Error('渠道不存在')
+  if (!ch) throw new Error('channel_not_found')
 
   const adapter = getUsageAdapter(ch.usage_adapter)
   if (!adapter) {

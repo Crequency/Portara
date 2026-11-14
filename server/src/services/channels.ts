@@ -31,7 +31,7 @@ export function tryDecryptKey(cipher: string | null | undefined): string | null 
 /** 同上，但解密失败直接抛 400（控制面入口用） */
 export function decryptKey(cipher: string | null | undefined): string {
   const key = tryDecryptKey(cipher)
-  if (key === null) throw badRequest('该渠道的密钥无法解密，请重新填写')
+  if (key === null) throw badRequest('channel_secret_undecryptable')
   return key
 }
 

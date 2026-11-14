@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { one, pool, query } from '../db.js'
 import { ApiError, badRequest, notFound, parseJson } from '../lib/http.js'
+import { defaultMessageOf, fillMessage } from '../lib/errorCodes.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import {
@@ -18,7 +19,7 @@ modelRouteRoutes.use('*', requireAuth)
 
 const uuidSchema = z
   .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, '非法 ID')
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'invalid_id')
 
 /**
  * 模型 id 允许：字母数字与 . _ : @ + - ，可含 `/` 分段（如 opencode-go/deepseek-flash）。
@@ -50,7 +51,7 @@ async function loadRoute(id: string): Promise<ModelRouteRow | null> {
 
 async function assertChannel(channelId: string): Promise<void> {
   const ch = await one('select id from channels where id = $1', [channelId])
-  if (!ch) throw badRequest('指定的渠道不存在')
+  if (!ch) throw badRequest('channel_referenced_missing')
 }
 
 // ---------------------------------------------------------------- 查询
@@ -135,7 +136,7 @@ modelRouteRoutes.patch('/:id', requireAdmin, async (c) => {
   const body = await parseJson(c, updateSchema)
 
   const current = await loadRoute(id)
-  if (!current) throw notFound('映射不存在')
+  if (!current) throw notFound('mapping_not_found')
 
   const row = await one<ModelRouteRow>(
     `update model_routes set
@@ -162,7 +163,7 @@ modelRouteRoutes.patch('/:id', requireAdmin, async (c) => {
 modelRouteRoutes.delete('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await loadRoute(id)
-  if (!current) throw notFound('映射不存在')
+  if (!current) throw notFound('mapping_not_found')
 
   await query('delete from model_routes where id = $1', [id])
   await recordAudit(c, 'model_route.delete', { type: 'model_route', id }, {
@@ -248,7 +249,7 @@ modelRouteRoutes.post('/purge', requireAdmin, async (c) => {
     [alias]
   )
   const removed = Number(rows[0]?.count ?? '0')
-  if (removed === 0) throw notFound('该模型 id 没有任何映射')
+  if (removed === 0) throw notFound('model_id_unmapped')
 
   await query('delete from model_routes where alias = $1', [alias])
   await recordAudit(c, 'model_route.purge', { type: 'model_route', id: alias }, { removed })
@@ -332,19 +333,21 @@ modelRouteRoutes.post('/import', requireAdmin, async (c) => {
 
   const flattened = flattenJsonMapping(body.mapping as never)
   if (flattened.errors.length > 0) {
-    throw badRequest('JSON 结构有问题', { issues: flattened.errors })
+    throw badRequest('invalid_mapping_json', { issues: flattened.errors })
   }
   if (flattened.routes.length === 0) {
-    throw badRequest('JSON 里没有任何映射')
+    throw badRequest('empty_mapping_json')
   }
 
   // 别名格式校验（键来自 JSON，必须逐个校验）
   for (const r of flattened.routes) {
     const parsed = aliasSchema.safeParse(r.alias)
     if (!parsed.success) {
-      throw badRequest(`模型 ID 非法：${r.alias}`, {
-        issues: [parsed.error.issues[0]?.message ?? '格式错误']
-      })
+      throw badRequest(
+        'invalid_model_id',
+        { issues: [parsed.error.issues[0]?.message ?? 'invalid_format'] },
+        { model: r.alias }
+      )
     }
   }
 
@@ -355,10 +358,10 @@ modelRouteRoutes.post('/import', requireAdmin, async (c) => {
   )
 
   if (unknown.length > 0) {
-    throw badRequest('引用了不存在的渠道', { unknown, available })
+    throw badRequest('mapping_channel_missing', { unknown, available })
   }
   if (duplicates.length > 0) {
-    throw badRequest('存在重复的映射目标', { issues: duplicates })
+    throw badRequest('duplicate_mapping_target', { issues: duplicates })
   }
 
   let removed = 0
@@ -379,9 +382,10 @@ modelRouteRoutes.post('/import', requireAdmin, async (c) => {
     if (existing > 0 && body.acknowledgeRemove !== existing) {
       throw new ApiError(
         409,
-        'replace_needs_acknowledge',
-        `替换全部会删除现有 ${existing} 条映射。请在请求中带上 acknowledgeRemove=${existing} 确认。`,
-        { existing }
+        'mapping_replace_needs_ack',
+        fillMessage(defaultMessageOf('mapping_replace_needs_ack'), { count: existing }),
+        { existing },
+        { count: existing }
       )
     }
   }

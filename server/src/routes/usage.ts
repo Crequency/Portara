@@ -46,7 +46,7 @@ usageRoutes.get('/', async (c) => {
     return openaiError(
       c,
       403,
-      '该密钥没有读取余额的权限，请在管理面板的「API 密钥」中开启',
+      'key_no_usage_permission',
       'permission_error',
       'usage_not_allowed'
     )
@@ -57,7 +57,7 @@ usageRoutes.get('/', async (c) => {
     return openaiError(
       c,
       403,
-      '该密钥没有强制刷新余额的权限',
+      'key_no_refresh_permission',
       'permission_error',
       'usage_refresh_not_allowed'
     )
@@ -85,7 +85,7 @@ usageRoutes.get('/:provider', async (c) => {
     return openaiError(
       c,
       403,
-      '该密钥没有读取余额的权限，请在管理面板的「API 密钥」中开启',
+      'key_no_usage_permission',
       'permission_error',
       'usage_not_allowed'
     )
@@ -96,7 +96,7 @@ usageRoutes.get('/:provider', async (c) => {
     return openaiError(
       c,
       400,
-      `provider 必须是渠道 id（uuid），收到「${provider}」`,
+      'provider_must_be_channel_uuid',
       'invalid_request_error',
       'invalid_provider'
     )
@@ -106,7 +106,7 @@ usageRoutes.get('/:provider', async (c) => {
     return openaiError(
       c,
       403,
-      '该密钥不在这个渠道的可见范围内',
+      'key_channel_not_visible',
       'permission_error',
       'usage_channel_not_allowed'
     )
@@ -117,7 +117,7 @@ usageRoutes.get('/:provider', async (c) => {
     return openaiError(
       c,
       403,
-      '该密钥没有强制刷新余额的权限',
+      'key_no_refresh_permission',
       'permission_error',
       'usage_refresh_not_allowed'
     )
@@ -130,8 +130,8 @@ usageRoutes.get('/:provider', async (c) => {
     return c.json(snapshot)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes('渠道不存在')) {
-      return openaiError(c, 404, '渠道不存在', 'invalid_request_error', 'channel_not_found')
+    if (msg.includes('channel_not_found')) {
+      return openaiError(c, 404, 'channel_not_found', 'invalid_request_error', 'channel_not_found')
     }
     throw err
   }
