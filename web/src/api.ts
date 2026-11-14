@@ -4,7 +4,9 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
-    public readonly code?: string
+    public readonly code?: string,
+    /** 消息模板参数（{name} / {count} 这类），用于按 code 本地化后插值 */
+    public readonly params?: Record<string, string | number>
   ) {
     super(message)
     this.name = 'ApiError'
@@ -110,12 +112,17 @@ async function request<T>(
       sessionExpiredHandler?.()
     }
 
-    const errObj = (data as { error?: { message?: string; code?: string } } | null)?.error
+    const errObj = (
+      data as {
+        error?: { message?: string; code?: string; params?: Record<string, string | number> }
+      } | null
+    )?.error
     throw new ApiError(
       res.status,
       // 服务端通常已经给了人话；这条只是「连 message 都没有」时的兜底，同样要走 i18n
       errObj?.message ?? translate('common.requestFailed', { status: res.status }),
-      errObj?.code
+      errObj?.code,
+      errObj?.params
     )
   }
 

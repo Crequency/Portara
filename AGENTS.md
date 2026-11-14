@@ -47,6 +47,34 @@
 
 性能、故障、竞态这类结论必须附上实测或测试；排查未果就如实说「未查明」。
 
+## 铁律 6 · 后端错误必须带 code，文案在前端 i18n（用户明确要求，2026-11-15）
+
+> 原话：「P2 选择方案 A，一步到位，且在项目内 AGENTS.md 中记录，之后新增、修改任何
+> 后端报错时都返回 code 且同步更新 i18n」
+
+**规则**：
+
+1. 任何返回给调用方的错误**必须**带稳定的 `code`（snake_case），前端据此查
+   `web/src/i18n/*.ts` 的 `errors.<code>` 得到本地化文案。
+2. 新增错误码时，**同一次提交**里完成三件事：
+   - `server/src/lib/errorCodes.ts` 的 `ERROR_MESSAGES` 加一条（中文默认消息，
+     用于服务端日志与前端兜底）
+   - 七个语言文件（`zh/en/ja/ko/es/fr/th`）各加 `errors.<code>`
+   - 如果消息里有变量，用 `{name}` 占位，并通过 `params` 传值（见
+     `ApiError` / `badRequest` / `notFound` / `forbidden` / `unauthorized` / `openaiError` 的签名）
+3. **不得**把中文句子直接当错误消息返回 —— 那会让非中文用户看到中文，
+   也让文案散落在后端无法统一维护。校验：
+
+```bash
+# 期望无输出（注释与 extra.issues 明细除外）
+grep -rnE "(badRequest|notFound|forbidden|unauthorized|openaiError)\\([^)]*'[^']*[一-龥]" server/src
+```
+
+4. 前端展示统一走 `errorText()`（`web/src/error.ts`）：按 code 查 i18n，
+   查不到才回退服务端 message。
+5. `extra.issues` 这类**字段级诊断明细**不进错误码体系（前端不展示），
+   可以继续用原始文案。
+
 ---
 
 > 决策编号（D-xxx）对应的记录不随仓库分发，由维护者单独保管。

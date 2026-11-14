@@ -27,21 +27,21 @@ declare module 'hono' {
 
 export const requireAuth: MiddlewareHandler = async (c, next) => {
   const token = getCookie(c, SESSION_COOKIE)
-  if (!token) throw unauthorized('请先登录')
+  if (!token) throw unauthorized('login_required')
 
   let payload: Record<string, unknown>
   try {
     payload = (await verify(token, env.sessionSecret, 'HS256')) as Record<string, unknown>
   } catch {
-    throw unauthorized('会话无效或已过期')
+    throw unauthorized('session_expired')
   }
 
   const userId = typeof payload.sub === 'string' ? payload.sub : ''
-  if (!userId) throw unauthorized('会话无效')
+  if (!userId) throw unauthorized('session_invalid')
 
   const user = await one<UserRow>('select * from users where id = $1', [userId])
-  if (!user) throw unauthorized('用户不存在')
-  if (user.status !== 'active') throw forbidden('账号已被禁用')
+  if (!user) throw unauthorized('user_not_found')
+  if (user.status !== 'active') throw forbidden('user_disabled')
 
   c.set('user', user)
   await next()
@@ -49,7 +49,7 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
 
 export const requireAdmin: MiddlewareHandler = async (c, next) => {
   const user = c.get('user')
-  if (!user || user.role !== 'admin') throw forbidden('需要管理员权限')
+  if (!user || user.role !== 'admin') throw forbidden('admin_required')
   await next()
 }
 
@@ -70,7 +70,7 @@ export const apiKeyAuth: MiddlewareHandler = async (c, next) => {
   )
 
   if (!token) {
-    throw unauthorized('缺少 API Key：请在 Authorization 头使用 Bearer sk-portara-…')
+    throw unauthorized('api_key_missing')
   }
 
   // 只存哈希 → 用哈希直查（唯一索引），同时带出 owner 的状态
@@ -82,11 +82,11 @@ export const apiKeyAuth: MiddlewareHandler = async (c, next) => {
       where k.key_hash = $1`,
     [hash]
   )
-  if (!key) throw unauthorized('API Key 无效')
+  if (!key) throw unauthorized('api_key_invalid')
 
-  if (key.status !== 'active') throw forbidden('API Key 已被禁用')
+  if (key.status !== 'active') throw forbidden('api_key_disabled')
   if (key.expires_at && new Date(key.expires_at).getTime() < Date.now()) {
-    throw forbidden('API Key 已过期')
+    throw forbidden('api_key_expired')
   }
 
   /*
@@ -98,13 +98,13 @@ export const apiKeyAuth: MiddlewareHandler = async (c, next) => {
    * 顺序上先判 user_id：它为空时 owner_status 也必然为空，不能误报成"已删除"。
    */
   if (!key.user_id) {
-    throw forbidden('该 Key 无归属用户，请联系管理员重新签发')
+    throw forbidden('api_key_no_owner')
   }
   if (!key.owner_status) {
-    throw unauthorized('API Key 的所属用户已被删除')
+    throw unauthorized('api_key_owner_deleted')
   }
   if (key.owner_status !== 'active') {
-    throw forbidden('API Key 的所属用户已被禁用')
+    throw forbidden('api_key_owner_disabled')
   }
 
   c.set('apiKey', key)

@@ -4,6 +4,7 @@ import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { encryptSecret, maskSecret } from '../lib/crypto.js'
 import { ApiError, badRequest, clientIp, notFound, parseJson } from '../lib/http.js'
+import { defaultMessageOf, fillMessage } from '../lib/errorCodes.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { fireAndForgetLog } from '../services/logger.js'
@@ -51,7 +52,7 @@ channelRoutes.use('*', requireAuth)
 
 const uuidSchema = z
   .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, '非法 ID')
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'invalid_id')
 
 const httpUrl = z
   .string()
@@ -202,7 +203,7 @@ channelRoutes.post('/fetch-models', requireAdmin, async (c) => {
 channelRoutes.post('/:id/fetch-models', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!ch) throw notFound('渠道不存在')
+  if (!ch) throw notFound('channel_not_found')
 
   const primary = await primaryAccount(ch.id)
   const upstreamKey = decryptKey(primary?.key_cipher)
@@ -322,11 +323,11 @@ function validateChannelInput(input: {
   modelOverrides?: Record<string, { protocol?: string; baseUrl?: string }>
 }) {
   if (input.vendor !== undefined && !isVendorPreset(input.vendor)) {
-    throw badRequest(`不支持的厂商兼容选项：${input.vendor}`)
+    throw badRequest('unsupported_vendor_preset', undefined, { vendor: input.vendor })
   }
   if (input.extraHeaders !== undefined) {
     const { errors } = sanitizeExtraHeaders(input.extraHeaders)
-    if (errors.length > 0) throw badRequest('固定请求头有问题', { issues: errors })
+    if (errors.length > 0) throw badRequest('invalid_extra_headers', { issues: errors })
   }
   if (input.modelOverrides !== undefined) {
     const issues: string[] = []
@@ -336,7 +337,7 @@ function validateChannelInput(input: {
         issues.push(`模型「${model}」的 Base URL 必须以 http:// 或 https:// 开头`)
       }
     }
-    if (issues.length > 0) throw badRequest('模型覆盖配置有问题', { issues })
+    if (issues.length > 0) throw badRequest('invalid_model_override', { issues })
   }
 }
 
@@ -385,7 +386,7 @@ channelRoutes.get('/', requireAdmin, async (c) => {
 channelRoutes.get('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!ch) throw notFound('渠道不存在')
+  if (!ch) throw notFound('channel_not_found')
   const accounts = await accountDtos(ch.id)
   return c.json({ channel: toChannelDto(ch, accounts[0]?.apiKeyMasked ?? '', accounts) })
 })
@@ -396,7 +397,7 @@ channelRoutes.post('/', requireAdmin, async (c) => {
   const body = withCreateDefaults(raw)
 
   const exists = await one('select id from channels where name = $1', [body.name])
-  if (exists) throw badRequest('渠道名称已存在')
+  if (exists) throw badRequest('channel_name_taken')
 
   const cipher = body.apiKey
     ? encryptSecret(body.apiKey, env.masterKey)
@@ -457,14 +458,14 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
   validateChannelInput(body)
 
   const current = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!current) throw notFound('渠道不存在')
+  if (!current) throw notFound('channel_not_found')
 
   if (body.name && body.name !== current.name) {
     const dup = await one('select id from channels where name = $1 and id <> $2', [
       body.name,
       id
     ])
-    if (dup) throw badRequest('渠道名称已存在')
+    if (dup) throw badRequest('channel_name_taken')
   }
 
   let cipher = current.api_key_cipher
@@ -560,7 +561,7 @@ channelRoutes.patch('/:id', requireAdmin, async (c) => {
 channelRoutes.delete('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!current) throw notFound('渠道不存在')
+  if (!current) throw notFound('channel_not_found')
   await query('delete from channels where id = $1', [id])
 
   await recordAudit(c, 'channel.delete', { type: 'channel', id }, { name: current.name })
@@ -576,11 +577,11 @@ channelRoutes.delete('/:id', requireAdmin, async (c) => {
 channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!ch) throw notFound('渠道不存在')
+  if (!ch) throw notFound('channel_not_found')
 
   const primary = await primaryAccount(ch.id)
   if (!primary?.key_cipher) {
-    throw new ApiError(409, 'channel_key_empty', '该渠道没有配置上游密钥')
+    throw new ApiError(409, 'channel_key_empty', 'channel_no_secret')
   }
 
   const key = tryDecryptKey(primary.key_cipher)
@@ -588,7 +589,7 @@ channelRoutes.get('/:id/reveal', requireAdmin, async (c) => {
     throw new ApiError(
       500,
       'channel_key_decrypt_failed',
-      '密钥解密失败：主密钥可能已变更（PORTARA_MASTER_KEY）'
+      'secret_decrypt_failed'
     )
   }
 
@@ -616,7 +617,7 @@ channelRoutes.get('/:id/usage', requireAdmin, async (c) => {
 channelRoutes.post('/:id/test', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const ch = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!ch) throw notFound('渠道不存在')
+  if (!ch) throw notFound('channel_not_found')
 
   const record = async (latencyMs: number, ok: boolean) => {
     await query(
@@ -681,13 +682,13 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
     throw new ApiError(
       403,
       'direct_test_disabled',
-      '系统设置中已关闭「允许直连上游测试」，如需使用请在系统设置里打开'
+      'direct_test_disabled'
     )
   }
 
   const id = uuidSchema.parse(c.req.param('id'))
   const found = await one<ChannelRow>('select * from channels where id = $1', [id])
-  if (!found) throw notFound('渠道不存在')
+  if (!found) throw notFound('channel_not_found')
   /*
    * 换个名字存一次：下面的 `attempt()` 是闭包，而在闭包里 TS 不会沿用
    * 「上面已判过空」这条收窄结论（`ch` 会被重新视作 null）。
@@ -698,7 +699,7 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
   const raw = await c.req.text()
   const payload = parseJsonSafe(raw) as Record<string, unknown> | null
   if (!payload || typeof payload !== 'object') {
-    throw badRequest('请求体不是合法 JSON')
+    throw badRequest('invalid_json_body')
   }
 
   const model = typeof payload.model === 'string' ? payload.model : ''
@@ -727,14 +728,14 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
   if (requested.length > 0) {
     for (const aid of requested) {
       const acc = await getAccount(ch.id, aid)
-      if (!acc) throw notFound('账户不存在：' + aid)
+      if (!acc) throw notFound('account_not_found_named', { name: aid })
       accounts.push(acc)
     }
   } else {
     const primary = await primaryAccount(ch.id)
     if (primary) accounts.push(primary)
   }
-  if (accounts.length === 0) throw badRequest('该渠道还没有配置任何上游账户')
+  if (accounts.length === 0) throw badRequest('channel_no_accounts')
 
   /**
    * 直连测试同样要**按有效协议**发请求 —— 否则给 Anthropic 协议的模型发
@@ -1020,7 +1021,9 @@ channelRoutes.post('/:id/chat', requireAdmin, async (c) => {
 
   throw new ApiError(
     502,
-    'upstream_all_failed',
-    `所选账户全部失败：${skipped.join('；')}`
+    'all_selected_accounts_failed',
+    fillMessage(defaultMessageOf('all_selected_accounts_failed'), { detail: skipped.join('；') }),
+    undefined,
+    { detail: skipped.join('；') }
   )
 })

@@ -75,13 +75,15 @@ function accountDtoOf(a: ChannelAccountRow) {
 
 async function channelOf(channelId: string): Promise<ChannelRow> {
   const ch = await one<ChannelRow>('select * from channels where id = $1', [channelId])
-  if (!ch) throw notFound('渠道不存在')
+  if (!ch) throw notFound('channel_not_found')
   return ch
 }
 
 /** 适配器必须存在（留空 = 继承渠道） */
 function assertAdapter(adapter: string | undefined): void {
-  if (adapter && !getUsageAdapter(adapter)) throw badRequest(`未知的余额适配器「${adapter}」`)
+  if (adapter && !getUsageAdapter(adapter)) {
+    throw badRequest('unknown_usage_adapter', undefined, { adapter })
+  }
 }
 
 channelAccountRoutes.get('/:id/accounts', requireAdmin, async (c) => {
@@ -98,11 +100,11 @@ channelAccountRoutes.post('/:id/accounts', requireAdmin, async (c) => {
   assertAdapter(body.usageAdapter)
 
   if ((await countAccounts(channelId)) >= MAX_ACCOUNTS) {
-    throw badRequest(`每个渠道最多 ${MAX_ACCOUNTS} 个账户`)
+    throw badRequest('max_accounts_per_channel', undefined, { count: MAX_ACCOUNTS })
   }
 
   const row = await createAccount(channelId, {
-    name: body.name?.trim() || '备用账户',
+    name: body.name?.trim() || 'fallback_account',
     keyCipher: body.apiKey ? encryptSecret(body.apiKey, env.masterKey) : '',
     status: body.status,
     priority: body.priority,
@@ -131,7 +133,7 @@ channelAccountRoutes.patch('/:id/accounts/:aid', requireAdmin, async (c) => {
   assertAdapter(body.usageAdapter)
 
   const current = await getAccount(channelId, accountId)
-  if (!current) throw notFound('账户不存在')
+  if (!current) throw notFound('account_not_found')
 
   // 密钥：显式清除 > 提供了新值 > 保持不变
   let keyCipher: string | undefined
@@ -148,7 +150,7 @@ channelAccountRoutes.patch('/:id/accounts/:aid', requireAdmin, async (c) => {
     usageAdapter: body.usageAdapter,
     usageUrl: body.usageUrl
   })
-  if (!row) throw notFound('账户不存在')
+  if (!row) throw notFound('account_not_found')
   await mirrorChannelKey(channelId)
 
   await recordAudit(c, 'channel_account.update', { type: 'channel', id: channelId }, {
@@ -166,14 +168,14 @@ channelAccountRoutes.delete('/:id/accounts/:aid', requireAdmin, async (c) => {
   const ch = await channelOf(channelId)
 
   const target = await getAccount(channelId, accountId)
-  if (!target) throw notFound('账户不存在')
+  if (!target) throw notFound('account_not_found')
 
   // 不变式：任何渠道至少一个账户 —— 否则请求路径会出现"没有可用账户"
   if ((await countAccounts(channelId)) <= 1) {
     throw new ApiError(
       409,
       'last_account',
-      '这是该渠道唯一的账户，不能删除（可先新建一个再删这个）'
+      'last_account_undeletable'
     )
   }
 
@@ -195,7 +197,7 @@ channelAccountRoutes.post('/:id/accounts/:aid/reset-health', requireAdmin, async
   await channelOf(channelId)
 
   const target = await getAccount(channelId, accountId)
-  if (!target) throw notFound('账户不存在')
+  if (!target) throw notFound('account_not_found')
   await markAccountSuccess(accountId)
 
   const row = await getAccount(channelId, accountId)
@@ -209,9 +211,9 @@ channelAccountRoutes.get('/:id/accounts/:aid/reveal', requireAdmin, async (c) =>
   const ch = await channelOf(channelId)
 
   const account = await getAccount(channelId, accountId)
-  if (!account) throw notFound('账户不存在')
+  if (!account) throw notFound('account_not_found')
   if (!account.key_cipher) {
-    throw new ApiError(409, 'account_key_empty', '该账户没有配置密钥')
+    throw new ApiError(409, 'account_key_empty', 'account_no_secret')
   }
 
   const key = tryDecryptKey(account.key_cipher)
@@ -219,7 +221,7 @@ channelAccountRoutes.get('/:id/accounts/:aid/reveal', requireAdmin, async (c) =>
     throw new ApiError(
       500,
       'account_key_decrypt_failed',
-      '密钥解密失败：主密钥可能已变更（PORTARA_MASTER_KEY）'
+      'secret_decrypt_failed'
     )
   }
 
@@ -247,7 +249,7 @@ channelAccountRoutes.get('/:id/accounts/:aid/web-session', requireAdmin, async (
   const ch = await channelOf(channelId)
 
   const account = await getAccount(channelId, accountId)
-  if (!account) throw notFound('账户不存在')
+  if (!account) throw notFound('account_not_found')
 
   const status = await getWebSessionStatus(accountId)
   const snapshotInfo = await loadWebSnapshot(accountId)
@@ -297,15 +299,15 @@ channelAccountRoutes.post('/:id/accounts/:aid/web-session', requireAdmin, async 
   const cookieText = bundle.cookie
   const hasCookie = cookieText.trim() !== ''
   const hasSnapshot = bundle.snapshot !== null
-  if (!hasCookie && !hasSnapshot) throw badRequest('请粘贴 Cookie、cURL 命令，或控制台脚本输出的快照 JSON')
+  if (!hasCookie && !hasSnapshot) throw badRequest('cookie_or_curl_required')
 
   if (hasCookie) {
     const problem = validateCookieText(cookieText)
-    if (problem) throw badRequest(problem)
+    if (problem) throw badRequest(problem.code, undefined, problem.params)
   }
 
   const account = await getAccount(channelId, accountId)
-  if (!account) throw notFound('账户不存在')
+  if (!account) throw notFound('account_not_found')
 
   const effectiveAdapter = account.usage_adapter || ch.usage_adapter
   /*
@@ -369,7 +371,7 @@ channelAccountRoutes.delete('/:id/accounts/:aid/web-session', requireAdmin, asyn
   const ch = await channelOf(channelId)
 
   const account = await getAccount(channelId, accountId)
-  if (!account) throw notFound('账户不存在')
+  if (!account) throw notFound('account_not_found')
 
   await clearWebSession(accountId)
   await invalidateUsageCache(channelId)

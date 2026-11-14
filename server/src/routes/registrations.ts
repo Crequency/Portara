@@ -51,13 +51,13 @@ const listStatusSchema = z.enum(['pending', 'approved', 'rejected', 'all'])
 
 function parseId(raw: string): string {
   const result = uuidSchema.safeParse(raw)
-  if (!result.success) throw badRequest('非法 ID')
+  if (!result.success) throw badRequest('invalid_id')
   return result.data
 }
 
 /** 只把 pending 视为「可审批」；已处理过的申请一律 409，避免重复建号。 */
 function conflictAlreadyReviewed(status: string): ApiError {
-  return new ApiError(409, 'conflict', '该申请已被处理', { status })
+  return new ApiError(409, 'conflict', 'registration_already_handled', { status })
 }
 
 // ------------------------------------------------------------ 公开：提交申请
@@ -66,7 +66,7 @@ registrationRoutes.post('/register', async (c) => {
   const ip = clientIp(c)
   const limited = await checkRateLimit(`register:${ip}`, REGISTER_RPM)
   if (!limited.ok) {
-    throw new ApiError(429, 'rate_limited', '注册申请提交过于频繁，请稍后再试', {
+    throw new ApiError(429, 'rate_limited', 'registration_rate_limited', {
       retryAfterSec: limited.retryAfterSec
     })
   }
@@ -78,7 +78,7 @@ registrationRoutes.post('/register', async (c) => {
   const existingUser = await one<{ id: string }>('select id from users where username = $1', [
     username
   ])
-  if (existingUser) throw new ApiError(409, 'conflict', '用户名已被占用')
+  if (existingUser) throw new ApiError(409, 'conflict', 'username_taken')
 
   // 已有待审批申请 → 409（不允许重复排队）
   const pending = await one<{ id: string }>(
@@ -86,7 +86,7 @@ registrationRoutes.post('/register', async (c) => {
       where username = $1 and status = 'pending'`,
     [username]
   )
-  if (pending) throw new ApiError(409, 'conflict', '该用户名已有待审批的注册申请')
+  if (pending) throw new ApiError(409, 'conflict', 'registration_pending')
 
   let row: RegistrationApplicationRow | null
   try {
@@ -106,7 +106,7 @@ registrationRoutes.post('/register', async (c) => {
   } catch (err) {
     // 并发提交撞上部分唯一索引：同样是「已有待审批申请」
     if ((err as { code?: string }).code === '23505') {
-      throw new ApiError(409, 'conflict', '该用户名已有待审批的注册申请')
+      throw new ApiError(409, 'conflict', 'registration_pending')
     }
     throw err
   }
@@ -119,7 +119,7 @@ registrationRoutes.post('/register', async (c) => {
 registrationRoutes.get('/registrations', requireAuth, requireAdmin, async (c) => {
   const parsed = listStatusSchema.safeParse(c.req.query('status') ?? 'all')
   if (!parsed.success) {
-    throw badRequest('status 只能是 pending / approved / rejected / all')
+    throw badRequest('invalid_status_filter')
   }
   const status = parsed.data
 
@@ -174,7 +174,7 @@ registrationRoutes.post(
         [id]
       )
       const application = locked.rows[0]
-      if (!application) throw notFound('注册申请不存在')
+      if (!application) throw notFound('registration_not_found')
       if (application.status !== 'pending') {
         throw conflictAlreadyReviewed(application.status)
       }
@@ -183,7 +183,7 @@ registrationRoutes.post(
         application.username
       ])
       if ((dup.rowCount ?? 0) > 0) {
-        throw new ApiError(409, 'conflict', '用户名已被占用')
+        throw new ApiError(409, 'conflict', 'username_taken')
       }
 
       // 默认角色 operator、状态 active —— 与用户管理建号的默认值一致
@@ -224,7 +224,7 @@ registrationRoutes.post(
       }
       // 并发建号撞上 users.username 唯一约束
       if ((err as { code?: string }).code === '23505') {
-        throw new ApiError(409, 'conflict', '用户名已被占用')
+        throw new ApiError(409, 'conflict', 'username_taken')
       }
       throw err
     } finally {
@@ -251,7 +251,7 @@ registrationRoutes.post(
     }
     const body = rejectSchema.safeParse(raw)
     if (!body.success) {
-      throw badRequest('参数校验失败', {
+      throw badRequest('invalid_params', {
         issues: body.error.issues.map((i) => ({
           path: i.path.join('.'),
           message: i.message
@@ -276,7 +276,7 @@ registrationRoutes.post(
         'select * from registration_applications where id = $1',
         [id]
       )
-      if (!existing) throw notFound('注册申请不存在')
+      if (!existing) throw notFound('registration_not_found')
       throw conflictAlreadyReviewed(existing.status)
     }
 

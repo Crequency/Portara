@@ -36,7 +36,7 @@ userRoutes.post('/', requireAdmin, async (c) => {
   const body = await parseJson(c, createSchema)
 
   const exists = await one('select id from users where username = $1', [body.username])
-  if (exists) throw badRequest('用户名已存在')
+  if (exists) throw badRequest('user_name_exists')
 
   const row = await one<UserRow>(
     `insert into users (username, display_name, password_hash, role)
@@ -51,7 +51,7 @@ userRoutes.patch('/:id', requireAdmin, async (c) => {
   const body = await parseJson(c, updateSchema)
 
   const target = await one<UserRow>('select * from users where id = $1', [id])
-  if (!target) throw notFound('用户不存在')
+  if (!target) throw notFound('user_not_found')
 
   // 不允许把最后一个可用管理员降级或禁用
   if (
@@ -64,12 +64,12 @@ userRoutes.patch('/:id', requireAdmin, async (c) => {
       [id]
     )
     if (Number(others?.count ?? '0') === 0) {
-      throw badRequest('系统必须保留至少一个启用状态的管理员')
+      throw badRequest('last_admin_required')
     }
   }
 
   if (body.status === 'disabled' && c.get('user').id === id) {
-    throw badRequest('不能禁用当前登录的账号')
+    throw badRequest('cannot_disable_self')
   }
 
   const row = await one<UserRow>(
@@ -95,10 +95,10 @@ userRoutes.patch('/:id', requireAdmin, async (c) => {
 userRoutes.delete('/:id', requireAdmin, async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
 
-  if (c.get('user').id === id) throw badRequest('不能删除当前登录的账号')
+  if (c.get('user').id === id) throw badRequest('cannot_delete_self')
 
   const target = await one<UserRow>('select * from users where id = $1', [id])
-  if (!target) throw notFound('用户不存在')
+  if (!target) throw notFound('user_not_found')
 
   if (target.role === 'admin') {
     const others = await one<{ count: string }>(
@@ -107,7 +107,7 @@ userRoutes.delete('/:id', requireAdmin, async (c) => {
       [id]
     )
     if (Number(others?.count ?? '0') === 0) {
-      throw badRequest('系统必须保留至少一个启用状态的管理员')
+      throw badRequest('last_admin_required')
     }
   }
 

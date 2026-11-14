@@ -21,6 +21,7 @@ import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { hashPassword, verifyPassword } from '../lib/crypto.js'
+import type { ErrorCode } from '../lib/errorCodes.js'
 import { clientIp, forbidden, parseJson, unauthorized } from '../lib/http.js'
 import { REFRESH_COOKIE, SESSION_COOKIE, requireAuth } from '../middleware/auth.js'
 import {
@@ -89,9 +90,9 @@ authRoutes.post('/login', async (c) => {
   const user = await one<UserRow>('select * from users where username = $1', [username])
   // 用户不存在与密码错误返回同一提示，避免账号枚举
   if (!user || !verifyPassword(password, user.password_hash)) {
-    throw unauthorized('用户名或密码错误')
+    throw unauthorized('invalid_credentials')
   }
-  if (user.status !== 'active') throw forbidden('账号已被禁用')
+  if (user.status !== 'active') throw forbidden('user_disabled')
 
   const { refreshToken } = await createSession(user.id, metaOf(c))
   const expiresIn = await issueTokens(c, user, refreshToken)
@@ -112,25 +113,25 @@ authRoutes.post('/login', async (c) => {
  */
 authRoutes.post('/refresh', async (c) => {
   const token = getCookie(c, REFRESH_COOKIE)
-  if (!token) throw unauthorized('没有可用的刷新令牌，请重新登录')
+  if (!token) throw unauthorized('no_refresh_token')
 
   const result = await rotateSession(token, metaOf(c))
 
   if (!result.ok) {
     clearAuthCookies(c)
-    const message =
+    const code =
       result.reason === 'reuse'
-        ? '检测到会话令牌被重复使用，出于安全已终止该会话，请重新登录'
+        ? 'session_token_reuse'
         : result.reason === 'user_inactive'
-          ? '账号已被禁用'
-          : '登录状态已失效，请重新登录'
-    throw unauthorized(message)
+          ? 'user_disabled'
+          : 'session_expired'
+    throw unauthorized(code as ErrorCode)
   }
 
   const user = await one<UserRow>('select * from users where id = $1', [result.userId])
   if (!user || user.status !== 'active') {
     clearAuthCookies(c)
-    throw forbidden('账号已被禁用')
+    throw forbidden('user_disabled')
   }
 
   const expiresIn = await issueTokens(c, user, result.refreshToken)
@@ -160,7 +161,7 @@ authRoutes.post('/password', requireAuth, async (c) => {
   const user = c.get('user')
 
   if (!verifyPassword(currentPassword, user.password_hash)) {
-    throw unauthorized('当前密码不正确')
+    throw unauthorized('current_password_wrong')
   }
 
   await query('update users set password_hash = $1, updated_at = now() where id = $2', [

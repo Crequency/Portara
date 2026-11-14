@@ -6,7 +6,8 @@
  */
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { parseJson } from '../lib/http.js'
+import { errorResponse, parseJson } from '../lib/http.js'
+import { defaultMessageOf } from '../lib/errorCodes.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import {
@@ -39,7 +40,14 @@ settingsRoutes.patch('/', async (c) => {
   const body = await parseJson(c, patchSchema)
   const checked = validateSettings(body.settings)
   if (!checked.ok) {
-    return c.json({ error: { message: '设置有误', issues: checked.issues } }, 400)
+    // 走统一错误形态：code 让前端本地化，issues 保留字段级明细（前端不展示）
+    return errorResponse(
+      c,
+      400,
+      'invalid_settings',
+      defaultMessageOf('invalid_settings'),
+      { issues: checked.issues }
+    )
   }
 
   const before = (await getSettings()).settings

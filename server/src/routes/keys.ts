@@ -16,7 +16,7 @@ keyRoutes.use('*', requireAuth)
 
 const uuidSchema = z
   .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, '非法 ID')
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'invalid_id')
 
 const createSchema = z.object({
   name: z.string().min(1, '名称不能为空').max(64),
@@ -55,7 +55,7 @@ function assertCanManage(c: Context, key: ApiKeyRow): void {
   const user = c.get('user')
   if (user.role === 'admin') return
   if (key.user_id && key.user_id === user.id) return
-  throw forbidden('只能操作自己名下的密钥')
+  throw forbidden('key_scope_forbidden')
 }
 
 /** 写操作后重新读取（带所有者 join），保证响应形状与列表接口一致 */
@@ -71,11 +71,11 @@ async function loadKeyWithOwner(id: string): Promise<ApiKeyRow | null> {
 async function assertRefs(userId?: string | null, channelId?: string | null) {
   if (userId) {
     const u = await one('select id from users where id = $1', [userId])
-    if (!u) throw badRequest('指定的用户不存在')
+    if (!u) throw badRequest('user_referenced_missing')
   }
   if (channelId) {
     const ch = await one('select id from channels where id = $1', [channelId])
-    if (!ch) throw badRequest('指定的渠道不存在')
+    if (!ch) throw badRequest('channel_referenced_missing')
   }
 }
 
@@ -175,7 +175,7 @@ keyRoutes.patch('/:id', async (c) => {
    * 而实际仍是旧值；显式报错才能让前端/脚本立刻发现越权。
    */
   if (!isAdmin && (body.rpmLimit !== undefined || body.quotaTokens !== undefined)) {
-    throw badRequest('速率限制与 Token 配额只能由管理员设置')
+    throw badRequest('rate_limit_admin_only')
   }
   /*
    * 余额/用量读取权限同样是管理面能力（决定这把 Key 能否读上游账目）——
@@ -187,11 +187,11 @@ keyRoutes.patch('/:id', async (c) => {
       body.usageRefresh !== undefined ||
       body.usageChannels !== undefined)
   ) {
-    throw badRequest('余额/用量读取权限只能由管理员设置')
+    throw badRequest('usage_permission_admin_only')
   }
 
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
-  if (!current) throw notFound('密钥不存在')
+  if (!current) throw notFound('key_not_found')
   assertCanManage(c, current)
   /*
    * 非管理员不能改渠道绑定：传了也忽略，保留管理员原有绑定（通常为空）。
@@ -246,7 +246,7 @@ keyRoutes.patch('/:id', async (c) => {
 keyRoutes.get('/:id/reveal', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const row = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
-  if (!row) throw notFound('密钥不存在')
+  if (!row) throw notFound('key_not_found')
   assertCanManage(c, row)
 
   if (!row.key_cipher) {
@@ -254,7 +254,7 @@ keyRoutes.get('/:id/reveal', async (c) => {
     throw new ApiError(
       409,
       'key_not_revealable',
-      '该密钥创建于启用「可查看」之前，服务端只保留哈希，无法找回。请使用轮换生成新密钥。'
+      'key_not_revealable'
     )
   }
 
@@ -265,7 +265,7 @@ keyRoutes.get('/:id/reveal', async (c) => {
     throw new ApiError(
       500,
       'key_decrypt_failed',
-      '密钥解密失败：主密钥可能已变更（PORTARA_MASTER_KEY）'
+      'secret_decrypt_failed'
     )
   }
 
@@ -282,7 +282,7 @@ keyRoutes.get('/:id/reveal', async (c) => {
 keyRoutes.post('/:id/rotate', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
-  if (!current) throw notFound('密钥不存在')
+  if (!current) throw notFound('key_not_found')
   assertCanManage(c, current)
 
   const { key, prefix, hash } = generateApiKey()
@@ -304,7 +304,7 @@ keyRoutes.post('/:id/rotate', async (c) => {
 keyRoutes.delete('/:id', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await one<ApiKeyRow>('select * from api_keys where id = $1', [id])
-  if (!current) throw notFound('密钥不存在')
+  if (!current) throw notFound('key_not_found')
   assertCanManage(c, current)
   await query('delete from api_keys where id = $1', [id])
   await recordAudit(c, 'key.delete', { type: 'api_key', id }, {

@@ -9,7 +9,8 @@ import { z } from 'zod'
 import { one, query } from '../db.js'
 import { env } from '../env.js'
 import { decryptSecret, encryptSecret } from '../lib/crypto.js'
-import { badRequest, notFound, parseJson } from '../lib/http.js'
+import { badRequest, errorResponse, notFound, parseJson } from '../lib/http.js'
+import { defaultMessageOf } from '../lib/errorCodes.js'
 import { requireAdmin, requireAuth } from '../middleware/auth.js'
 import { recordAudit } from '../services/audit.js'
 import { buildUpstreamHeaders, buildUpstreamUrl, parseJsonSafe } from '../services/proxy.js'
@@ -77,7 +78,7 @@ proxyRoutes.post('/', async (c) => {
   const body = await parseJson(c, createSchema)
 
   const exists = await one<{ id: string }>('select id from proxies where name = $1', [body.name])
-  if (exists) throw badRequest(`代理名称「${body.name}」已存在`)
+  if (exists) throw badRequest('proxy_name_taken', undefined, { name: body.name })
 
   const row = await one<ProxyRow>(
     `insert into proxies (name, host, port, username, password_cipher, status, note)
@@ -102,14 +103,14 @@ proxyRoutes.patch('/:id', async (c) => {
   const body = await parseJson(c, updateSchema)
 
   const current = await one<ProxyRow>('select * from proxies where id = $1', [id])
-  if (!current) throw notFound('代理不存在')
+  if (!current) throw notFound('proxy_not_found')
 
   if (body.name && body.name !== current.name) {
     const dup = await one<{ id: string }>(
       'select id from proxies where name = $1 and id <> $2',
       [body.name, id]
     )
-    if (dup) throw badRequest(`代理名称「${body.name}」已存在`)
+    if (dup) throw badRequest('proxy_name_taken', undefined, { name: body.name })
   }
 
   // 密码：显式清除 > 提供了新值 > 保持不变
@@ -147,7 +148,7 @@ proxyRoutes.patch('/:id', async (c) => {
 proxyRoutes.delete('/:id', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const current = await one<ProxyRow>('select * from proxies where id = $1', [id])
-  if (!current) throw notFound('代理不存在')
+  if (!current) throw notFound('proxy_not_found')
 
   // 引用它的渠道会因 on delete set null 自动回到直连 —— 审计里要记清影响面
   const affected = await query<{ name: string }>(
@@ -168,9 +169,9 @@ proxyRoutes.delete('/:id', async (c) => {
 proxyRoutes.get('/:id/reveal', async (c) => {
   const id = uuidSchema.parse(c.req.param('id'))
   const row = await one<ProxyRow>('select * from proxies where id = $1', [id])
-  if (!row) throw notFound('代理不存在')
+  if (!row) throw notFound('proxy_not_found')
   if (!row.password_cipher) {
-    return c.json({ error: { message: '该代理没有设置密码' } }, 409)
+    return errorResponse(c, 409, 'proxy_has_no_password', defaultMessageOf('proxy_has_no_password'))
   }
 
   await recordAudit(c, 'proxy.reveal', { type: 'proxy', id }, { name: row.name })
@@ -203,10 +204,10 @@ proxyRoutes.post('/latency-test', async (c) => {
   const body = await parseJson(c, latencySchema)
 
   const ch = await one<ChannelRow>('select * from channels where id = $1', [body.channelId])
-  if (!ch) throw notFound('渠道不存在')
+  if (!ch) throw notFound('channel_not_found')
 
   const proxy = await getProxyTarget(body.proxyId)
-  if (!proxy) throw badRequest('代理不存在或已停用')
+  if (!proxy) throw badRequest('proxy_missing_or_disabled')
 
   const primary = await primaryAccount(ch.id)
   const upstreamKey = decryptKey(primary?.key_cipher)

@@ -2621,7 +2621,7 @@ async function main() {
     })
     check('replace 未确认条数被拒（409）', () => {
       assert.equal(noAck.status, 409)
-      assert.equal(noAck.body?.error?.code, 'replace_needs_acknowledge')
+      assert.equal(noAck.body?.error?.code, 'mapping_replace_needs_ack')
     })
 
     const badAck = await apiCall('POST', '/api/model-routes/import', {

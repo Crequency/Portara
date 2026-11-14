@@ -193,9 +193,9 @@ async function resolveBounds(
     const f = from ? new Date(from) : null
     const t = to ? new Date(to) : null
     if (!f || !t || Number.isNaN(f.getTime()) || Number.isNaN(t.getTime())) {
-      throw badRequest('自定义范围需要合法的 from 与 to 时间')
+      throw badRequest('custom_range_requires_bounds')
     }
-    if (f.getTime() >= t.getTime()) throw badRequest('from 必须早于 to')
+    if (f.getTime() >= t.getTime()) throw badRequest('invalid_time_range')
     return { from: f.toISOString(), to: t.toISOString() }
   }
 

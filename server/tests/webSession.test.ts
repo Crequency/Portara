@@ -60,21 +60,25 @@ test('webSession：格式校验通过正常输入', () => {
   assert.equal(validateCookieText('a=1\nb=2\n'), null)
 })
 
+/*
+ * 校验返回的是**错误码 + 参数**（文案由前端按 code 查 i18n），
+ * 所以这里断言 code，不断言中文句子 —— 句子改了不该让测试红。
+ */
 test('webSession：格式校验拒绝空 / 超长 / 非 name=value', () => {
-  assert.match(String(validateCookieText('')), /不能为空/)
-  assert.match(String(validateCookieText('   ')), /不能为空/)
-  assert.match(String(validateCookieText('no-equals-sign')), /name=value/)
-  assert.match(String(validateCookieText('=value-only')), /name=value/)
-  assert.match(String(validateCookieText('ok=1; bad')), /name=value/)
-  assert.match(String(validateCookieText('bad name=1')), /不合法/)
+  assert.equal(validateCookieText('')?.code, 'cookie_text_empty')
+  assert.equal(validateCookieText('   ')?.code, 'cookie_text_empty')
+  assert.equal(validateCookieText('no-equals-sign')?.code, 'cookie_entry_not_pair')
+  assert.equal(validateCookieText('=value-only')?.code, 'cookie_entry_not_pair')
+  assert.equal(validateCookieText('ok=1; bad')?.code, 'cookie_entry_not_pair')
+  assert.equal(validateCookieText('bad name=1')?.code, 'cookie_name_invalid')
   // 值为空也算不合法（粘贴时最常见的漏值）
-  assert.match(String(validateCookieText('a=')), /值为空/)
+  assert.equal(validateCookieText('a=')?.code, 'cookie_value_empty')
 })
 
 test('webSession：长度上限是 8192（与接口契约一致）', () => {
   assert.equal(MAX_COOKIE_TEXT, 8192)
   const big = 'a=' + 'x'.repeat(8192)
-  assert.match(String(validateCookieText(big)), /太长/)
+  assert.equal(validateCookieText(big)?.code, 'cookie_text_too_long')
   const ok = 'a=' + 'x'.repeat(8189)
   assert.equal(ok.length, 8191)
   assert.equal(validateCookieText(ok), null)
