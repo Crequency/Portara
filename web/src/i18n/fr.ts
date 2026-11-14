@@ -403,6 +403,7 @@ export const fr = {
     webSessionCookieRequired: 'Veuillez d’abord coller un cookie'
   },
   keys: {
+    sub: 'Les administrateurs gèrent toutes les clés ; les opérateurs ne voient que les leurs',
     subAdmin: 'Les administrateurs voient toutes les clés',
     subSelf: 'Affiche uniquement vos clés',
     subSuffix: 'Les appelants accèdent à /v1 avec Authorization: Bearer <key>',
@@ -442,7 +443,7 @@ export const fr = {
     issueTitle: 'Émettre une clé',
     editTitle: 'Modifier la clé',
     saveTitle: 'Enregistrez la clé immédiatement',
-    onlyOnce: 'La clé en clair de « {name} » n’est affichée qu’une seule fois ; après fermeture, elle ne sera plus consultable. En cas de perte, renouvelez-la.',
+    issuedKeyHint: 'La clé en clair de « {name} » figure ci-dessous. Vous pourrez la retrouver plus tard via « Voir » dans la liste des clés ; chaque consultation est enregistrée dans le journal d’audit. En cas de fuite suspectée, renouvelez-la immédiatement.',
     iSaved: 'Je l’ai enregistrée, fermer',
     modelAllow: 'Modèles autorisés',
     modelAllowHint: 'Vide = aucune restriction.',

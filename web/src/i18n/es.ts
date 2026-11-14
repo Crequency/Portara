@@ -403,6 +403,7 @@ export const es = {
     webSessionCookieRequired: 'Pegue primero la cookie'
   },
   keys: {
+    sub: 'Los administradores gestionan todas las claves; los operadores solo ven las suyas',
     subAdmin: 'El administrador ve todas las claves',
     subSelf: 'Solo se muestran las claves a su nombre',
     subSuffix: 'El llamador accede a /v1 con Authorization: Bearer <key>',
@@ -442,7 +443,7 @@ export const es = {
     issueTitle: 'Emitir clave',
     editTitle: 'Editar clave',
     saveTitle: 'Guarde la clave ahora',
-    onlyOnce: 'La clave en claro de “{name}” solo se muestra esta vez; al cerrar ya no se podrá ver. Si la pierde, rótela.',
+    issuedKeyHint: 'La clave en claro de “{name}” está abajo. Podrá consultarla de nuevo con «Ver» en la lista de claves; cada consulta queda registrada en el registro de auditoría. Si sospecha una filtración, rótela de inmediato.',
     iSaved: 'Ya la he guardado; cerrar',
     modelAllow: 'Modelos permitidos',
     modelAllowHint: 'Vacío = sin restricción.',

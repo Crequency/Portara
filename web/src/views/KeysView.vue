@@ -466,7 +466,11 @@ onMounted(() => {
     @close="showForm = false"
   >
     <template v-if="issuedKey">
-      <div class="alert alert-info">{{ t('keys.onlyOnce', { name: issuedName }) }}</div>
+      <!--
+        以前这里写「只显示这一次，关闭后无法再次查看」—— 但密钥列表已支持「查看」明文
+        （/api/keys/:id/reveal，每次写审计）。反着说会让人误以为关掉就永久丢失，白白轮换。
+      -->
+      <div class="alert alert-info">{{ t('keys.issuedKeyHint', { name: issuedName }) }}</div>
       <div class="code-box">{{ issuedKey }}</div>
       <div class="row" style="margin-top: 12px">
         <button class="btn btn-primary btn-sm" @click="copy(issuedKey)">{{ t('common.copy') }}</button>

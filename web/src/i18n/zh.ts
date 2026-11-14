@@ -407,6 +407,7 @@ export const zh = {
     webSessionCookieRequired: '请先粘贴 Cookie'
   },
   keys: {
+    sub: '管理员可管理全部密钥，操作员仅见自己名下的',
     subAdmin: '管理员可见全部密钥',
     subSelf: '仅显示你名下的密钥',
     subSuffix: '调用方用 Authorization: Bearer <key> 访问 /v1',
@@ -446,7 +447,7 @@ export const zh = {
     issueTitle: '派发密钥',
     editTitle: '编辑密钥',
     saveTitle: '请立即保存密钥',
-    onlyOnce: '「{name}」的明文密钥只显示这一次，关闭后无法再次查看。丢失请轮换。',
+    issuedKeyHint: '「{name}」的明文密钥如下。之后可在密钥列表点「查看」再次获取 —— 每次查看都会记入审计日志；若怀疑泄露，请立即轮换。',
     iSaved: '我已保存，关闭',
     modelAllow: '允许的模型',
     modelAllowHint: '留空 = 不限制。',
