@@ -27,6 +27,11 @@ export const zh = {
     yes: '是',
     no: '否',
     new: '新建',
+    moreResultsHint: "…还有更多，输入关键字以过滤",
+    noMatch: "无匹配项",
+    requestFailed: "请求失败（HTTP {status}）",
+    headerLineMissingColon: "缺少冒号：{line}",
+    headerNameEmpty: "请求头名称为空：{line}",
     expand: '展开',
     collapse: '折叠'
   },

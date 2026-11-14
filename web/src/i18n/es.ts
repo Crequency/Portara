@@ -31,6 +31,11 @@ export const es = {
     yes: 'Sí',
     no: 'No',
     new: 'Nuevo',
+    moreResultsHint: "…hay más resultados; escriba para filtrar",
+    noMatch: "Sin coincidencias",
+    requestFailed: "Solicitud fallida (HTTP {status})",
+    headerLineMissingColon: "Falta el signo de dos puntos: {line}",
+    headerNameEmpty: "Nombre de encabezado vacío: {line}",
     expand: 'Expandir',
     collapse: 'Contraer'
   },

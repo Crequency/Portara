@@ -1,3 +1,5 @@
+import { translate } from './i18n'
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -111,7 +113,8 @@ async function request<T>(
     const errObj = (data as { error?: { message?: string; code?: string } } | null)?.error
     throw new ApiError(
       res.status,
-      errObj?.message ?? `请求失败（HTTP ${res.status}）`,
+      // 服务端通常已经给了人话；这条只是「连 message 都没有」时的兜底，同样要走 i18n
+      errObj?.message ?? translate('common.requestFailed', { status: res.status }),
       errObj?.code
     )
   }
