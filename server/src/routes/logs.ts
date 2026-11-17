@@ -279,6 +279,27 @@ logRoutes.get('/stats/overview', async (c) => {
   )
   const activeDays = num(activeDaysRows[0]?.active_days)
 
+  /**
+   * **全时段累计 token**（概览页的「总计」）。
+   *
+   * 与上面的区间统计刻意分开：
+   *   - 不看 from / to —— 用户切换时间范围时它不该跟着变；
+   *   - 不看 channelId —— 需求是「网关总流量」，不是「当前筛选下的总量」；
+   *   - 只保留权限作用域（非管理员仍只看自己），否则会泄露他人用量规模。
+   *
+   * 口径与区间总量一致：都取 `total_tokens`（含直连测试，与「请求数」卡片同源）。
+   * 当前表量级下全表 sum 约 30ms；若将来涨到千万行，应改为定时汇总表。
+   */
+  const allTimeTokensRows = await query<Record<string, string>>(
+    `select coalesce(sum(total_tokens), 0)::text as tokens
+       from request_logs
+      where ($1::uuid is null or api_key_id in (
+              select id from api_keys where user_id = $1
+            ))`,
+    [mineUserId]
+  )
+  const allTimeTokens = num(allTimeTokensRows[0]?.tokens)
+
   const isAdmin = c.get('user').role === 'admin'
   // 资源规模（用户 / 渠道 / 密钥数）只属于管理面：非管理员一律 0，前端也不渲染
   const r = isAdmin
@@ -362,6 +383,8 @@ logRoutes.get('/stats/overview', async (c) => {
       completionTokens: num(t.completion_tokens),
       // 当地时区下 sum(total_tokens) > 0 的天数（「日均用量」的分母）
       activeDays,
+      // 全时段累计（不看时间范围与渠道筛选，只保留权限作用域）——概览页「总计」
+      allTimeTokens,
       estimated: num(t.estimated),
       // 直连测试（对话测试页的上游渠道测试）：计入总量，但单独标出以便区分
       diagnosticRequests: num(t.diagnostic),

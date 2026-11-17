@@ -336,6 +336,7 @@ export const fr = {
     inTokens: 'Entrée',
     outTokens: 'Sortie',
     dailyAvg: 'Moyenne quotidienne',
+    allTimeTokens: 'Total',
     avgLatency: 'Latence moyenne',
     p95: 'P95',
     estimated: 'Estimation',

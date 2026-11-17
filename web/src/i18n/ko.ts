@@ -335,6 +335,7 @@ export const ko = {
     inTokens: '입력',
     outTokens: '출력',
     dailyAvg: '일평균',
+    allTimeTokens: '합계',
     avgLatency: '평균 지연',
     p95: 'P95',
     estimated: '추정 집계',
