@@ -824,5 +824,26 @@ export const migrations: { id: string; sql: string }[] = [
         on lb_events (session_hash, ts desc)
         where session_hash <> '';
     `
+  },
+  {
+    id: '031_traffic_rollups',
+    sql: `
+      -- 全时段累计 token 的定时汇总（每小时重建一次）。
+      --
+      -- 为什么需要：概览页的「总计」原先每次请求都 sum(total_tokens) 全表扫。
+      -- 请求日志只增不减，概览页还会自动刷新 —— 把固定成本从「每次请求」
+      -- 挪到「每小时一次」是纯收益。
+      --
+      -- scope：'global' 表示全网关；'user:<uuid>' 表示某个用户名下。
+      -- 管理员读 global，非管理员读自己的行 —— 一次汇总两个口径都有，
+      -- 且天然隔离权限，不用在请求路径上再拼 where。
+      --
+      -- 汇总值一小时内的延迟是可接受的（页面标注为累计值，不是实时计费口径）。
+      create table if not exists traffic_rollups (
+        scope        text primary key,
+        total_tokens bigint not null default 0,
+        updated_at   timestamptz not null default now()
+      );
+    `
   }
 ]

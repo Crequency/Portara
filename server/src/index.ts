@@ -8,6 +8,7 @@ import { closeRedis, redis } from './redis.js'
 import { getSettings, purgeOldLogs } from './services/settings.js'
 import { refreshSessionUsageChannels } from './services/usageFetch.js'
 import { pruneSessions } from './services/sessions.js'
+import { refreshTrafficRollups, rollupIntervalMs } from './services/trafficRollup.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -125,6 +126,32 @@ async function main(): Promise<void> {
     }
   }
   setInterval(() => void autoRefreshUsage(), USAGE_TICK_MS).unref()
+
+  /**
+   * 流量汇总表（概览页「总计」的数据源）。
+   *
+   * 每小时全量重建一次，把「每次请求 sum 全表」变成「每小时扫一次」。
+   *   - **启动时立即跑一次**：否则首个周期内汇总表是空的，
+   *     虽然查询侧会回退实时统计，但没必要让第一个小时都走慢路径；
+   *   - 失败只 warn：汇总只是加速手段，不能影响服务；
+   *   - unref() 让它不阻止进程退出。
+   */
+  const ROLLUP_INTERVAL_MS = rollupIntervalMs(process.env.PORTARA_ROLLUP_INTERVAL_SEC)
+  const refreshRollups = async (): Promise<void> => {
+    try {
+      const r = await refreshTrafficRollups()
+      console.log(
+        `[portara] 流量汇总已刷新：${r.scopes} 个作用域，全网累计 ${r.totalTokens} tokens`
+      )
+    } catch (err) {
+      console.warn(
+        '[portara] 流量汇总刷新失败（查询将回退实时统计）：',
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+  }
+  void refreshRollups()
+  setInterval(() => void refreshRollups(), ROLLUP_INTERVAL_MS).unref()
 
   const app = createApp()
   const server = serve(

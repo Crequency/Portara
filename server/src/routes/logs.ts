@@ -5,6 +5,7 @@ import { query } from '../db.js'
 import { badRequest, parseQuery } from '../lib/http.js'
 import { getSetting, isValidTimeZone } from '../services/settings.js'
 import { requireAuth } from '../middleware/auth.js'
+import { getAllTimeTokens } from '../services/trafficRollup.js'
 import type { RequestLogRow } from '../types.js'
 
 export const logRoutes = new Hono()
@@ -287,18 +288,11 @@ logRoutes.get('/stats/overview', async (c) => {
    *   - 不看 channelId —— 需求是「网关总流量」，不是「当前筛选下的总量」；
    *   - 只保留权限作用域（非管理员仍只看自己），否则会泄露他人用量规模。
    *
-   * 口径与区间总量一致：都取 `total_tokens`（含直连测试，与「请求数」卡片同源）。
-   * 当前表量级下全表 sum 约 30ms；若将来涨到千万行，应改为定时汇总表。
+   * 数据来自 `traffic_rollups`（每小时重建一次，见 services/trafficRollup.ts）：
+   * 请求路径上只读一行，不再全表扫。汇总表未就绪时内部会回退实时统计，
+   * 所以这里不需要额外判空。
    */
-  const allTimeTokensRows = await query<Record<string, string>>(
-    `select coalesce(sum(total_tokens), 0)::text as tokens
-       from request_logs
-      where ($1::uuid is null or api_key_id in (
-              select id from api_keys where user_id = $1
-            ))`,
-    [mineUserId]
-  )
-  const allTimeTokens = num(allTimeTokensRows[0]?.tokens)
+  const allTimeTokens = await getAllTimeTokens(mineUserId)
 
   const isAdmin = c.get('user').role === 'admin'
   // 资源规模（用户 / 渠道 / 密钥数）只属于管理面：非管理员一律 0，前端也不渲染
