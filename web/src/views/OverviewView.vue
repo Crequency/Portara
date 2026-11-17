@@ -785,7 +785,8 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <div class="stat-hint">
           {{ t('overview.inTokens') }} {{ formatCompact(stats?.totals.promptTokens) }} ·
           {{ t('overview.outTokens') }} {{ formatCompact(stats?.totals.completionTokens) }} ·
-          {{ t('overview.dailyAvg') }} {{ formatCompact(avgDailyTokens) }}
+          {{ t('overview.dailyAvg') }} {{ formatCompact(avgDailyTokens) }} ·
+          {{ t('overview.allTimeTokens') }} {{ formatCompact(stats?.totals.allTimeTokens) }}
         </div>
       </div>
       <div class="stat">

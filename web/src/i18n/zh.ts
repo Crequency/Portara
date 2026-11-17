@@ -331,6 +331,7 @@ export const zh = {
     inTokens: '入',
     outTokens: '出',
     dailyAvg: '日均',
+    allTimeTokens: '总计',
     avgLatency: '平均延迟',
     p95: 'P95',
     estimated: '估算计量',

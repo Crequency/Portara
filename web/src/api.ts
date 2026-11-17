@@ -596,6 +596,8 @@ export interface StatsTotals {
   completionTokens: number
   /** 区间内当地时区下 sum(total_tokens) > 0 的天数（「日均用量」的分母） */
   activeDays: number
+  /** 全时段累计 token（不看时间范围与渠道筛选）——概览页「总计」 */
+  allTimeTokens: number
   estimated: number
   diagnosticRequests: number
   avgLatencyMs: number

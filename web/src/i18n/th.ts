@@ -334,6 +334,7 @@ export const th = {
     inTokens: 'เข้า',
     outTokens: 'ออก',
     dailyAvg: 'เฉลี่ยต่อวัน',
+    allTimeTokens: 'รวมทั้งหมด',
     avgLatency: 'ความหน่วงเฉลี่ย',
     p95: 'P95',
     estimated: 'ประมาณการ',

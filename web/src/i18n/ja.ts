@@ -335,6 +335,7 @@ export const ja = {
     inTokens: '入力',
     outTokens: '出力',
     dailyAvg: '1 日平均',
+    allTimeTokens: '合計',
     avgLatency: '平均レイテンシ',
     p95: 'P95',
     estimated: '推定計量',

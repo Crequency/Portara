@@ -335,6 +335,7 @@ export const es = {
     inTokens: 'Entrada',
     outTokens: 'Salida',
     dailyAvg: 'Media diaria',
+    allTimeTokens: 'Total',
     avgLatency: 'Latencia media',
     p95: 'P95',
     estimated: 'Medición estimada',
