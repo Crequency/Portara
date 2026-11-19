@@ -29,8 +29,6 @@ const props = defineProps<{
 /** 当前所处区块的 id；空串表示还没进入任何区块 */
 const activeId = ref('')
 
-let observer: IntersectionObserver | null = null
-
 function jump(id: string): void {
   const el = document.getElementById(id)
   if (!el) return
@@ -40,32 +38,56 @@ function jump(id: string): void {
   el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
 }
 
-onMounted(() => {
-  if (typeof IntersectionObserver === 'undefined') return
-  observer = new IntersectionObserver(
-    (entries) => {
-      /*
-       * 取「可见且最靠上」的那个作为当前区块。
-       * rootMargin 的上边留 15% 是给固定顶栏让位；下边收 70% 让判定集中在视口上部 ——
-       * 否则一屏里同时可见两个区块时，高亮会在两块之间来回跳。
-       */
-      const visible = entries
-        .filter((e) => e.isIntersecting)
-        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
-      const first = visible[0]
-      if (first) activeId.value = first.target.id
-    },
-    { rootMargin: '-15% 0px -70% 0px', threshold: 0 }
-  )
+/**
+ * 高亮跟随。
+ *
+ * 不用 IntersectionObserver：本项目的滚动发生在 .content 这个内部容器里（不是窗口），
+ * 而区块卡片又特别高 —— observer 的 rootMargin 很难同时适配「卡片比视口高」与
+ * 「滚动容器不是 window」两种情况，实测会出现整屏滚动却始终不高亮。
+ *
+ * 改为监听滚动容器的 scroll，直接算「已越过顶部的最后一个区块」：
+ * 判据简单、与容器是谁无关，滚动时也不会有延迟感。
+ */
+const SCROLL_ROOT_SELECTOR = '.content'
+/** 顶部留白：标题被顶栏压住时仍算「已进入该区块」 */
+const ACTIVE_OFFSET = 120
+
+let scrollRoot: HTMLElement | null = null
+let onScroll: (() => void) | null = null
+
+function recomputeActive(): void {
+  if (!scrollRoot) return
+  const rootTop = scrollRoot.getBoundingClientRect().top
+  let currentId = props.sections[0]?.id ?? ''
   for (const s of props.sections) {
     const el = document.getElementById(s.id)
-    if (el) observer.observe(el)
+    if (!el) continue
+    // 元素顶部相对滚动容器顶部的距离
+    const offset = el.getBoundingClientRect().top - rootTop
+    if (offset <= ACTIVE_OFFSET) currentId = s.id
+    else break
   }
+  activeId.value = currentId
+}
+
+onMounted(() => {
+  scrollRoot = (document.querySelector(SCROLL_ROOT_SELECTOR) as HTMLElement | null) ?? null
+  onScroll = () => recomputeActive()
+  // 滚动容器可能比组件晚就绪：窗口也挂一份，重复计算是幂等的
+  scrollRoot?.addEventListener('scroll', onScroll, { passive: true })
+  window.addEventListener('scroll', onScroll, { passive: true })
+  window.addEventListener('resize', onScroll, { passive: true })
+  recomputeActive()
 })
 
 onBeforeUnmount(() => {
-  observer?.disconnect()
-  observer = null
+  if (onScroll) {
+    scrollRoot?.removeEventListener('scroll', onScroll)
+    window.removeEventListener('scroll', onScroll)
+    window.removeEventListener('resize', onScroll)
+  }
+  onScroll = null
+  scrollRoot = null
 })
 </script>
 
