@@ -400,6 +400,59 @@ export interface ProfileResponse {
 }
 
 /** 渠道下的一个上游账户（只给掩码，明文要靠 reveal 单独请求） */
+/** 账户详情弹窗：一条「最近会话」 */
+export interface AccountRecentRequest {
+  id: string
+  ts: string
+  model: string
+  statusCode: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  latencyMs: number
+  /** 会话哈希前 8 位；无会话键时为空 */
+  sessionHash: string
+  /** 发起方密钥名（管理员排查用；不含 IP） */
+  apiKeyName: string
+  /** 失败时上游返回的片段（后端已截断到 200 字符） */
+  error: string
+}
+
+/** 账户详情弹窗：一个时间窗口的汇总 */
+export interface AccountTotals {
+  requests: number
+  errors: number
+  tokens: number
+}
+
+/** 账户详情弹窗：近 7 天按当地日期的消耗 */
+export interface AccountDailyPoint {
+  date: string
+  requests: number
+  errors: number
+  tokens: number
+}
+
+export interface AccountActivity {
+  account: {
+    id: string
+    name: string
+    status: string
+    priority: number
+    weight: number
+    lastUsedAt: string | null
+    lastError: string
+    consecutiveFailures: number
+    cooldownUntil: string | null
+    quotaCooldownUntil: string | null
+  }
+  timezone: string
+  recent: AccountRecentRequest[]
+  h24: AccountTotals
+  d7: AccountTotals
+  daily: AccountDailyPoint[]
+}
+
 export interface ChannelAccount {
   id: string
   name: string

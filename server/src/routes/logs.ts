@@ -164,8 +164,11 @@ const rangeQuery = z.object({
 /**
  * 决定本次查询用哪个时区做「按天」的口径。
  * 请求方指定且合法 → 用它；否则用网关时区设置。
+ *
+ * 导出是因为账户活动接口（渠道详情 → 账户详情）也用同一口径：
+ * 两处若各写一份，「今日」的边界迟早会对不上。
  */
-async function resolveQueryTimeZone(requested?: string): Promise<string> {
+export async function resolveQueryTimeZone(requested?: string): Promise<string> {
   if (requested && isValidTimeZone(requested)) return requested
   return getSetting('timezone')
 }

@@ -845,5 +845,20 @@ export const migrations: { id: string; sql: string }[] = [
         updated_at   timestamptz not null default now()
       );
     `
+  },
+  {
+    id: '032_request_logs_account_index',
+    sql: `
+      -- 按上游账户查最近会话的索引。
+      --
+      -- 背景：渠道详情页要给每个账户展示「最近被路由到的请求」与近 24h/7d 消耗，
+      -- 过滤条件是 request_logs.account_id。原先没有这个列的索引，
+      -- 20 万行时就是一次全表扫 + 排序 —— 点一次弹窗扫一次，不可接受。
+      --
+      -- 只对非空 account_id 建部分索引：直连测试/无账户的历史行永远不会被这条查询命中。
+      create index if not exists idx_request_logs_account_ts
+        on request_logs (account_id, ts desc)
+        where account_id is not null;
+    `
   }
 ]

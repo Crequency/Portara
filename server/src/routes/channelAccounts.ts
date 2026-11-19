@@ -21,7 +21,9 @@ import {
   mirrorChannelKey,
   updateAccount
 } from '../services/accounts.js'
+import { loadAccountActivity, accountBelongsToChannel } from '../services/accountActivity.js'
 import { recordAudit } from '../services/audit.js'
+import { resolveQueryTimeZone } from './logs.js'
 import { tryDecryptKey } from '../services/channels.js'
 import { getUsageAdapter } from '../services/usage.js'
 import { getUsageSnapshot, invalidateUsageCache } from '../services/usageFetch.js'
@@ -243,6 +245,42 @@ function isSessionAdapter(adapterId: string): boolean {
  *
  * 只回 Cookie 名与时间戳，**绝不回值或密文** —— 面板只需要知道「有没有 / 什么时候失效」。
  */
+/**
+ * 账户活动：最近会话缩略 + 近 24h/7d 消耗。
+ *
+ * 只给管理员（渠道/账户属于上游拓扑）；返回体里**不含 client_ip**。
+ */
+channelAccountRoutes.get('/:id/accounts/:aid/activity', requireAdmin, async (c) => {
+  const channelId = uuid.parse(c.req.param('id'))
+  const accountId = uuid.parse(c.req.param('aid'))
+  if (!(await accountBelongsToChannel(accountId, channelId))) {
+    throw notFound('account_not_found')
+  }
+
+  const tz = await resolveQueryTimeZone(c.req.query('tz'))
+  const limitRaw = Number(c.req.query('limit') ?? 10)
+  const limit = Number.isFinite(limitRaw) ? limitRaw : 10
+  const activity = await loadAccountActivity(accountId, tz, limit)
+
+  const account = await getAccount(channelId, accountId)
+  return c.json({
+    account: {
+      id: accountId,
+      name: account?.name ?? '',
+      status: account?.status ?? '',
+      priority: account?.priority ?? 0,
+      weight: account?.weight ?? 0,
+      lastUsedAt: account?.last_used_at ?? null,
+      lastError: account?.last_error ?? '',
+      consecutiveFailures: account?.consecutive_failures ?? 0,
+      cooldownUntil: account?.cooldown_until ?? null,
+      quotaCooldownUntil: account?.quota_cooldown_until ?? null
+    },
+    timezone: tz,
+    ...activity
+  })
+})
+
 channelAccountRoutes.get('/:id/accounts/:aid/web-session', requireAdmin, async (c) => {
   const channelId = uuid.parse(c.req.param('id'))
   const accountId = uuid.parse(c.req.param('aid'))
