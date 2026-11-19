@@ -21,6 +21,10 @@ import {
   quotaColor,
   quotaPercent
 } from '../format'
+import ChannelUsageCard, {
+  type ChannelUsageItem as ChannelUsageItemType
+} from '../components/ChannelUsageCard.vue'
+import Modal from '../components/Modal.vue'
 import PSelect from '../components/PSelect.vue'
 import TrendSkeleton from '../components/TrendSkeleton.vue'
 import UsageHeatmap from '../components/UsageHeatmap.vue'
@@ -246,20 +250,40 @@ const topBlocks = computed(() => [
  * 会话型渠道（要重放网页接口）可能几秒才回来。整块骨架会让用户为一个最慢的
  * 渠道干等 —— 所以先按渠道清单铺卡片，再各自取数，谁先回来谁先显示。
  */
-interface UsageItem {
-  channelId: string
-  channelName: string
-  adapter: string
-  /** 已取到的快照；null = 还没回来 */
-  snapshot: UsageSnapshot | null
-  loading: boolean
-  /** 请求本身失败（网络/权限）；上游失败在 snapshot.ok=false */
-  error: string
-}
+/**
+ * 逐渠道取数结果。
+ *
+ * 类型与「余额用量」页共用（ChannelUsageCard 导出）—— 两边渲染的是同一张卡片，
+ * 数据结构各写一份迟早会漂移。
+ */
+type UsageItem = ChannelUsageItemType
 
 const usageItems = ref<UsageItem[]>([])
 /** 渠道清单还没回来（只读本地表，毫秒级） */
 const usageListLoading = ref(true)
+
+/**
+ * 详情弹窗：记住被点开的渠道 id，而不是把 item 对象存下来。
+ *
+ * 刷新（单卡刷新 / 整页刷新）会**替换** item 对象，存对象就会显示过期数据；
+ * 存 id 每次渲染现取，永远是最新那份。
+ */
+const usageDetailId = ref<string | null>(null)
+const usageDetailItem = computed(
+  () => usageItems.value.find((i) => i.channelId === usageDetailId.value) ?? null
+)
+
+/** 原始响应弹窗（与余额用量页同款） */
+const usageRaw = ref<UsageSnapshot | null>(null)
+
+function openUsageDetail(channelId: string): void {
+  usageDetailId.value = channelId
+}
+
+function closeUsageDetail(): void {
+  usageDetailId.value = null
+  usageRaw.value = null
+}
 
 /** 已成功拿到的快照 */
 const usageOk = computed(() =>
@@ -940,7 +964,19 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
         <!-- ① 有额度窗口的渠道：各占一张卡 -->
         <div v-for="s in usageWindowed" :key="s.channelId" class="usage-cell">
           <div class="row" style="gap: 7px; min-width: 0">
-            <span class="usage-cell-name">{{ s.channelName }}</span>
+            <!--
+              渠道名可点开详情：用 <button> 而不是 <span @click> ——
+              键盘用户要能 Tab 到它并用 Enter 触发，读屏也要念出「按钮」。
+              视觉上保持原样（样式见 .usage-cell-name--link）。
+            -->
+            <button
+              type="button"
+              class="usage-cell-name usage-cell-name--link"
+              :title="t('overview.usageOpenDetail')"
+              @click="openUsageDetail(s.channelId)"
+            >
+              {{ s.channelName }}
+            </button>
             <span class="tag">{{ s.adapter }}</span>
             <!-- 多账户：提示额度是几个号合起来的 -->
             <template v-if="s.accounts.length > 1">
@@ -1016,7 +1052,14 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
               class="usage-balance-row"
             >
               <span class="row" style="gap: 6px; min-width: 0">
-                <span class="usage-cell-name">{{ s.channelName }}</span>
+                <button
+                  type="button"
+                  class="usage-cell-name usage-cell-name--link"
+                  :title="t('overview.usageOpenDetail')"
+                  @click="openUsageDetail(s.channelId)"
+                >
+                  {{ s.channelName }}
+                </button>
                 <span class="tag">{{ s.adapter }}</span>
               </span>
               <span class="mono usage-balance-amount">
@@ -1132,4 +1175,36 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
       </div>
     </div>
   </div>
+
+  <!--
+    渠道用量详情：直接复用「余额用量」页的卡片组件。
+
+    数据来自本页已取到的快照（逐渠道 /api/channels/:id/usage），
+    点开即显示，不再发一次请求；「刷新」只刷这一个渠道。
+  -->
+  <Modal
+    v-if="usageDetailItem"
+    :title="t('usage.title')"
+    wide
+    @close="closeUsageDetail"
+  >
+    <ChannelUsageCard
+      :item="usageDetailItem"
+      @refresh="loadUsageItem(usageDetailItem)"
+      @raw="(s: UsageSnapshot) => (usageRaw = s)"
+    />
+  </Modal>
+
+  <!-- 原始响应：与余额用量页同款，看 JSON 排查口径问题 -->
+  <Modal v-if="usageRaw" :title="t('usage.rawTitle')" wide @close="usageRaw = null">
+    <div class="dim" style="font-size: 12px; margin-bottom: 8px">
+      {{ usageRaw.channelName }} · {{ usageRaw.adapter }}
+    </div>
+    <pre class="code-box" style="max-height: 420px; overflow: auto; white-space: pre-wrap">{{
+      JSON.stringify(usageRaw.raw ?? {}, null, 2)
+    }}</pre>
+    <div class="modal-foot">
+      <button class="btn" @click="usageRaw = null">{{ t('common.close') }}</button>
+    </div>
+  </Modal>
 </template>

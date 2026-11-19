@@ -327,6 +327,7 @@ export const ko = {
     usageNoneHint: '“업스트림 채널”에서 채널에 어댑터를 선택하면 됩니다.',
     usageFailed: '채널 {n}개의 조회에 실패했습니다',
     usageBalanceOnly: '잔액만',
+    usageOpenDetail: "이 채널의 사용량 상세 보기",
     usageAllFailed: '잔액을 일시적으로 가져오지 못했습니다',
     perDay: '일별',
     requests: '요청 수',

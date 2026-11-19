@@ -323,6 +323,7 @@ export const en = {
     usageNoneHint: 'Pick an adapter for a channel under Upstream Channels.',
     usageFailed: '{n} channel(s) failed to fetch',
     usageBalanceOnly: 'Balance only',
+    usageOpenDetail: "View this channel's usage details",
     usageAllFailed: 'Balance temporarily unavailable',
     perDay: 'daily',
     requests: 'Requests',
