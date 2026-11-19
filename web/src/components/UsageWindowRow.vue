@@ -28,6 +28,14 @@ const props = defineProps<{
   /** 已格式化好的时间文本；为空则不显示 */
   startText?: string
   resetText?: string
+  /**
+   * 剩余额度文本，例如 "剩 65%"。
+   *
+   * 上游后台（OpenDesign 等）给的是**剩余**，而这里主口径是「已用」——
+   * 只有一种口径时，用户对着两边看很容易把「已用 100%」读成「还剩 100%」。
+   * 两者并排显示，任何人都能一眼对上。
+   */
+  remainingText?: string
 }>()
 
 const headRef = ref<HTMLElement | null>(null)
@@ -99,7 +107,7 @@ onMounted(() => {
 
 // 内容变化（刷新拿到新数据、时间出现/消失）后重新量
 watch(
-  () => [props.usageText, props.startText, props.resetText],
+  () => [props.usageText, props.remainingText, props.startText, props.resetText],
   () => nextTick(scheduleMeasure)
 )
 
@@ -125,6 +133,7 @@ onBeforeUnmount(() => {
         >
           {{ usageText }}
         </span>
+        <span v-if="remainingText" class="win-remaining">{{ remainingText }}</span>
         <span v-if="!below && hasTimes" class="win-times">
           <span v-if="startText">{{ startText }}</span>
           <span v-if="resetText">{{ resetText }}</span>
@@ -156,6 +165,7 @@ onBeforeUnmount(() => {
     <span class="win-ghost-wrap" aria-hidden="true">
       <span ref="ghostRef" class="win-ghost">
         <span class="win-usage">{{ usageText }}</span>
+        <span v-if="remainingText" class="win-remaining">{{ remainingText }}</span>
         <span class="win-times">
           <span v-if="startText">{{ startText }}</span>
           <span v-if="resetText">{{ resetText }}</span>

@@ -954,6 +954,7 @@ export const ja = {
     windowMonthly: '毎月',
     windowInterval: '現在の期間',
     used: '使用済み',
+    remainingPct: "残り {p}%",
     startAt: '開始',
     resetAt: 'リセット',
     exceeded: '上限超過',

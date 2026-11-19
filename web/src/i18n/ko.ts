@@ -974,6 +974,7 @@ export const ko = {
     windowMonthly: '월간',
     windowInterval: '현재 주기',
     used: '사용됨',
+    remainingPct: "잔여 {p}%",
     startAt: '시작',
     resetAt: '초기화',
     exceeded: '초과됨',

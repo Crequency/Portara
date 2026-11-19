@@ -9,7 +9,7 @@
  * 因为两边的并发与骨架策略不同。
  */
 import { useI18n } from '../i18n'
-import { formatCompact, formatNumber, formatTime, quotaColor, quotaPercent } from '../format'
+import { formatCompact, formatNumber, formatTime, quotaColor, quotaPercent, remainingPercent } from '../format'
 import type { UsageSnapshot } from '../api'
 import AccountUsage from './AccountUsage.vue'
 import PInfo from './PInfo.vue'
@@ -176,6 +176,7 @@ function money(v: number, unit: 'currency' | 'credits', currency: string): strin
             :usage-color="quotaColor(windowPercent(w), w.exceeded)"
             :exceeded="w.exceeded"
             :percent="windowPercent(w)"
+            :remaining-text="t('usage.remainingPct', { p: remainingPercent(w.used, w.total) })"
             :bar-color="quotaColor(windowPercent(w), w.exceeded)"
             :start-text="w.startAt ? t('usage.startAt') + ' ' + formatTime(w.startAt) : undefined"
             :reset-text="w.resetAt ? t('usage.resetAt') + ' ' + formatTime(w.resetAt) : undefined"

@@ -955,6 +955,7 @@ export const fr = {
     windowMonthly: 'Par mois',
     windowInterval: 'Période actuelle',
     used: 'Utilisé',
+    remainingPct: "reste {p} %",
     startAt: 'Début',
     resetAt: 'Réinitialisation',
     exceeded: 'Dépassé',

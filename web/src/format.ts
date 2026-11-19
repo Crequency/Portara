@@ -124,6 +124,20 @@ export function quotaPercent(used: number, total: number): number {
 }
 
 /**
+ * 剩余额度百分比（0–100）—— 给「对照上游后台」用。
+ *
+ * 上游（OpenDesign 等）展示的是**剩余**，我们主口径是**已用**；
+ * 两者互补，但要**各自独立计算**再取整，不能拿 `100 - 已用百分比`：
+ * 例如 used 150,025 / total 150,000 时已用被钳到 100，剩余若按 100−100 会写成 0%，
+ * 而它实际已经**超额**（-1%）。这里钳到 0 下限，语义是「一点不剩」。
+ */
+export function remainingPercent(used: number, total: number): number {
+  if (!Number.isFinite(total) || total <= 0) return 0
+  const raw = Math.round(((total - used) / total) * 100)
+  return Math.max(0, Math.min(100, raw))
+}
+
+/**
  * 额度进度条的颜色：**按已用百分比分级**，而不是只看上游的 exceeded 标记。
  *
  * 为什么不能只看 exceeded：CommandCode 的月度窗口上限是**推算**出来的，
