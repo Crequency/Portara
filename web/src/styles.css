@@ -2865,3 +2865,106 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   color: var(--accent);
   background: var(--accent-soft);
 }
+
+/*
+ * 账户详情弹窗（渠道详情 → 账户「详情」）。
+ *
+ * 三块内容：近 24h/7d 指标、近 7 天日消耗柱、最近会话列表。
+ * 柱状图不用图表库 —— 只有 7 根柱子，纯 CSS 更轻，也不会因为图表库升级而变样。
+ */
+.acct-metric {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  min-width: 0;
+}
+
+.acct-daily {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 88px;
+}
+
+.acct-daily-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.acct-daily-track {
+  flex: 1 1 auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.acct-daily-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 3px 3px 0 0;
+  transition: height 160ms ease;
+}
+
+/* 那天有失败请求：柱子换成警示色，与「全是成功」的日子一眼区分 */
+.acct-daily-fill.is-error {
+  background: var(--err);
+}
+
+.acct-daily-date {
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.acct-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.acct-recent-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1.3fr) 86px 46px 64px 76px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  min-width: 0;
+}
+
+.acct-recent-row.is-error {
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+}
+
+.acct-recent-model,
+.acct-recent-key {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-recent-err {
+  color: var(--err);
+}
+
+/*
+ * 窄屏：会话行压成两行（时间/模型/状态一行，tokens/耗时/会话/密钥一行）。
+ * 直接隐藏列会丢信息 —— 排查时恰恰要看密钥与耗时。
+ */
+@media (max-width: 720px) {
+  .acct-recent-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    row-gap: 2px;
+  }
+  .acct-daily { height: 64px; }
+}

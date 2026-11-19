@@ -30,6 +30,7 @@ import {
 import { WEB_SESSION_CONSOLE_SCRIPT } from '../consoleScripts'
 import Modal from '../components/Modal.vue'
 import AccountUsage from '../components/AccountUsage.vue'
+import AccountActivityModal from '../components/AccountActivityModal.vue'
 import BillingRateDialog from '../components/BillingRateDialog.vue'
 import UsageTrendChart from '../components/UsageTrendChart.vue'
 import PInfo from '../components/PInfo.vue'
@@ -239,6 +240,8 @@ const accountForm = ref<{
 const accountSaving = ref(false)
 /** 正在显示的账户明文（仅管理员） */
 const accountReveal = ref<{ name: string; key: string } | null>(null)
+/** 账户详情弹窗的目标账户（null = 关闭） */
+const activityAccount = ref<ChannelAccount | null>(null)
 
 /** 通用冷却剩余秒数；0 表示可用 */
 function cooldownLeft(a: ChannelAccount): number {
@@ -586,6 +589,7 @@ function onAcctDelegatedClick(event: MouseEvent): void {
   if (act === 'edit') openAccountForm(account)
   else if (act === 'reveal') void revealAccountKey(account)
   else if (act === 'web-session') void openWebSession(account)
+  else if (act === 'activity') activityAccount.value = account
   else setDiagDetail('未知动作：' + act)
 }
 
@@ -1079,6 +1083,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
             :data-testid="'web-session-btn-' + a.id"
           >
             {{ t('channels.webSession') }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm"
+            data-acct-act="activity"
+            :data-acct-id="a.id"
+            :title="t('channels.activityHint')"
+          >
+            {{ t('channels.activityOpen') }}
           </button>
           <button
             type="button"
@@ -1689,6 +1702,16 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
         {{ accountSaving ? t('common.saving') : t('common.save') }}
       </button>
     </div>
+  </Modal>
+
+  <!-- 账户详情：最近会话 + 近 7 天消耗 + 当前余额与额度 -->
+  <Modal
+    v-if="activityAccount && channel"
+    :title="t('channels.activityTitle')"
+    wide
+    @close="activityAccount = null"
+  >
+    <AccountActivityModal :channel-id="channel.id" :account="activityAccount" />
   </Modal>
 
   <!-- 账户密钥明文（必留审计） -->
