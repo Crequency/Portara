@@ -773,6 +773,7 @@ export const en = {
     sub: 'Configuration, models and usage',
     back: 'Back to channels',
     basic: 'Configuration',
+    jumpNav: "Quick nav",
     protocol: 'Protocol',
     vendor: 'Vendor',
     modelsPath: 'Model list API path',

@@ -766,6 +766,7 @@ export const fr = {
     sub: 'Configuration, modèles et consommation',
     back: 'Retour aux canaux amont',
     basic: 'Configuration de base',
+    jumpNav: "Navigation rapide",
     protocol: 'Protocole',
     vendor: 'Compatibilité éditeur',
     modelsPath: 'Chemin de l’API de liste des modèles',

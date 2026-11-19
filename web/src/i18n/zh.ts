@@ -771,6 +771,7 @@ export const zh = {
     sub: '配置、模型与用量',
     back: '返回上游渠道',
     basic: '基本配置',
+    jumpNav: "快速导航",
     protocol: '协议',
     vendor: '厂商兼容',
     modelsPath: '模型列表 API 路径',
