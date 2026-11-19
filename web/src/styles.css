@@ -2209,7 +2209,15 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .acct-usage-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .acct-usage-name { font-size: 12.5px; font-weight: 600; }
 
-.acct-usage-balances { display: flex; flex-wrap: wrap; gap: 14px; font-size: 14px; }
+/* align-items: center 是必须的：flex 容器默认 stretch，
+ * 而 PInfo 图标的 vertical-align 对 flex item 无效 —— 缺了这行图标会浮在文字上方。 */
+.acct-usage-balances {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 14px;
+}
 .acct-usage-balance { display: inline-flex; align-items: baseline; gap: 4px; }
 
 .acct-usage-windows { display: flex; flex-direction: column; gap: 7px; }
