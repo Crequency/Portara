@@ -2968,3 +2968,138 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   }
   .acct-daily { height: 64px; }
 }
+
+/* * 页面右侧的快速导航（渠道详情）。
+ *
+ * 收起时只是贴边的一条窄轨道（几个小点 + 竖排提示），hover 或键盘聚焦后展开成
+ * 列表 —— 平时不占内容宽度，需要时才出现。
+ *
+ * 1100px 以下直接隐藏：窄屏下浮层会盖住卡片内容，而那时页面本身也不算长。
+ */
+.page-jump {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.page-jump-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 6px 10px 10px;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  border: 1px solid var(--border);
+  border-right: 0;
+  box-shadow: -6px 0 18px -12px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  max-width: 56px;
+  overflow: hidden;
+  transition: max-width 180ms ease, padding 180ms ease;
+}
+
+/* 展开：hover，或键盘 Tab 进入内部按钮时（:focus-within） */
+.page-jump:hover .page-jump-body,
+.page-jump:focus-within .page-jump-body {
+  max-width: 240px;
+  padding-right: 12px;
+}
+
+.page-jump-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.page-jump-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.page-jump-dot.is-active {
+  background: var(--accent);
+  transform: scale(1.35);
+}
+
+/* 收起态的竖排提示：只有 1 个字宽，展开后消失（列表接管） */
+.page-jump-tip {
+  writing-mode: vertical-rl;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  letter-spacing: 1px;
+  flex: 0 0 auto;
+  transition: opacity 120ms ease;
+}
+
+.page-jump:hover .page-jump-tip,
+.page-jump:focus-within .page-jump-tip {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+.page-jump-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  opacity: 0;
+  transition: opacity 140ms ease 40ms;
+}
+
+.page-jump:hover .page-jump-list,
+.page-jump:focus-within .page-jump-list {
+  opacity: 1;
+}
+
+.page-jump-item {
+  appearance: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.page-jump-item:hover {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+
+.page-jump-item.is-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.page-jump-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 锚点跳转时给固定顶栏让出空间，否则标题会被顶栏压住 */
+[id^='cd-'] {
+  scroll-margin-top: 76px;
+}
+
+@media (max-width: 1100px) {
+  .page-jump { display: none; }
+}

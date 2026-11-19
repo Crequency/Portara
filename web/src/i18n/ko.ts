@@ -775,6 +775,7 @@ export const ko = {
     sub: '설정, 모델 및 사용량',
     back: '업스트림 채널로 돌아가기',
     basic: '기본 설정',
+    jumpNav: "빠른 이동",
     protocol: '프로토콜',
     vendor: '벤더 호환',
     modelsPath: '모델 목록 API 경로',

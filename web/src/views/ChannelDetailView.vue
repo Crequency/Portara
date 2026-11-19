@@ -29,6 +29,7 @@ import {
 } from '../api'
 import { WEB_SESSION_CONSOLE_SCRIPT } from '../consoleScripts'
 import Modal from '../components/Modal.vue'
+import PageJumpNav, { type JumpSection } from '../components/PageJumpNav.vue'
 import AccountUsage from '../components/AccountUsage.vue'
 import AccountActivityModal from '../components/AccountActivityModal.vue'
 import BillingRateDialog from '../components/BillingRateDialog.vue'
@@ -72,6 +73,30 @@ const revealError = ref('')
 const revealing = ref(false)
 
 const isAdmin = (): boolean => props.user?.role === 'admin'
+
+/**
+ * 右侧快速导航的锚点。
+ *
+ * 只列出**当前真的存在**的区块：计费费率仅管理员可见、余额用量仅配了适配器的渠道有 ——
+ * 无条件列出会让用户点到「跳过去什么也没有」。
+ */
+const jumpSections = computed<JumpSection[]>(() => {
+  const list: JumpSection[] = [{ id: 'cd-basic', label: t('channelDetail.basic') }]
+  if (isAdmin()) list.push({ id: 'cd-rates', label: t('billing.rate.cardTitle') })
+  list.push(
+    { id: 'cd-accounts', label: t('channels.accounts') },
+    { id: 'cd-usage', label: t('channelDetail.usage') }
+  )
+  if (channel.value?.usageAdapter) {
+    list.push({ id: 'cd-balance', label: t('usage.title') })
+  }
+  list.push(
+    { id: 'cd-models', label: t('channelDetail.models') },
+    { id: 'cd-mappings', label: t('channelDetail.mappings') },
+    { id: 'cd-recent', label: t('channelDetail.recent') }
+  )
+  return list
+})
 
 // ---------------------------------------------------------------- 计费费率
 
@@ -864,7 +889,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 基本配置 -->
-    <div class="card">
+    <div id="cd-basic" class="card">
       <div class="card-head">
         <div class="card-title">{{ t('channelDetail.basic') }}</div>
       </div>
@@ -944,7 +969,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 计费费率 -->
-    <div v-if="isAdmin()" class="card">
+    <div v-if="isAdmin()" id="cd-rates" class="card">
       <div class="card-head">
         <div>
           <div class="card-title">{{ t('billing.rate.cardTitle') }}</div>
@@ -1036,7 +1061,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 上游账户：同一渠道的多把 Key，按优先级/权重轮转 + 故障转移 -->
-    <div class="card">
+    <div id="cd-accounts" class="card">
       <div class="card-head">
         <div class="card-title">
           {{ t('channels.accounts') }}
@@ -1128,7 +1153,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 用量统计 -->
-    <div class="card">
+    <div id="cd-usage" class="card">
       <div class="card-head">
         <div class="card-title">{{ t('channelDetail.usage') }}</div>
         <span class="dim" style="font-size: 11.5px; margin-left: auto; margin-right: 10px">
@@ -1175,7 +1200,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 余额 / 用量（仅当渠道配了适配器） -->
-    <div v-if="channel.usageAdapter" class="card">
+    <div v-if="channel.usageAdapter" id="cd-balance" class="card">
       <div class="card-head">
         <div class="card-title row" style="gap: 8px">
           {{ t('usage.title') }}
@@ -1265,7 +1290,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 模型列表 -->
-    <div class="card">
+    <div id="cd-models" class="card">
       <div class="card-head">
         <div class="card-title">
           {{ t('channelDetail.models') }} · {{ t('channelDetail.modelsCount', { n: modelRows.length }) }}
@@ -1330,7 +1355,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 映射 -->
-    <div class="card">
+    <div id="cd-mappings" class="card">
       <div class="card-head">
         <div class="card-title">
           {{ t('channelDetail.mappings') }} · {{ t('channelDetail.mappingsCount', { n: routes.length }) }}
@@ -1364,7 +1389,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
     </div>
 
     <!-- 最近请求 -->
-    <div class="card">
+    <div id="cd-recent" class="card">
       <div class="card-head">
         <div class="card-title">{{ t('channelDetail.recent') }}</div>
       </div>
@@ -1485,6 +1510,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onAcctDelegatedClick
       </button>
     </div>
   </Modal>
+
+  <!-- 右侧快速导航：hover 展开，点击跳到对应区块（窄屏隐藏） -->
+  <PageJumpNav
+    v-if="channel"
+    :sections="jumpSections"
+    :title="t('channelDetail.jumpNav')"
+  />
 
   <Modal
     v-if="revealOpen && channel"

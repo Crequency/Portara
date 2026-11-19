@@ -765,6 +765,7 @@ export const ja = {
     sub: '設定、モデル、使用量',
     back: '上流チャネルに戻る',
     basic: '基本設定',
+    jumpNav: "クイックナビ",
     protocol: 'プロトコル',
     vendor: 'ベンダー互換',
     modelsPath: 'モデル一覧 API のパス',
