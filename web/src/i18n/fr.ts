@@ -328,6 +328,7 @@ export const fr = {
     usageNoneHint: 'Choisissez un adaptateur pour un canal dans « Canaux amont ».',
     usageFailed: '{n} autres canaux n’ont pas pu être récupérés',
     usageBalanceOnly: 'Solde uniquement',
+    usageOpenDetail: "Voir le détail d’usage de ce canal",
     usageAllFailed: 'Échec temporaire de récupération du solde',
     perDay: 'Par jour',
     requests: 'Requêtes',

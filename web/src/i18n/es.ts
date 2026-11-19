@@ -327,6 +327,7 @@ export const es = {
     usageNoneHint: 'Vaya a “Canales de origen” y elija un adaptador para el canal.',
     usageFailed: 'Otros {n} canales no se pudieron obtener',
     usageBalanceOnly: 'Solo saldo',
+    usageOpenDetail: "Ver los detalles de uso de este canal",
     usageAllFailed: 'De momento no se pudo obtener el saldo',
     perDay: 'Por día',
     requests: 'Solicitudes',

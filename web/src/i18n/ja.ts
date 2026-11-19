@@ -327,6 +327,7 @@ export const ja = {
     usageNoneHint: '「上流チャネル」でチャネルにアダプターを選択してください。',
     usageFailed: '他に {n} 件のチャネルで取得に失敗しました',
     usageBalanceOnly: '残高のみ',
+    usageOpenDetail: "このチャネルの使用量の詳細を表示",
     usageAllFailed: '残高を一時的に取得できませんでした',
     perDay: '日単位',
     requests: 'リクエスト数',
