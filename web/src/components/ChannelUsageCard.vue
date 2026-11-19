@@ -209,7 +209,15 @@ function money(v: number, unit: 'currency' | 'credits', currency: string): strin
         </div>
       </div>
 
-      <!-- 账期累计 -->
+      <!--
+        账期累计。
+        上游给了账期就用上游的；没给则由后端用网关侧统计兜底（period.inferred）——
+        兜底时在标题上标出口径，避免被当成上游官方数字。
+      -->
+      <div v-if="item.snapshot!.period?.inferred" class="dim period-scope-hint">
+        <PInfo :text="t('usage.periodInferredHint')" />
+        {{ t('usage.periodInferred', { n: 30 }) }}
+      </div>
       <div v-if="item.snapshot!.period" class="grid grid-4">
         <div class="stat">
           <div class="stat-label">{{ t('usage.requests') }}</div>
@@ -234,11 +242,13 @@ function money(v: number, unit: 'currency' | 'credits', currency: string): strin
         <div v-if="item.snapshot!.plan" class="stat">
           <div class="stat-label">{{ t('usage.plan') }}</div>
           <div class="stat-value row" style="gap: 5px; font-size: 15px">
-            {{ item.snapshot!.plan!.id }}
+            <!-- 有的适配器只给 name、有的只给 id；两个都空就显示「—」而不是一片空白 -->
+            {{ item.snapshot!.plan!.name || item.snapshot!.plan!.id || '—' }}
             <PInfo v-if="item.snapshot!.plan!.inferred" :text="t('usage.inferredHint')" />
           </div>
           <div class="stat-hint">
-            {{ item.snapshot!.plan!.status }} · {{ t('usage.renewAt') }} {{ formatTime(item.snapshot!.plan!.renewAt ?? null) }}
+            {{ item.snapshot!.plan!.status || '—' }} · {{ t('usage.renewAt') }}
+            {{ formatTime(item.snapshot!.plan!.renewAt ?? null) }}
           </div>
         </div>
       </div>

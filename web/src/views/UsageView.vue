@@ -20,6 +20,7 @@ import { errorText, toastError } from '../error'
 import { computed, onMounted, ref, watch } from 'vue'
 import { api, type UsageSnapshot, type User } from '../api'
 import ChannelUsageCard from '../components/ChannelUsageCard.vue'
+import JsonViewer from '../components/JsonViewer.vue'
 import Modal from '../components/Modal.vue'
 import { formatTime } from '../format'
 import { useI18n } from '../i18n'
@@ -495,9 +496,7 @@ onMounted(() => void load())
     <div class="dim" style="font-size: 12px; margin-bottom: 8px">
       {{ rawTarget.channelName }} · {{ rawTarget.adapter }}
     </div>
-    <pre class="code-box" style="max-height: 420px; overflow: auto; white-space: pre-wrap">{{
-      JSON.stringify(rawTarget.raw ?? {}, null, 2)
-    }}</pre>
+    <JsonViewer :value="rawTarget.raw ?? {}" />
     <div class="modal-foot">
       <button class="btn" @click="rawOpen = false">{{ t('common.close') }}</button>
     </div>

@@ -24,6 +24,7 @@ import {
 import ChannelUsageCard, {
   type ChannelUsageItem as ChannelUsageItemType
 } from '../components/ChannelUsageCard.vue'
+import JsonViewer from '../components/JsonViewer.vue'
 import Modal from '../components/Modal.vue'
 import PSelect from '../components/PSelect.vue'
 import TrendSkeleton from '../components/TrendSkeleton.vue'
@@ -1200,9 +1201,7 @@ onBeforeUnmount(() => tokenStatObserver?.disconnect())
     <div class="dim" style="font-size: 12px; margin-bottom: 8px">
       {{ usageRaw.channelName }} · {{ usageRaw.adapter }}
     </div>
-    <pre class="code-box" style="max-height: 420px; overflow: auto; white-space: pre-wrap">{{
-      JSON.stringify(usageRaw.raw ?? {}, null, 2)
-    }}</pre>
+    <JsonViewer :value="usageRaw.raw ?? {}" />
     <div class="modal-foot">
       <button class="btn" @click="usageRaw = null">{{ t('common.close') }}</button>
     </div>

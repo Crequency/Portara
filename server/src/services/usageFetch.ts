@@ -17,6 +17,7 @@ import {
   type AccountRow
 } from './accounts.js'
 import { tryDecryptKey } from './channels.js'
+import { loadChannelPeriod } from './usageLocalStats.js'
 import { upstreamFetch } from './proxyAgent.js'
 import { getProxyTarget } from './proxies.js'
 import { getSetting } from './settings.js'
@@ -498,6 +499,7 @@ async function fetchAccountSnapshot(
         adapter: adapter.id,
         ok: true,
         warnings: [...(parsed.warnings ?? []), ...warnings],
+        balanceNotes: parsed.balanceNotes,
         balances: parsed.balances ?? [],
         windows: parsed.windows ?? [],
         period: parsed.period,
@@ -553,6 +555,7 @@ async function fetchAccountSnapshot(
       adapter: adapter.id,
       ok: true,
       warnings: [...(parsed.warnings ?? []), ...warnings],
+      balanceNotes: parsed.balanceNotes,
       balances: parsed.balances ?? [],
       windows: parsed.windows ?? [],
       period: parsed.period,
@@ -613,6 +616,12 @@ async function fetchSnapshot(
   const warnings = [...new Set(parts.flatMap((p) => (p.ok ? p.warnings : [])))]
   const errors = parts.filter((p) => !p.ok).map((p) => `${p.accountName}：${p.error ?? '未知错误'}`)
 
+  /*
+   * 上游没给账期统计时，用网关侧统计补一份（标 inferred）。
+   * 失败不能影响整张快照 —— 缺四张卡可以接受，整页报错不行。
+   */
+  const period = agg.period ?? (await loadChannelPeriod(ch.id).catch(() => undefined))
+
   return {
     channelId: ch.id,
     channelName: ch.name,
@@ -624,7 +633,7 @@ async function fetchSnapshot(
     warnings: okParts.length > 0 && errors.length > 0 ? [...warnings, ...errors] : warnings,
     balances: agg.balances,
     windows: agg.windows,
-    period: agg.period,
+    period,
     plan: agg.plan,
     accounts: parts,
     raw

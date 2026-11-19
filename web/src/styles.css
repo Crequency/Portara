@@ -2209,7 +2209,15 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .acct-usage-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .acct-usage-name { font-size: 12.5px; font-weight: 600; }
 
-.acct-usage-balances { display: flex; flex-wrap: wrap; gap: 14px; font-size: 14px; }
+/* align-items: center 是必须的：flex 容器默认 stretch，
+ * 而 PInfo 图标的 vertical-align 对 flex item 无效 —— 缺了这行图标会浮在文字上方。 */
+.acct-usage-balances {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 14px;
+}
 .acct-usage-balance { display: inline-flex; align-items: baseline; gap: 4px; }
 
 .acct-usage-windows { display: flex; flex-direction: column; gap: 7px; }
@@ -2916,7 +2924,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 /* 那天有失败请求：柱子换成警示色，与「全是成功」的日子一眼区分 */
 .acct-daily-fill.is-error {
-  background: var(--err);
+  background: var(--danger);
 }
 
 .acct-daily-date {
@@ -2943,7 +2951,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 }
 
 .acct-recent-row.is-error {
-  background: color-mix(in srgb, var(--err) 8%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .acct-recent-model,
@@ -2954,7 +2962,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 }
 
 .acct-recent-err {
-  color: var(--err);
+  color: var(--danger);
 }
 
 /*
@@ -3103,3 +3111,133 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 @media (max-width: 1100px) {
   .page-jump { display: none; }
 }
+
+/*
+ * 余额旁的提示图标。
+ *
+ * 默认与正文同色（几乎不抢眼）；余额为负时转红 —— 让「这里要看一眼」
+ * 比一行灰色警告更早被注意到。
+ */
+.acct-balance-note {
+  margin-left: 2px;
+  color: var(--text-faint);
+  cursor: help;
+}
+
+.acct-balance-note.is-negative {
+  color: var(--danger);
+}
+
+/* 账期口径提示：一行灰字，说明这份统计来自网关侧而不是上游 */
+.period-scope-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  margin-bottom: 8px;
+}
+
+/*
+ * JSON 查看器（原始响应弹窗）。
+ *
+ * 配色不用 highlight.js 自带的主题文件 —— 那些是固定色值，在明暗主题下总有一边难看。
+ * 这里只给 hljs 的几个 token 类上色，全部走站点变量，跟随主题切换。
+ */
+.json-viewer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+
+.json-body {
+  display: flex;
+  max-height: 440px;
+  overflow: auto;
+}
+
+.json-gutter {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px 10px 12px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.json-code {
+  margin: 0;
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  /*
+   * 折行而不是横向滚动：上游常把整段 JSON 塞进一个字符串字段，
+   * pre 会把它摊成一条几千像素的长行 —— 那正是「不可读」的根源。
+   */
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: none;
+  min-width: 0;
+}
+
+/* 顶部工具条：展开/原始切换 + 行数 */
+.json-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.json-mode {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.json-mode.is-on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.json-mode:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.json-lines {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.json-fallback {
+  margin: 0;
+  max-height: 440px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 0;
+}
+
+/* JSON token 配色：字符串 / 数字 / 字面量 / 键名 */
+.hljs-attr { color: var(--accent); }
+.hljs-string { color: color-mix(in srgb, var(--success) 78%, var(--text)); }
+.hljs-number { color: color-mix(in srgb, var(--warn) 82%, var(--text)); }
+.hljs-literal { color: var(--danger); }
+.hljs-punctuation { color: var(--text-dim); }

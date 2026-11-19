@@ -92,7 +92,7 @@ onMounted(async () => {
         </div>
         <div class="dim" style="font-size: 11.5px">
           {{ formatNumber(activity.h24.requests) }} {{ t('usage.requests') }}
-          <span v-if="activity.h24.errors > 0" style="color: var(--err)">
+          <span v-if="activity.h24.errors > 0" style="color: var(--danger)">
             · {{ formatNumber(activity.h24.errors) }} {{ t('channels.errorsLabel') }}
           </span>
         </div>
@@ -105,7 +105,7 @@ onMounted(async () => {
         </div>
         <div class="dim" style="font-size: 11.5px">
           {{ formatNumber(activity.d7.requests) }} {{ t('usage.requests') }}
-          <span v-if="activity.d7.errors > 0" style="color: var(--err)">
+          <span v-if="activity.d7.errors > 0" style="color: var(--danger)">
             · {{ formatNumber(activity.d7.errors) }} {{ t('channels.errorsLabel') }}
           </span>
         </div>
