@@ -181,14 +181,15 @@ test('moonshot：现金余额为负时提醒欠费', () => {
   const out = getUsageAdapter('moonshot')!.parse({
     balance: { code: 0, data: { available_balance: 5, voucher_balance: 5, cash_balance: -3 } }
   })
-  assert.ok(out.warnings!.some((w) => w.includes('欠费')))
+  // 余额类提示归到 balanceNotes（前端贴在余额旁边），不再混进 warnings
+  assert.ok(out.balanceNotes!.some((w) => w.includes('欠费')))
 })
 
 test('moonshot：可用余额 <= 0 时提醒会被上游拒绝', () => {
   const out = getUsageAdapter('moonshot')!.parse({
     balance: { code: 0, data: { available_balance: 0, voucher_balance: 0, cash_balance: 0 } }
   })
-  assert.ok(out.warnings!.some((w) => w.includes('推理 API 会被上游拒绝')))
+  assert.ok(out.balanceNotes!.some((w) => w.includes('推理 API 会被上游拒绝')))
 })
 
 // ---------------------------------------------------------------- CommandCode
@@ -677,7 +678,8 @@ test('OpenDesign：真实 /v1/me + coding-plan-usage 形状', () => {
   assert.equal(parsed.windows?.[1].exceeded, true)
   assert.equal(parsed.plan?.name, 'free')
   // 负余额要给出提示，不能静默
-  assert.ok((parsed.warnings ?? []).some((w) => w.includes('余额为负')))
+  // 负余额是余额本身的属性 —— 放在 balanceNotes，前端贴在余额数字旁
+  assert.ok((parsed.balanceNotes ?? []).some((w) => w.includes('余额为负')))
 })
 
 test('OpenDesign：实时抓取形状（响应平铺 key，不在 me 包裹里）', () => {

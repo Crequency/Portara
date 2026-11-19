@@ -196,6 +196,8 @@ export interface UsagePeriod {
   tokensOut?: number
   cost?: number
   costCurrency?: string
+  /** 由网关侧统计得出（上游未返回账期），前端据此标注口径 */
+  inferred?: boolean
 }
 
 export interface UsagePlan {
@@ -214,6 +216,8 @@ export interface UsageAccountSnapshot {
   ok: boolean
   error?: string
   warnings: string[]
+  /** 余额相关的提示（欠费 / 可用余额不足）；贴在余额数字旁的 ⓘ 上 */
+  balanceNotes?: string[]
   balances: UsageBalance[]
   windows: UsageWindow[]
   period?: UsagePeriod
@@ -231,6 +235,8 @@ export interface UsageSnapshot {
   cached: boolean
   stale?: boolean
   warnings: string[]
+  /** 余额相关的提示（欠费 / 可用余额不足） */
+  balanceNotes?: string[]
   balances: UsageBalance[]
   windows: UsageWindow[]
   period?: UsagePeriod

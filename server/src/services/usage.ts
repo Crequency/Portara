@@ -50,6 +50,13 @@ export interface UsagePeriod {
   tokensOut?: number
   cost?: number
   costCurrency?: string
+  /**
+   * 是否由**网关侧**统计得出（而非上游返回的账期）。
+   *
+   * 只有否则缺失时才会兜底填这份数据，前端据此提示口径 ——
+   * 不能让人把「网关统计」当成上游官方账期。
+   */
+  inferred?: boolean
 }
 
 export interface UsagePlan {
@@ -68,7 +75,15 @@ export interface UsageAccountSnapshot {
   adapter: string
   ok: boolean
   error?: string
+  /**
+   * 非余额类的提示（如「上游标记账户不可用」）。
+   *
+   * **余额相关的提示不要放这里** —— 它属于余额本身，前端要贴在余额数字旁边的 ⓘ 上，
+   * 放在卡片底部会随账户数增长堆成一片，用户根本不会逐行读。
+   */
   warnings: string[]
+  /** 余额相关的提示（欠费 / 可用余额不足等），前端贴在余额旁 */
+  balanceNotes?: string[]
   balances: UsageBalance[]
   windows: UsageWindow[]
   period?: UsagePeriod
@@ -90,6 +105,8 @@ export interface UsageSnapshot {
   stale?: boolean
   /** 成功但有需要提醒的情况（例如账户无订阅套餐） */
   warnings: string[]
+  /** 余额相关的提示（欠费 / 可用余额不足）；前端贴在余额数字旁边 */
+  balanceNotes?: string[]
   balances: UsageBalance[]
   windows: UsageWindow[]
   period?: UsagePeriod
@@ -416,12 +433,13 @@ const moonshot: UsageAdapter = {
     if (available === null) throw new Error('响应里没有 available_balance')
 
     const warnings: string[] = []
+    const balanceNotes: string[] = []
     const cash = toNum(data.cash_balance)
     if (cash !== null && cash < 0) {
-      warnings.push('现金余额为负（欠费），可用余额等于代金券余额')
+      balanceNotes.push('现金余额为负（欠费），可用余额等于代金券余额')
     }
     if (available <= 0) {
-      warnings.push('可用余额小于等于 0，推理 API 会被上游拒绝')
+      balanceNotes.push('可用余额小于等于 0，推理 API 会被上游拒绝')
     }
 
     return {
@@ -434,7 +452,8 @@ const moonshot: UsageAdapter = {
           toppedUp: cash ?? undefined
         }
       ],
-      warnings
+      warnings,
+      balanceNotes
     }
   }
 }
@@ -952,15 +971,19 @@ const opendesign: UsageAdapter = {
       if (!plan.id && !plan.name && !plan.status) plan = undefined
     }
 
-    // 负余额是有意义的信息（欠费），单独提示一句
+    /*
+     * 负余额是有意义的信息（欠费），但它属于**余额本身** —— 归到 balanceNotes，
+     * 前端贴在余额数字旁的 ⓘ 上；留在 warnings 会随账户数在卡片底部堆成一排。
+     */
+    const balanceNotes: string[] = []
     if (balanceUsd !== null && balanceUsd < 0) {
-      warnings.push(`钱包余额为负（${balanceUsd} USD），上游可能已限制新请求`)
+      balanceNotes.push(`钱包余额为负（${balanceUsd} USD），上游可能已限制新请求`)
     }
 
     if (balances.length === 0 && windows.length === 0 && !plan) {
       throw new Error('响应里既没有 balanceUsd，也没有限额窗口与套餐信息')
     }
-    return { balances, windows, plan, warnings }
+    return { balances, windows, plan, warnings, balanceNotes }
   }
 }
 

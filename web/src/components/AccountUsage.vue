@@ -5,19 +5,25 @@
  * 抽成组件是因为它要出现在两处（渠道详情页、余额用量页）——
  * 同一个账户的数值在两处长得不一样，是很容易让人怀疑"哪边是准的"的那类问题。
  */
+import { computed } from 'vue'
 import type { UsageAccountSnapshot } from '../api'
 import { formatNumber, formatTime, quotaColor, quotaPercent } from '../format'
 import { useI18n } from '../i18n'
 import PInfo from './PInfo.vue'
 import UsageWindowRow from './UsageWindowRow.vue'
 
-defineProps<{
+const props = defineProps<{
   account: UsageAccountSnapshot
   /** 是否显示账户名（余额页按渠道分组时显示，详情页每行也要显示） */
   showName?: boolean
 }>()
 
 const { t } = useI18n()
+
+/** 任一币种余额为负（欠费）——提示图标据此转红 */
+const balanceNegative = computed(() =>
+  (props.account.balances ?? []).some((b) => b.remaining < 0)
+)
 
 /** 窗口名本地化；MiniMax 的键形如 `MiniMax-M*:interval`，模型名作为前缀 */
 function windowLabel(key: string): string {
@@ -53,6 +59,18 @@ function windowLabel(key: string): string {
           </span>
           <span class="dim">{{ b.currency }}</span>
         </span>
+        <!--
+          余额相关的提示贴在余额旁边，而不是堆在卡片底部：
+          以前每个负余额账户在底部各占一行，4 个账户就是 4 行一样的句子。
+          余额为负时图标转红 —— 让「这里要看一眼」比一行灰字更早被注意到。
+        -->
+        <PInfo
+          v-if="account.balanceNotes?.length"
+          :text="account.balanceNotes.join('\n')"
+          :width="280"
+          class="acct-balance-note"
+          :class="{ 'is-negative': balanceNegative }"
+        />
       </div>
 
       <div v-if="account.windows.length > 0" class="acct-usage-windows">
