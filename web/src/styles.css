@@ -2301,6 +2301,18 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   color: var(--text-faint);
 }
 
+/*
+ * 剩余额度（"剩 65%"）。
+ *
+ * 用暗色小字跟在「已用 x / y (p%)」后面：主口径仍是已用，剩余只是给
+ * 「对着上游后台看」的人一个直接可比的数字。
+ */
+.win-remaining {
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 /* 放不下时：时间信息独占进度条下方一行，右对齐 */
 .win-times--below {
   margin-top: 4px;

@@ -970,6 +970,7 @@ export const zh = {
     windowMonthly: '每月',
     windowInterval: '当前周期',
     used: '已用',
+    remainingPct: "剩 {p}%",
     startAt: '开始',
     resetAt: '重置',
     exceeded: '已超限',

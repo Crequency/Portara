@@ -955,6 +955,7 @@ export const es = {
     windowMonthly: 'Mensual',
     windowInterval: 'Ciclo actual',
     used: 'Usado',
+    remainingPct: "queda {p}%",
     startAt: 'Inicio',
     resetAt: 'Restablecer',
     exceeded: 'Superado',

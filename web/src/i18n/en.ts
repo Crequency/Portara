@@ -972,6 +972,7 @@ export const en = {
     windowMonthly: 'Monthly',
     windowInterval: 'Interval',
     used: 'Used',
+    remainingPct: "{p}% left",
     startAt: 'Started',
     resetAt: 'Resets',
     exceeded: 'Exceeded',

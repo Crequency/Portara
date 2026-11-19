@@ -6,7 +6,7 @@
  * 同一个账户的数值在两处长得不一样，是很容易让人怀疑"哪边是准的"的那类问题。
  */
 import type { UsageAccountSnapshot } from '../api'
-import { formatNumber, formatTime, quotaColor, quotaPercent } from '../format'
+import { formatNumber, formatTime, quotaColor, quotaPercent, remainingPercent } from '../format'
 import { useI18n } from '../i18n'
 import PInfo from './PInfo.vue'
 import UsageWindowRow from './UsageWindowRow.vue'
@@ -67,6 +67,7 @@ function windowLabel(key: string): string {
             :usage-color="quotaColor(quotaPercent(w.used, w.total), w.exceeded)"
             :exceeded="w.exceeded"
             :percent="quotaPercent(w.used, w.total)"
+            :remaining-text="t('usage.remainingPct', { p: remainingPercent(w.used, w.total) })"
             :bar-color="quotaColor(quotaPercent(w.used, w.total), w.exceeded)"
             :start-text="w.startAt ? t('usage.startAt') + ' ' + formatTime(w.startAt) : undefined"
             :reset-text="w.resetAt ? t('usage.resetAt') + ' ' + formatTime(w.resetAt) : undefined"

@@ -973,6 +973,7 @@ export const th = {
     windowMonthly: 'รายเดือน',
     windowInterval: 'รอบปัจจุบัน',
     used: 'ใช้ไป',
+    remainingPct: "เหลือ {p}%",
     startAt: 'เริ่ม',
     resetAt: 'รีเซ็ต',
     exceeded: 'เกินขีดจำกัดแล้ว',
